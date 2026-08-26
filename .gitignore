@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+.env
+.env.local
+.env.*.local
+*.env.*.local
+
+# Database (ex: SQLite, PostgreSQL)
+*.sqlite
+*.db
+*.sqlite3
+*.sql
+
+# Alembic (não ignore o diretório migrations!)
+# (O diretório migrations/ deve ser versionado, mas arquivos gerados como alembic.ini podem ser ignorados)
+alembic.ini
+alembic/versions/*.pyc
+alembic/versions/*.pyo
+
+# Docker (Dockerfiles devem ser versionados!)
+# Ignore apenas artefatos gerados pelo Docker (não o Dockerfile!)
+.dockerignore
+docker-compose.override.yml
+docker-compose.local.yml
+*.dockerignore
+*.dockerfile
+
+# IDE & Editor
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*.log
+*.tmp
+*.bak
+*.orig
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+*.egg
+*.dist-info
+*.whl
+
+# Outros
+build/
+dist/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+*.egg
+*.dist-info
+*.whl
