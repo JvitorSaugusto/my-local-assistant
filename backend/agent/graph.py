@@ -5,7 +5,7 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage
 
 from backend.agent.agent import load_llm
-from backend.agent.prompts import CODE_NODE_PROMPT, HEAVY_NODE_PROMPT, NOTE_NODE_PROMPT, ROUTER_NODE_PROMPT
+from backend.agent.prompts import CODE_NODE_PROMPT, HEAVY_NODE_PROMPT, NOTE_NODE_PROMPT, ROUTER_NODE_PROMPT, STANDARD_NODE_PROMPT
 
 
 
@@ -18,7 +18,7 @@ class State(TypedDict):
     
 
 router_llm = load_llm().with_config(config={"configurable": {"model": "qwen3:0.6b", "temperature": 0.0, "max_tokens": 10}})
-standart_llm = load_llm().with_config(config={"configurable": {"model": "gpt-oss:20b", "temperature": 0.2}})
+standard_llm = load_llm().with_config(config={"configurable": {"model": "gpt-oss:20b", "temperature": 0.2}})
 code_llm = load_llm().with_config(config={"configurable": {"model": "qwen3-coder:30b", "temperature": 0.2}})
 note_llm = load_llm().with_config(config={"configurable": {"model": "qwen3:30b-a3b", "temperature": 0.2}})
 heavy_llm = load_llm().with_config(config={"configurable": {"model": "DeepSeek-R1:70b", "temperature": 0.2}})
@@ -44,8 +44,9 @@ def router_node(state: State):
     return {"actual_route": category}
 
 
-def standart_node_20b(state: State):
-    response = standart_llm.invoke(state["messages"])
+def standard_node_20b(state: State):
+    persona = SystemMessage(content=STANDARD_NODE_PROMPT)
+    response = standard_llm.invoke([persona] + state["messages"])
     response.name = "GPT-OSS (20B)"
     return {"messages": [response]}
 
@@ -86,7 +87,7 @@ def route_decision(state: State):
     elif destiny == "NOTES":
         return "note_response"
     else:
-        return "standart_response"
+        return "standard_response"
 
 def check_context_limit(state: State):
     messages_qnt = len(state["messages"])
@@ -106,7 +107,7 @@ def summarize_node(state: State):
         
     order = HumanMessage(content=prompt)
     
-    response = standart_llm.invoke(old_messages + [order])
+    response = standard_llm.invoke(old_messages + [order])
     
     return {"summary": response.content}
     
@@ -117,7 +118,7 @@ def build_graph():
 
     builder.add_node("router_node", router_node)
     
-    builder.add_node("standart_node_20b", standart_node_20b)
+    builder.add_node("standard_node_20b", standard_node_20b)
     builder.add_node("code_node", code_node)
     builder.add_node("note_node", note_node)
     builder.add_node("heavy_task_node_70b", heavy_task_node_70b)
@@ -139,7 +140,7 @@ def build_graph():
         "router_node",
         route_decision,
         {
-            "standart_response": "standart_node_20b",
+            "standard_response": "standard_node_20b",
             "code_response": "code_node",
             "note_response": "note_node",
             "heavy_task_response": "heavy_task_node_70b",
@@ -147,7 +148,7 @@ def build_graph():
     )
 
 
-    builder.add_edge("standart_node_20b", END)
+    builder.add_edge("standard_node_20b", END)
     builder.add_edge("code_node", END)
     builder.add_edge("note_node", END)
     builder.add_edge("heavy_task_node_70b", END)
