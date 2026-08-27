@@ -35,10 +35,16 @@ async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
     
     async def token_generator():
         async for event in app_graph.astream_events(inputs, config=config, version="v2"):
-            
             if event["event"] == "on_chat_model_stream":
+                
+                metadata = event.get("metadata", {})
+                node_name = metadata.get("langgraph_node", "")
+                
+                if node_name in ["router_node", "summarize_node"]:
+                    continue
+                    
                 chunk = event["data"].get("chunk")
-
+                
                 if chunk and chunk.content:
                     yield chunk.content
                     

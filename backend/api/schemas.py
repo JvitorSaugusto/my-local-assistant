@@ -19,3 +19,8 @@ class ChatResponseSchema(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class BatchRequestSchema(BaseModel):
+    thread_id: str
+    prompts: list[str]
