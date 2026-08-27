@@ -2,11 +2,11 @@ from typing import Annotated, TypedDict,NotRequired
 from langchain_core.messages import BaseMessage
 from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage
 
 from backend.agent.agent import load_llm
 from backend.agent.prompts import CODE_NODE_PROMPT, HEAVY_NODE_PROMPT, NOTE_NODE_PROMPT, ROUTER_NODE_PROMPT
+
 
 
 class State(TypedDict):
@@ -14,6 +14,7 @@ class State(TypedDict):
     actual_route: str
     heavy_task_id: NotRequired[int | None]
     router_decision: NotRequired[str | None]
+    summary: str
     
 
 router_llm = load_llm().with_config(config={"configurable": {"model": "qwen3:0.6b", "temperature": 0.0, "max_tokens": 10}})
@@ -95,14 +96,19 @@ def check_context_limit(state: State):
     return "go_to_router"
 
 def summarize_node(state: State):
-    order = HumanMessage(content="Resuma todo este histórico de conversa acima em apenas um parágrafo.")
+    actual_summary = state.get("summary", "")
     old_messages = state["messages"]
+    
+    if actual_summary:
+        prompt = f"Resumo atual: {actual_summary}\n\nAtualize este resumo incorporando as mensagens recentes. Mantenha em apenas um parágrafo."
+    else:
+        prompt = "Resuma todo este histórico de conversa acima em apenas um parágrafo."
+        
+    order = HumanMessage(content=prompt)
+    
     response = standart_llm.invoke(old_messages + [order])
-    remove_old_messages = [RemoveMessage(id=msg.id) for msg in old_messages if msg.id is not None]
     
-    new_context = SystemMessage(content=f"Resumo da conversa anterior: {response.content}")
-    
-    return {"messages": remove_old_messages + [new_context]}
+    return {"summary": response.content}
     
 
 
@@ -146,6 +152,9 @@ def build_graph():
     builder.add_edge("note_node", END)
     builder.add_edge("heavy_task_node_70b", END)
 
-    return builder.compile(checkpointer=InMemorySaver())
+    return builder
 
-app_graph = build_graph()
+
+def compile_graph():
+    return build_graph().compile()
+    
