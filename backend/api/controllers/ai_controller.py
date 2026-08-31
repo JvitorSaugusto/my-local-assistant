@@ -5,7 +5,6 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from backend.agent.graph import State
-from fastapi.responses import StreamingResponse
 
 
 ai_router = APIRouter()
@@ -28,30 +27,19 @@ async def get_compiled_graph(request: Request) -> CompiledStateGraph:
 CompiledGraphDep = Annotated[CompiledStateGraph, Depends(get_compiled_graph)]
 
 @ai_router.post("/")
-async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
-    
+async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep,):
     config: RunnableConfig = {"configurable": {"thread_id": payload.thread_id}}
-    inputs = cast(State, {"messages": [HumanMessage(content=payload.message)]})
-    
-    async def token_generator():
-        async for event in app_graph.astream_events(inputs, config=config, version="v2"):
-            if event["event"] == "on_chat_model_stream":
-                
-                metadata = event.get("metadata", {})
-                node_name = metadata.get("langgraph_node", "")
-                
-                if node_name in ["router_node", "summarize_node"]:
-                    continue
-                    
-                chunk = event["data"].get("chunk")
-                
-                if chunk and chunk.content:
-                    yield chunk.content
-                    
-    return StreamingResponse(token_generator(), media_type="text/plain")
+
+    inputs = cast(State,{"messages": [HumanMessage(content=payload.message)]},)
+
+    result = await app_graph.ainvoke(inputs, config=config,)
+
+    message = result["messages"][-1]
+
+    return {"content": message.content, "name": getattr(message, "name", None),}
 
 
-@ai_router.get("/{thread_id}/history")
+@ai_router.get("/{thread_id}/messages")
 async def get_chat_history(thread_id: str, app_graph: CompiledGraphDep):
     
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
@@ -75,7 +63,7 @@ async def get_chat_history(thread_id: str, app_graph: CompiledGraphDep):
 
 
 @ai_router.post("/batch/")
-async def enviar_tarefas_background(payload: BatchPayload):
+async def send_tasks_background(payload: BatchPayload):
     from tasks import run_langgraph_task
     
     for prompt in payload.prompts:
