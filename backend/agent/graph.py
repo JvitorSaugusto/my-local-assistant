@@ -5,7 +5,7 @@ from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from backend.agent.router_model_config import router_structured
+from backend.agent.router_model_config import RouteDecision
 from backend.agent.agent import load_llm
 from backend.agent.prompts import CODE_NODE_PROMPT, HEAVY_NODE_PROMPT, NOTE_NODE_PROMPT, ROUTER_NODE_PROMPT, STANDARD_NODE_PROMPT
 
@@ -19,7 +19,7 @@ class State(TypedDict):
     summary: str
     
 
-router_llm = load_llm().with_config(config={"configurable": {"model": "llama3.2:1b", "temperature": 0.0}})
+router_structured = load_llm().with_structured_output(RouteDecision).with_config(config={"configurable": { "model": "qwen3:4b", "temperature": 0.0, "max_tokens": 32,}})
 standard_llm = load_llm().with_config(config={"configurable": {"model": "gpt-oss:20b", "temperature": 0.2, "max_tokens": 8192,}})
 code_llm = load_llm().with_config(config={"configurable": {"model": "qwen3-coder:30b", "temperature": 0.1, "max_tokens": 8192,}})
 note_llm_draft = ChatOllama(model="qwen3:30b-a3b", temperature=0.2, num_predict=8192, num_ctx=32768, think=True,)
@@ -32,164 +32,6 @@ def detect_explicit_route(text: str) -> str | None:
 
     if "@heavy" in text_lower:
         return "HEAVY"
-
-    note_triggers = [
-        "crie uma nota",
-        "criar uma nota",
-        "faça uma nota",
-        "fazer uma nota",
-        "gere uma nota",
-        "gerar uma nota",
-
-        "crie uma anotação",
-        "criar uma anotação",
-        "faça uma anotação",
-        "fazer uma anotação",
-        "gere uma anotação",
-        "gerar uma anotação",
-
-        "crie uma documentação",
-        "criar uma documentação",
-        "faça uma documentação",
-        "fazer uma documentação",
-        "gere uma documentação",
-        "gerar uma documentação",
-
-        "documente isso",
-        "documentar isso",
-        "transforme em documentação",
-        "transformar em documentação",
-        "transforme isso em documentação",
-
-        "transforme em nota",
-        "transformar em nota",
-        "transforme isso em nota",
-        "transformar isso em nota",
-
-        "para o notion",
-        "pro notion",
-        "para notion",
-        "no notion",
-        "anotação no notion",
-        "nota no notion",
-        "documentação no notion",
-    ]
-
-    if any(trigger in text_lower for trigger in note_triggers):
-        return "NOTES"
-
-    code_actions = [
-        "gere ",
-        "gerar ",
-        "crie ",
-        "criar ",
-        "faça ",
-        "fazer ",
-
-        "implemente",
-        "implementar",
-
-        "altere ",
-        "alterar ",
-        "modifique ",
-        "modificar ",
-
-        "corrija ",
-        "corrigir ",
-        "conserte ",
-        "consertar ",
-
-        "refatore",
-        "refatorar",
-
-        "otimize ",
-        "otimizar ",
-
-        "debugue",
-        "debugar",
-        "debug ",
-        "encontre o bug",
-        "encontre o erro",
-
-        "adicione ao código",
-        "adicionar ao código",
-        "adicione uma função",
-        "adicionar uma função",
-        "adicione um endpoint",
-        "adicionar um endpoint",
-    ]
-
-    code_objects = [
-        "código",
-        "codigo",
-        "script",
-        "snippet",
-
-        "função",
-        "funcao",
-        "function",
-        "método",
-        "metodo",
-
-        "classe",
-        "class",
-        "objeto",
-
-        "endpoint",
-        "api",
-        "api rest",
-        "controller",
-        "service",
-        "middleware",
-
-        "query",
-        "consulta sql",
-        "sql",
-        "orm",
-
-        "componente",
-        "component",
-        "html",
-        "css",
-        "javascript",
-        "typescript",
-        "react",
-        "next.js",
-        "nextjs",
-
-        "arquivo python",
-        "arquivo html",
-        "arquivo css",
-        "arquivo js",
-        "arquivo ts",
-        "arquivo javascript",
-        "arquivo typescript",
-    ]
-
-    has_code_action = any(action in text_lower for action in code_actions)
-    has_code_object = any(obj in text_lower for obj in code_objects)
-
-    if has_code_action and has_code_object:
-        return "CODE"
-
-    explicit_code_triggers = [
-        "escreva o código",
-        "escreva um código",
-        "mostre o código",
-        "me dê o código",
-        "me de o codigo",
-        "como implementar",
-        "como implementar isso",
-        "como faço essa função",
-        "como faço essa function",
-        "como criar essa função",
-        "como criar essa function",
-        "mande o código",
-        "manda o código",
-    ]
-
-    if any(trigger in text_lower for trigger in explicit_code_triggers):
-        return "CODE"
 
     return None
 
@@ -210,10 +52,10 @@ def router_node(state: State):
     if explicit_route == "HEAVY":
         cleaned_msg = last_msg.replace("@heavy", "").strip()
         state["messages"][-1].content = cleaned_msg
-        return {"actual_route": "HEAVY"}
 
-    if explicit_route:
-        return {"actual_route": explicit_route}
+        print("🔀 [ROUTER] Rota explícita: 'HEAVY'")
+
+        return {"actual_route": "HEAVY"}
 
     if len(last_msg) > 600:
         msg_for_router = (
@@ -235,13 +77,14 @@ def router_node(state: State):
         ),
     ])
 
+    route = decision.route
+
     print(
-        f"🔀 [ROUTER RESULTADO] "
-        f"Rota final escolhida: '{decision.route}'"
+        f"🔀 [ROUTER] "
+        f"Rota escolhida pelo LLM: '{route}'"
     )
 
-    return {"actual_route": decision.route}
-
+    return {"actual_route": route}
 
 def standard_node_20b(state: State):
     persona = SystemMessage(content=STANDARD_NODE_PROMPT)
