@@ -1,4 +1,4 @@
-# 🧠 Assistente IA Local (FastAPI + LangGraph)
+# Assistente IA Local (FastAPI + LangGraph)
 
 Um ecossistema de assistente virtual 100% local e autônomo, desenhado para rodar em hardware dedicado (GPU/VRAM + RAM Offload). A arquitetura orquestra múltiplos Modelos de Linguagem (LLMs) através de um roteador inteligente, delegando tarefas simples para modelos rápidos na GPU e tarefas complexas para modelos gigantes processados em background.
 
