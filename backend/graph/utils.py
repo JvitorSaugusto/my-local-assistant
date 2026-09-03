@@ -7,7 +7,7 @@ HEAVY_TAG_PATTERN = re.compile(
 )
 
 ENHANCER_TAG_PATTERN = re.compile(
-    r"(?<!\S)@enhancer(?!\S)",
+    r"(?<!\S)@enhance(?!\S)",
     re.IGNORECASE,
 )
 
