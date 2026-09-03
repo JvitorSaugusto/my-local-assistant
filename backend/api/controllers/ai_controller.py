@@ -56,7 +56,7 @@ async def get_chat_history(thread_id: str, app_graph: CompiledGraphDep):
             "model": getattr(msg, "name", None) 
         }
         for msg in state.values["messages"]
-        if msg.type in ["human", "ai"]
+        if msg.type in ["human", "ai"] and msg.content
     ]
             
     return {"messages": clean_history}

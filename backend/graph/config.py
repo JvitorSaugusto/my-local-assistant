@@ -24,6 +24,7 @@ class State(TypedDict):
     summary: str
     enhance_before_heavy: bool
     active_node: str
+    enhanced_prompt: str | None
     
 def load_llm() -> BaseChatModel:
     model = cast(

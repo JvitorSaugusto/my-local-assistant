@@ -111,6 +111,9 @@ const state = {
   chats: [],
   activeId: null,
   sending: false,
+  pendingChats: new Set(),
+  pollingInterval: null,
+  expectedAiCount: {},
 };
 
 
@@ -469,9 +472,23 @@ async function openChat(id) {
     if (state.activeId !== requestChatId) return;
 
     const messages = data?.messages ?? [];
+
     messages.forEach((message) => {
       appendMessage(message.role, message.content, message.model);
     });
+
+    // Bate a meta ao abrir o chat
+    const aiCount = messages.filter(m => m.role === "assistant").length;
+    const target = state.expectedAiCount[requestChatId];
+    if (target && aiCount >= target) {
+      state.pendingChats.delete(requestChatId);
+      state.expectedAiCount[requestChatId] = 0;
+    }
+
+    if (state.pendingChats.has(requestChatId)) {
+      appendTyping();
+    }
+
     scrollToBottom();
   } catch (err) {
     console.error("[Chats] openChat:", err);
@@ -606,6 +623,8 @@ async function sendMessage(text) {
   const requestThreadId = chat.thread_id;
   state.sending = true;
 
+  state.pendingChats.add(requestChatId);
+
   appendMessage("user", text);
   scrollToBottom();
   const typing = appendTyping();
@@ -624,7 +643,9 @@ async function sendMessage(text) {
 
     if (state.activeId !== requestChatId) return;
 
-    typing.remove();
+    const typingEl = el.messages.querySelector('[data-typing="1"]');
+    if (typingEl) typingEl.remove();
+    
     appendMessage("assistant", reply, modelName);
 
   } catch (err) {
@@ -635,6 +656,10 @@ async function sendMessage(text) {
     }
   } finally {
     state.sending = false;
+    
+    if (!state.expectedAiCount[requestChatId]) {
+      state.pendingChats.delete(requestChatId);
+    }
     if (state.activeId === requestChatId) {
       scrollToBottom();
       if (!isMobile()) el.chatInput.focus();
@@ -668,6 +693,21 @@ async function sendBatch() {
 
   el.batchStatus.textContent = "Enviando...";
 
+  // 1️⃣ ATUALIZAÇÃO OTIMISTA: Mostra as tarefas na tela
+  tasks.forEach(task => {
+    appendMessage("user", task);
+  });
+  
+  // 2️⃣ Define o ALVO de respostas que queremos alcançar
+  const currentAiCount = el.messages.querySelectorAll('.msg.assistant:not([data-typing="1"])').length;
+  const expected = state.expectedAiCount[chat.id] || currentAiCount;
+  state.expectedAiCount[chat.id] = expected + tasks.length; // Soma as novas tarefas ao alvo!
+
+  // 3️⃣ Coloca a bolinha e avisa o estado
+  appendTyping();
+  scrollToBottom();
+  state.pendingChats.add(chat.id);
+
   try {
     const data = await api(API.batch, {
       method: "POST",
@@ -679,12 +719,71 @@ async function sendBatch() {
 
     el.batchStatus.textContent = data?.message || "Enviado para a fila.";
     el.batchInput.value = "";
+    
   } catch (err) {
     console.error("[Batch] sendBatch:", err);
     el.batchStatus.textContent = "Falha ao enfileirar.";
+    
+    // Se der erro de conexão, removemos a bolinha e tiramos da lista de espera
+    if (state.activeId === chat.id) {
+      const typingEl = el.messages.querySelector('[data-typing="1"]');
+      if (typingEl) typingEl.remove();
+    }
+    state.pendingChats.delete(chat.id);
   }
 }
 
+
+// ============================================================
+// POLLING (ATUALIZAÇÃO EM BACKGROUND PARA O CELERY)
+// ============================================================
+
+function startPolling() {
+  if (state.pollingInterval) clearInterval(state.pollingInterval);
+  
+  state.pollingInterval = setInterval(async () => {
+    if (!state.activeId || state.sending) return;
+
+    const chat = state.chats.find(c => c.id === state.activeId);
+    if (!chat || !chat.thread_id) return;
+
+    try {
+      const data = await api(API.messages(chat.thread_id));
+      if (state.activeId !== chat.id) return;
+
+      const msgs = data?.messages ?? [];
+      const visibleMsgs = el.messages.querySelectorAll('.msg:not([data-typing="1"])');
+      
+      // --- A MÁGICA NOVA: Bateu a meta de respostas? ---
+      const aiCount = msgs.filter(m => m.role === "assistant").length;
+      const target = state.expectedAiCount[chat.id];
+
+      if (target && aiCount >= target) {
+        state.pendingChats.delete(chat.id);
+        state.expectedAiCount[chat.id] = 0; // Fila concluída, zera o alvo!
+      }
+      // -------------------------------------------------
+
+      if (msgs.length > visibleMsgs.length) {
+        el.messages.innerHTML = "";
+        msgs.forEach(m => appendMessage(m.role, m.content, m.model));
+        
+        if (state.pendingChats.has(chat.id)) {
+          appendTyping(); // Mantém a bolinha se não bateu a meta
+        }
+        
+        scrollToBottom();
+      } else {
+        // Se a tela não teve mensagens novas, mas a meta já foi batida
+        if (!state.pendingChats.has(chat.id)) {
+          const typingEl = el.messages.querySelector('[data-typing="1"]');
+          if (typingEl) typingEl.remove();
+        }
+      }
+    } catch (e) {
+    }
+  }, 3000); 
+}
 
 // ============================================================
 // INPUT & TAGS (Lógica de Exclusividade)
@@ -788,3 +887,4 @@ el.sidebarToggle.addEventListener("click", toggleSidebar);
 loadChats();
 autoResize();
 syncChips();
+startPolling();

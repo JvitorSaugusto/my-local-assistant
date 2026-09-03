@@ -67,22 +67,46 @@ def build_graph():
     )
     
     builder.add_conditional_edges(
-        "tools",
-        return_tool_message,
+    "code_node",
+    tools_condition,
         {
-            "code_node": "code_node",
-            "note_node": "note_node",
-            "heavy_task_node_70b": "heavy_task_node_70b",
+            "tools": "tools",
+            "__end__": END,
         }
     )
+    
+    builder.add_conditional_edges(
+        "note_node",
+        tools_condition,
+            {
+                "tools": "tools",
+                "__end__": END,
+            }
+        )
+    
+    builder.add_conditional_edges(
+        "heavy_task_node_70b",
+        tools_condition,
+            {
+                "tools": "tools",
+                "__end__": END,
+            }
+        )
+    
+    builder.add_conditional_edges(
+            "tools",
+            return_tool_message,
+            {
+                "code_node": "code_node",
+                "note_node": "note_node",
+                "heavy_task_node_70b": "heavy_task_node_70b",
+            }
+        )
 
 
-    builder.add_edge("standard_node_20b", END)
-    builder.add_edge("code_node", tools_condition)
-    builder.add_edge("note_node", tools_condition)
-    builder.add_edge("heavy_task_node_70b", tools_condition)
     builder.add_edge("enhancer_node", "router_node")
-    builder.add_edge("tools", "router_node")
+    builder.add_edge("standard_node_20b", END)
+    
 
     return builder
 

@@ -3,10 +3,10 @@ from .config import (
     State,
     router_structured,
     standard_llm,
-    code_llm,
-    note_llm_draft,
+    code_llm_with_tools,
+    note_llm_draft_with_tools,
     note_llm_final,
-    heavy_llm,
+    heavy_llm_with_tools,
 )
 
 from .prompts import (
@@ -23,16 +23,19 @@ from .utils import detect_explicit_route, strip_leading_tags
 
 
 def router_node(state: State):
-    raw_content = state["messages"][-1].content
-
-    if isinstance(raw_content, list):
-        last_msg = " ".join(
-            str(item.get("text", ""))
-            for item in raw_content
-            if isinstance(item, dict) and "text" in item
-        )
+    if state.get("enhanced_prompt"):
+        last_msg = state["enhanced_prompt"]
     else:
-        last_msg = str(raw_content)
+        raw_content = state["messages"][-1].content
+
+        if isinstance(raw_content, list):
+            last_msg = " ".join(
+                str(item.get("text", ""))
+                for item in raw_content
+                if isinstance(item, dict) and "text" in item
+            )
+        else:
+            last_msg = str(raw_content)
 
     explicit_route = detect_explicit_route(last_msg)
     
@@ -113,7 +116,9 @@ def enhancer_node(state: State):
     response = standard_llm.invoke(context)
     response.name = "GPT-OSS (20B) ENHANCER"
     
-    return {"messages": [response]}
+    print("GPT-OSS (20B) ENHANCER")
+    
+    return {"enhanced_prompt": response.content,}
     
 def after_enhancer_route(state: State):
     if state.get("enhance_before_heavy"):
@@ -126,6 +131,9 @@ def standard_node_20b(state: State):
     
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-6:]
+    
+    if state.get("enhanced_prompt"):
+         recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
     
     context = [persona]
     
@@ -142,7 +150,7 @@ def standard_node_20b(state: State):
     print("content:", repr(response.content[-500:]))
     response.name = "GPT-OSS (20B)"
     
-    return {"messages": [response]}
+    return {"messages": [response], "enhanced_prompt": None}
 
 
 def code_node(state: State):
@@ -150,6 +158,9 @@ def code_node(state: State):
     
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-6:]
+    
+    if state.get("enhanced_prompt"):
+        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
     
     context = [persona]
     
@@ -160,16 +171,17 @@ def code_node(state: State):
     context.extend(recent_messages)
     
     response = code_llm_with_tools.invoke(context)
-    response.name = "GPT-OSS (20B)"
+    response.name = "GPT-OSS (20B) CODE"
     
     return {
         "messages": [response],
-        "active_node": "code_node"
+        "active_node": "code_node",
+        "enhanced_prompt": None
         }
     
 
 def note_node(state: State) -> State:
-    last_user_message = state["messages"][-1].content
+    last_user_message = state.get("enhanced_prompt") or state["messages"][-1].content
 
     is_update = (
         "##" in last_user_message
@@ -261,7 +273,8 @@ def note_node(state: State) -> State:
 
     return {
         "messages": [final_response],
-        "active_node": "note_node"
+        "active_node": "note_node", 
+        "enhanced_prompt": None
         }
 
 def heavy_task_node_70b(state: State):
@@ -271,6 +284,9 @@ def heavy_task_node_70b(state: State):
     recent_messages = state["messages"][-10:]
     context = [persona]
     
+    if state.get("enhanced_prompt"):
+        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
+        
     if actual_summary:
         summary_memory = SystemMessage(content=f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}")
         context.append(summary_memory)
@@ -282,7 +298,8 @@ def heavy_task_node_70b(state: State):
     
     return {
         "messages": [response],
-        "active_node": "heavy_node"
+        "active_node": "heavy_task_node_70b",
+        "enhanced_prompt": None
     }
 
 def route_decision(state: State):
@@ -322,7 +339,7 @@ def summarize_node(state: State):
     
     response = standard_llm.invoke(recent_messages + [order])
     
-    return {"summary": response.content}
+    return {"summary": response.content, "enhanced_prompt": None}
 
 def return_tool_message(state: State):
     return state["active_node"]
