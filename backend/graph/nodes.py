@@ -18,7 +18,7 @@ from .prompts import (
     HEAVY_NODE_PROMPT,
 )
 
-from .utils import detect_explicit_route, strip_leading_heavy_tag, strip_leading_enhancer_tag
+from .utils import detect_explicit_route, strip_leading_tags
 
 
 
@@ -35,23 +35,43 @@ def router_node(state: State):
         last_msg = str(raw_content)
 
     explicit_route = detect_explicit_route(last_msg)
+    
+    if explicit_route == "ENHANCER_HEAVY":
+        cleaned_msg = strip_leading_tags(last_msg)
 
+        state["messages"][-1].content = cleaned_msg
+
+        print("🔀 [ROUTER] Rota explícita: 'ENHANCER → HEAVY'")
+
+        return {
+            "actual_route": "ENHANCER",
+            "enhance_before_heavy": True,
+        }
+        
     if explicit_route == "HEAVY":
-        cleaned_msg = strip_leading_heavy_tag(last_msg)
+        cleaned_msg = strip_leading_tags(last_msg)
+
         state["messages"][-1].content = cleaned_msg
 
         print("🔀 [ROUTER] Rota explícita: 'HEAVY'")
 
-        return {"actual_route": "HEAVY"}
-    
-    elif explicit_route == "ENHANCER":
-        cleaned_msg = strip_leading_enhancer_tag(last_msg)
+        return {
+            "actual_route": "HEAVY",
+            "enhance_before_heavy": False,
+        }
+        
+    if explicit_route == "ENHANCER":
+        cleaned_msg = strip_leading_tags(last_msg)
+
         state["messages"][-1].content = cleaned_msg
 
         print("🔀 [ROUTER] Rota explícita: 'ENHANCER'")
 
-        return {"actual_route": "ENHANCER"}
-
+        return {
+            "actual_route": "ENHANCER",
+            "enhance_before_heavy": False,
+        }
+        
     if len(last_msg) > 600:
         msg_for_router = (
             last_msg[:300]
@@ -79,7 +99,10 @@ def router_node(state: State):
         f"Rota escolhida pelo LLM: '{route}'"
     )
 
-    return {"actual_route": route}
+    return {
+        "actual_route": route,
+        "enhance_before_heavy": False,
+    }
 
 def enhancer_node(state: State):
     persona = SystemMessage(content=PROMPT_ENHANCER_NODE_PROMPT)
@@ -92,6 +115,11 @@ def enhancer_node(state: State):
     
     return {"messages": [response]}
     
+def after_enhancer_route(state: State):
+    if state.get("enhance_before_heavy"):
+        return "heavy_task_node_70b"
+
+    return "router_node"
 
 def standard_node_20b(state: State):
     persona = SystemMessage(content=STANDARD_NODE_PROMPT)
