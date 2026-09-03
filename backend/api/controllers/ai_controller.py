@@ -4,7 +4,7 @@ from typing import Annotated, cast
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
-from backend.agent.graph import State
+from backend.graph.config import State
 
 
 ai_router = APIRouter()
