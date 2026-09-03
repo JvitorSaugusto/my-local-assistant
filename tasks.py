@@ -1,4 +1,3 @@
-# arquivo: backend/tasks.py
 from typing import cast
 from backend.main import DB_URI_LANGGRAPH
 from celery import Celery
