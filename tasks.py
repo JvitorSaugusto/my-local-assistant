@@ -6,7 +6,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langchain_core.messages import HumanMessage
 from psycopg import Connection
 from langchain_core.runnables.config import RunnableConfig
-from backend.agent.graph import build_graph, State
+from backend.graph import build_graph, State
 
 
 celery_app = Celery("assistente_tasks", broker="redis://localhost:6379/0", backend="redis://localhost:6379/0")
