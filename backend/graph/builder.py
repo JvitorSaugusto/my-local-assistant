@@ -1,6 +1,7 @@
 from langgraph.graph import START, END, StateGraph
 from .config import State
 from .nodes import (
+    after_enhancer_route,
     enhancer_node,
     router_node,
     standard_node_20b,
@@ -25,7 +26,6 @@ def build_graph():
     builder.add_node("summarize_node", summarize_node)
     builder.add_node("enhancer_node", enhancer_node)
     
-    
     builder.add_conditional_edges(
         START,
             check_context_limit,
@@ -47,6 +47,15 @@ def build_graph():
             "heavy_task_node_70b": "heavy_task_node_70b",
             "enhancer_node": "enhancer_node",
         }
+    )
+    
+    builder.add_conditional_edges(
+        "enhancer_node",
+        after_enhancer_route,
+        {
+            "heavy_task_node_70b": "heavy_task_node_70b",
+            "router_node": "router_node",
+        },
     )
 
 

@@ -21,6 +21,7 @@ class State(TypedDict):
     heavy_task_id: NotRequired[int | None]
     router_decision: NotRequired[str | None]
     summary: str
+    enhance_before_heavy: bool
     
 def load_llm() -> BaseChatModel:
     model = cast(
