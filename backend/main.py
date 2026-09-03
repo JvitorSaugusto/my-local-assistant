@@ -1,16 +1,19 @@
 from fastapi import FastAPI
-from backend.agent.graph import build_graph
+from backend.graph.builder import build_graph
 from backend.api.controllers.chat_controller import chat_router
 from backend.api.controllers.ai_controller import ai_router
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from contextlib import asynccontextmanager
-
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
-
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
@@ -33,5 +36,13 @@ async def lifespan(app: FastAPI):
         
 app = FastAPI(lifespan=lifespan)
 
-app.include_router(ai_router, prefix="/ai", tags=["InteligenciaArtificial"])
-app.include_router(chat_router, prefix="/chats", tags=["ChatInteligenciaArtificial"])
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+@app.get("/")
+async def serve_index():
+    index_path = STATIC_DIR / "index.html"
+
+    return FileResponse(index_path)
+
+app.include_router(ai_router, prefix="/api/ai", tags=["InteligenciaArtificial"])
+app.include_router(chat_router, prefix="/api/chats", tags=["ChatInteligenciaArtificial"])
