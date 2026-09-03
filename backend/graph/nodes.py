@@ -159,10 +159,13 @@ def code_node(state: State):
         
     context.extend(recent_messages)
     
-    response = code_llm.invoke(context)
+    response = code_llm_with_tools.invoke(context)
     response.name = "GPT-OSS (20B)"
     
-    return {"messages": [response]}
+    return {
+        "messages": [response],
+        "active_node": "code_node"
+        }
     
 
 def note_node(state: State) -> State:
@@ -185,7 +188,7 @@ def note_node(state: State) -> State:
         "Retorne somente a nota final em Markdown. Comece direto pelo título."
     )
 
-    draft = note_llm_draft.invoke([
+    draft = note_llm_draft_with_tools.invoke([
         SystemMessage(content=NOTE_NODE_PROMPT),
         HumanMessage(content=generation_prompt),
     ])
@@ -256,7 +259,10 @@ def note_node(state: State) -> State:
 
     final_response.name = "Qwen3 Notas (30B)"
 
-    return {"messages": [final_response]}
+    return {
+        "messages": [final_response],
+        "active_node": "note_node"
+        }
 
 def heavy_task_node_70b(state: State):
     persona = SystemMessage(content=HEAVY_NODE_PROMPT)
@@ -271,11 +277,12 @@ def heavy_task_node_70b(state: State):
         
     context.extend(recent_messages)
     
-    response = heavy_llm.invoke(context)
+    response = heavy_llm_with_tools.invoke(context)
     response.name = "DeepSeek R1 (70B)"
     
     return {
         "messages": [response],
+        "active_node": "heavy_node"
     }
 
 def route_decision(state: State):
@@ -316,3 +323,6 @@ def summarize_node(state: State):
     response = standard_llm.invoke(recent_messages + [order])
     
     return {"summary": response.content}
+
+def return_tool_message(state: State):
+    return state["active_node"]
