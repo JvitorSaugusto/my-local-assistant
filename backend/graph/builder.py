@@ -4,11 +4,12 @@ from .config import State
 from .nodes import (
     after_enhancer_route,
     enhancer_node,
+    note_draft_node,
+    note_refine_node,
     return_tool_message,
     router_node,
     standard_node_20b,
     code_node,
-    note_node,
     heavy_task_node_70b,
     summarize_node,
     route_decision,
@@ -29,7 +30,8 @@ def build_graph():
     
     builder.add_node("standard_node_20b", standard_node_20b)
     builder.add_node("code_node", code_node)
-    builder.add_node("note_node", note_node)
+    builder.add_node("note_draft_node", note_draft_node)
+    builder.add_node("note_refine_node", note_refine_node)
     builder.add_node("heavy_task_node_70b", heavy_task_node_70b)
     builder.add_node("summarize_node", summarize_node)
     builder.add_node("enhancer_node", enhancer_node)
@@ -51,7 +53,7 @@ def build_graph():
         {
             "standard_node_20b": "standard_node_20b",
             "code_node": "code_node",
-            "note_node": "note_node",
+            "note_draft_node": "note_draft_node",
             "heavy_task_node_70b": "heavy_task_node_70b",
             "enhancer_node": "enhancer_node",
         }
@@ -67,6 +69,15 @@ def build_graph():
     )
     
     builder.add_conditional_edges(
+        "note_draft_node",
+        tools_condition,
+            {
+                "tools": "tools",
+                "__end__": "note_refine_node",
+            }
+        )
+    
+    builder.add_conditional_edges(
     "code_node",
     tools_condition,
         {
@@ -74,15 +85,6 @@ def build_graph():
             "__end__": END,
         }
     )
-    
-    builder.add_conditional_edges(
-        "note_node",
-        tools_condition,
-            {
-                "tools": "tools",
-                "__end__": END,
-            }
-        )
     
     builder.add_conditional_edges(
         "heavy_task_node_70b",
@@ -98,13 +100,13 @@ def build_graph():
             return_tool_message,
             {
                 "code_node": "code_node",
-                "note_node": "note_node",
+                "note_draft_node": "note_draft_node",
                 "heavy_task_node_70b": "heavy_task_node_70b",
             }
         )
 
 
-    builder.add_edge("enhancer_node", "router_node")
+    builder.add_edge("note_refine_node", END)
     builder.add_edge("standard_node_20b", END)
     
 

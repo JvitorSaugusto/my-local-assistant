@@ -83,14 +83,31 @@ def router_node(state: State):
         )
     else:
         msg_for_router = last_msg
+        
+    recent_messages = state["messages"][-5:-1] 
+    
+    history_str = ""
+    for m in recent_messages:
+        if m.type == "system": 
+            continue
+            
+        role = "Usuário" if m.type == "human" else "Assistente"
+        text = m.content if m.content else "[Ação: Leitura de Arquivo/Pasta]"
+        
+        content_trunc = text[:250] + "... [cortado]" if len(text) > 250 else text
+        history_str += f"{role}: {content_trunc}\n"
 
     decision = router_structured.invoke([
         SystemMessage(content=ROUTER_NODE_PROMPT),
         HumanMessage(
             content=(
+                "<contexto_da_conversa_recente>\n"
+                f"{history_str}\n"
+                "</contexto_da_conversa_recente>\n\n"
                 "<mensagem_do_usuario>\n"
                 f"{msg_for_router}\n"
-                "</mensagem_do_usuario>"
+                "</mensagem_do_usuario>\n\n"
+                "Com base no contexto acima, para qual rota esta NOVA mensagem deve ir?"
             )
         ),
     ])
@@ -180,102 +197,90 @@ def code_node(state: State):
         }
     
 
-def note_node(state: State) -> State:
-    last_user_message = state.get("enhanced_prompt") or state["messages"][-1].content
+def note_draft_node(state: State) -> State:
+    persona = SystemMessage(content=NOTE_NODE_PROMPT)
+
+    recent_messages = state["messages"][-6:]
+
+    if state.get("enhanced_prompt"):
+        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
+
+    last_user_message = recent_messages[-1].content if recent_messages else ""
 
     is_update = (
-        "##" in last_user_message
-        or "# " in last_user_message
-        or "atualiz" in last_user_message.lower()
-        or "update" in last_user_message.lower()
+        "##" in last_user_message or "# " in last_user_message
+        or "atualiz" in last_user_message.lower() or "update" in last_user_message.lower()
     )
     mode = "ATUALIZAÇÃO DE NOTA" if is_update else "GERAÇÃO DE NOTA"
 
-    generation_prompt = (
+    instruction = HumanMessage(content=(
         f"MODO: {mode}\n\n"
-        "CONTEÚDO DO USUÁRIO:\n"
-        f"<conteudo>\n{last_user_message}\n</conteudo>\n\n"
-        "Transforme o conteúdo acima em uma nota técnica seguindo "
-        "todas as regras definidas no prompt do sistema.\n\n"
-        "Retorne somente a nota final em Markdown. Comece direto pelo título."
-    )
+        "Se a nota mencionar um projeto, diretório ou arquivo real, você DEVE "
+        "chamar `list_directory_files` e/ou `read_file_content` antes de escrever "
+        "qualquer conteúdo técnico sobre ele — mesmo que você acredite já saber "
+        "a estrutura pelo histórico da conversa. Antes de cada chamada, escreva "
+        "uma linha 'Raciocínio: [motivo]'. Nunca escreva nomes de arquivos, "
+        "modelos ou tecnologias que não tenham sido confirmados por uma chamada "
+        "de ferramenta ou pela mensagem do usuário.\n\n"
+        "Transforme o conteúdo acima em uma nota técnica seguindo todas as "
+        "regras do prompt do sistema.\n\nRetorne somente a nota final em Markdown."
+    ))
 
-    draft = note_llm_draft_with_tools.invoke([
-        SystemMessage(content=NOTE_NODE_PROMPT),
-        HumanMessage(content=generation_prompt),
-    ])
+    context = [persona] + recent_messages + [instruction]
 
-    print("\n=== DRAFT ===")
-    print("length:", len(draft.content))
-    print("\n=== DRAFT META ===")
-    print(draft.response_metadata)
+    draft = note_llm_draft_with_tools.invoke(context)
+    draft.name = "Qwen3 Notas Draft"
 
-    print("\n=== DRAFT KWARGS ===")
-    print(draft.additional_kwargs)
-
-    refinement_prompt = f"""
-        Revise e aprimore a nota técnica abaixo para produzir a versão final.
-
-        Mantenha exatamente o mesmo assunto e preserve as informações corretas.
-
-        Durante a revisão:
-
-        - corrija informações tecnicamente incorretas ou imprecisas;
-        - evite afirmações absolutas quando o comportamento depender do contexto;
-        - aprofunde explicações que estejam superficiais;
-        - explique conceitos auxiliares importantes;
-        - explique o "porquê" das decisões técnicas;
-        - adicione exemplos de código quando ajudarem a compreender o conceito;
-        - adicione exemplos diferentes quando isso trouxer valor real;
-        - diferencie conceitos que possam ser confundidos;
-        - melhore a organização e a sequência da explicação;
-        - elimine redundâncias;
-        - inclua limitações, pegadinhas e erros comuns relevantes.
-
-        Preserve o conteúdo correto do rascunho.
-
-        Não troque o assunto.
-        Não invente APIs, métodos, comportamentos ou informações.
-        Não adicione conteúdo artificialmente apenas para aumentar o tamanho.
-
-        <nota>
-        {draft.content}
-        </nota>
-
-        Retorne somente a versão final da nota em Markdown.
-        """
-
-    final_response = note_llm_final.invoke([
-        HumanMessage(content=refinement_prompt),
-    ])
-    
-    print(note_llm_final)
-    print(note_llm_final.__dict__)
-
-    print("\n=== FINAL RESPONSE ===")
-    print("length:", len(final_response.content))
-    print("done_reason:", final_response.response_metadata.get("done_reason"))
-    print("CONTENT:", repr(final_response.content))
-    print("METADATA:", final_response.response_metadata)
-
-    if not final_response.content.strip():
-        final_response = draft
-        
-    if not draft.content.strip():
-        final_response = note_llm_final.invoke([
-            HumanMessage(content=(
-                "Crie a nota final diretamente a partir deste pedido:\n\n"
-                f"{last_user_message}"
-            ))
-        ])
-
-    final_response.name = "Qwen3 Notas (30B)"
+    print("\n=== DRAFT NODE ===")
+    print("Possui tool calls?", bool(draft.tool_calls))
+    if draft.content:
+        print("Tamanho do rascunho:", len(draft.content))
 
     return {
-        "messages": [final_response],
-        "active_node": "note_node", 
+        "messages": [draft],
+        "active_node": "note_draft_node",
         "enhanced_prompt": None
-        }
+    }
+    
+def note_refine_node(state: State) -> State:
+    draft_msg = state["messages"][-1]
+    draft_content = draft_msg.content
+
+    print("\n=== REFINE NODE ===")
+
+    persona = SystemMessage(content=NOTE_NODE_PROMPT)
+
+    if not draft_content or not draft_content.strip():
+        print("Aviso: Rascunho vazio chegou no Refine.")
+        recent_messages = state["messages"][-6:]
+        final_response = note_llm_final.invoke([persona] + recent_messages)
+    else:
+        refinement_prompt = f"""
+        Aqui está um rascunho de nota (uso interno, não deve aparecer na sua resposta):
+
+        <rascunho>
+        {draft_content}
+        </rascunho>
+
+        Reescreva mantendo tudo que já está correto e adicionando profundidade
+        onde fizer sentido (segundo exemplo, o "porquê" de decisões técnicas,
+        diferenciação de conceitos). Não invente informações que não estejam
+        no rascunho, no histórico da conversa ou no conteúdo lido pelas ferramentas.
+
+        Responda somente com a nota final e reescrita, em Markdown, começando
+        direto com '# '. Não inclua o rascunho nem comentários sobre o processo.
+        """
+
+        final_response = note_llm_final.invoke([
+            persona,
+            HumanMessage(content=refinement_prompt),
+        ])
+
+        if not final_response.content.strip():
+            final_response = draft_msg
+
+    final_response.name = "Qwen3 Notas Final (30B)"
+    return {"messages": [final_response]}
 
 def heavy_task_node_70b(state: State):
     persona = SystemMessage(content=HEAVY_NODE_PROMPT)
@@ -310,7 +315,7 @@ def route_decision(state: State):
     elif destiny == "HEAVY":
         return "heavy_task_node_70b"
     elif destiny == "NOTES":
-        return "note_node"
+        return "note_draft_node"
     elif destiny == "ENHANCER":
         return "enhancer_node"
     else:
