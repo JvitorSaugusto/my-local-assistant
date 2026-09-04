@@ -1,86 +1,137 @@
-# Assistente IA Local (FastAPI + LangGraph)
+# My Local Assistant
 
-Um ecossistema de assistente virtual 100% local e autônomo, desenhado para rodar em hardware dedicado (GPU/VRAM + RAM Offload). A arquitetura orquestra múltiplos Modelos de Linguagem (LLMs) através de um roteador inteligente, delegando tarefas simples para modelos rápidos na GPU e tarefas complexas para modelos gigantes processados em background.
+Um assistente de IA local, orquestrado com **LangGraph**, que roteia cada mensagem para o modelo certo — do classificador mais leve ao especialista mais pesado — e é capaz de ler o próprio código-fonte de projetos para responder, documentar e analisar com precisão.
 
----
+## 🎯 Objetivo
 
-## 🎯 Objetivo da Arquitetura
+Este projeto nasceu como um estudo aprofundado de **LangGraph** e teve como meta replicar, com modelos locais e gratuitos, padrões de ferramentas presentes em assistentes de IA comerciais bastante conhecidos — sem depender de nenhuma API paga.
 
-O princípio central do projeto é **nunca usar um modelo gigante para tudo**. 
-A persistência do sistema é garantida por um Banco de Dados relacional (PostgreSQL/SQLite), atuando como a única fonte da verdade. Integrações externas (como exportação para Notion) são tratadas apenas como *sinks* (destinos de visualização) não críticos.
+Dois exemplos concretos disso guiaram o design:
 
-### Princípios Base
-1. **O Modelo Pequeno Decide:** O roteador classifica rápido e gasta pouca memória.
-2. **O Modelo Intermediário Resolve:** A maior parte do trabalho acontece em tempo real na GPU.
-3. **O Modelo Gigante é Assíncrono:** Tarefas densas rodam isoladas, liberam recursos ao terminar e não travam a API.
-4. **O Banco é a Verdade:** Se a API cair ou o Notion ficar offline, nenhum histórico ou processamento é perdido.
+- **Leitura de diretórios e arquivos** — a mesma capacidade de "enxergar" um projeto inteiro que assistentes de código comerciais oferecem, implementada aqui como tools próprias (`list_directory_files`, `read_file_content`, `ingest_directory`).
+- **Filas de tarefas em background** — a possibilidade de disparar uma solicitação, fechar o computador, e o processamento continuar rodando via **Celery**, sem depender de a aplicação ficar aberta.
 
----
+## 🏗️ Arquitetura
 
-## 🤖 Alocação de Hardware e Modelos
+O sistema é dividido em múltiplos modelos de tamanhos e propósitos diferentes, orquestrados por um grafo de estado (LangGraph). A ideia central é nunca usar um modelo maior do que o necessário para cada tarefa:
 
-O sistema utiliza o LangGraph para rotear as requisições para o nó/modelo mais adequado:
+```
+                         MENSAGEM DO USUÁRIO
+                                 │
+                                 ▼
+                      check_context_limit
+                        (conversa muito longa?)
+                          │              │
+                          ▼              ▼
+                  summarize_node    router_node
+                   (resume o          │
+                    histórico)        │
+                          └──────────►│
+                                      ▼
+                    tag explícita (@heavy / @enhance)?
+                    ou classificação por LLM (NORMAL/CODE/NOTES)
+                          │
+        ┌─────────┬───────┼────────────┬──────────────┐
+        ▼         ▼       ▼            ▼              ▼
+  standard_node  code_node  note_draft_node   heavy_task_node_70b   enhancer_node
+  (conversa   (código,   (notas técnicas,  (análise profunda,      (reescreve o
+   geral)      com          com tools de      arquitetura, com       prompt antes
+               tools de     leitura +         leitura completa       de rotear)
+               leitura)     refino em          do projeto)
+                            2 passadas)
+```
 
-| Nó / Função | Modelo Configurado | Hardware | Objetivo Principal |
+Nós que possuem ferramentas (`code_node`, `note_draft_node`, `heavy_task_node_70b`) passam por um `ToolNode` compartilhado sempre que a LLM solicita uma chamada de ferramenta — o resultado retorna automaticamente para o **mesmo nó que fez a chamada**, através de uma "etiqueta" (`active_node`) gravada no estado do grafo.
+
+## 🤖 Modelos e Funções
+
+| Modelo | Papel | Ferramentas | Observações |
 |---|---|---|---|
-| **Roteador** | `qwen3:4b` | CPU/RAM | Analisar o prompt estruturado (JSON) e decidir o fluxo. |
-| **Generalista** | `gpt-oss:20b` | GPU / VRAM | Bate-papo, tarefas em tempo real e RAG. |
-| **Coder** | `gpt-oss:20b` | GPU / VRAM | Geração e explicação de código (Python, SQL, etc). |
-| **Notes (Draft & Final)** | `qwen3:30b-a3b` | GPU / VRAM | Criação de documentações técnicas complexas (uso de tags `<think>`). |
-| **Heavy Task** | `DeepSeek-R1:70b` | VRAM + RAM Offload | Tarefas assíncronas longas, arquitetura e análise de repositórios. |
+| `qwen3:4b` | Roteador — classifica a intenção da mensagem (`NORMAL`, `CODE`, `NOTES`) | — | Saída estruturada (schema Pydantic), temperatura 0, sem espaço para ambiguidade |
+| `gpt-oss:20b` | Generalista (`standard_node_20b`) e Aprimorador de prompt (`enhancer_node`) | — | Modelo padrão para conversas do dia a dia e para reescrever prompts antes do roteamento |
+| `gpt-oss:20b` | Código (`code_node`) | leitura cirúrgica (`list_directory_files`, `read_file_content`) | Foco em tarefas de programação; lê apenas os arquivos que precisa, um de cada vez |
+| `qwen3:30b-a3b` | Notas técnicas (`note_draft_node` + `note_refine_node`) | leitura cirúrgica (só no rascunho) | Geração em duas passadas: um rascunho e uma etapa de aprofundamento/revisão |
+| `DeepSeek-R1:70b` | Análise profunda e arquitetura (`heavy_task_node_70b`) | leitura completa (inclui `ingest_directory`) | Reservado para tarefas complexas — acionado explicitamente via tag `@heavy` |
 
----
+## 🔀 Roteamento
 
-## 🔄 Fluxos de Execução
+Cada mensagem passa por duas camadas de decisão:
 
-### 1. Fluxo Síncrono (Normal)
-Usado para perguntas, código e geração de notas. A requisição HTTP aguarda a resposta do modelo.
-`Usuário ➔ Roteador (4B) ➔ Nó Específico (20B/30B) ➔ Resposta Imediata`
+1. **Tags explícitas** — o usuário pode forçar o caminho digitando `@heavy` (força o modelo especialista) ou `@enhance` (reescreve o prompt antes de prosseguir). As duas podem ser combinadas (`@enhance` + `@heavy` na mesma mensagem), reescrevendo o prompt e enviando o resultado direto para o modelo pesado.
+2. **Classificação por LLM** — na ausência de uma tag, um classificador leve (`qwen3:4b`) decide entre `NORMAL`, `CODE` e `NOTES`, considerando também um resumo das mensagens recentes da conversa para entender o contexto.
 
-### 2. Fluxo Assíncrono (Tarefas Pesadas)
-Usado quando o prompt exige processamento massivo (ex: `@heavy`). A API não bloqueia.
-1. Usuário envia o prompt.
-2. API salva no Banco de Dados (`status = pending`).
-3. API devolve um `task_id` imediatamente.
-4. **Celery Worker** assume a tarefa em background.
-5. Modelos leves são descarregados da VRAM (`keep_alive=0`).
-6. O modelo Gigante (70B) é carregado e processa a requisição.
-7. O resultado é salvo no Banco (`status = completed`).
-8. Notificações e exportações (ex: Notion) são disparadas.
+## 🛠️ Ferramentas (Tools)
 
----
+| Ferramenta | O que faz | Quem usa |
+|---|---|---|
+| `list_directory_files` | Mapeia recursivamente os arquivos de código de uma pasta (ignorando `.git`, `node_modules`, ambientes virtuais, etc.) | Código, Notas, Análise Profunda |
+| `read_file_content` | Lê o conteúdo de um único arquivo específico | Código, Notas, Análise Profunda |
+| `ingest_directory` | Lê o conteúdo de todos os arquivos de um projeto de uma só vez | Somente Análise Profunda |
 
-## 🏗️ Estrutura Lógica do Sistema
+A divisão não é arbitrária: modelos menores (`gpt-oss:20b`, `qwen3:30b-a3b`) recebem apenas as ferramentas de leitura cirúrgica, reduzindo o risco de tentarem processar contexto demais de uma vez. `ingest_directory` fica reservada ao modelo de 70B, que tem janela de contexto e capacidade de síntese suficientes para lidar com um projeto inteiro em uma única chamada.
 
-```text
-                       FRONTEND (Streamlit)
-                               │
-                               ▼
-                            FastAPI
-                               │
-              ┌────────────────┴────────────────┐
-              │                                 │
-              ▼                                 ▼
-          PostgreSQL                       LangGraph
-         (Histórico)                       (Roteador)
-              │                    ┌────────────┴────────────┐
-              │                    ▼                         ▼
-              │            Nós Síncronos               Heavy Node
-              │         (General, Code, Note)         /tasks/heavy
-              │                    │                         │
-              │                    ▼                         ▼
-              │             Retorna ao Front               Celery
-              │                                              │
-              │                                              ▼
-              │                                      Background Worker
-              │                                              │
-              │                                              ▼
-              │                                        DeepSeek-R1 (70B)
-              └────────────────┬─────────────────────────────┘
-                               ▼
-                  database.crud.save_result()
-                               │
-                      ┌────────┴────────┐
-                      ▼                 ▼
-                 Notion Adapter     Notificador (OS/Telegram)
-                  (Opcional)
+## 📝 Fluxo de Geração de Notas
+
+A criação de notas técnicas acontece em duas etapas, em vez de uma única chamada:
+
+1. **Rascunho** (`note_draft_node`) — gera uma primeira versão, usando as ferramentas de leitura quando a nota depende de um projeto ou arquivo real.
+2. **Refino** (`note_refine_node`) — revisa o rascunho, aprofundando seções rasas e adicionando exemplos, sem ferramentas — o objetivo aqui é lapidar o texto, não buscar mais informação.
+
+## ⏳ Processamento em Background (Filas)
+
+Tarefas podem ser enviadas para uma fila **Celery** (com **Redis** como broker), permitindo que múltiplas solicitações sejam processadas de forma assíncrona — inclusive continuando após o encerramento da aplicação ou do computador que a originou. O resultado de cada execução é persistido no banco de dados, então nada se perde entre o disparo da tarefa e sua conclusão.
+
+## 💾 Persistência
+
+O histórico de cada conversa é mantido pelo próprio **checkpointer do LangGraph**, apoiado em **PostgreSQL** — cada conversa é identificada por um `thread_id`, e o estado completo (mensagens, resumo, rota ativa) é automaticamente salvo e recuperado a cada interação, sem necessidade de lógica manual de persistência de mensagens.
+
+## 🖥️ Frontend
+
+Interface web simples (HTML, CSS e JavaScript puros), gerada com auxílio de IA.
+
+## 📁 Estrutura do Projeto
+
+```
+my-local-assistant/
+│
+├── reset.py
+├── tasks.py                    # Definição das tarefas Celery
+│
+├── alembic/                    # Migrations do banco (metadados de chats)
+│   ├── env.py
+│   └── versions/
+│
+└── backend/
+    ├── main.py                 # Ponto de entrada FastAPI + lifespan (checkpointer)
+    │
+    ├── adapters/                # Integrações externas
+    │   ├── filesystem.py
+    │   └── notion.py
+    │
+    ├── api/
+    │   ├── schemas.py
+    │   ├── services.py
+    │   └── controllers/
+    │       ├── ai_controller.py    # Rotas de chat, histórico e fila
+    │       └── chat_controller.py
+    │
+    ├── database/
+    │   ├── config.py
+    │   └── models.py
+    │
+    ├── graph/                   # Núcleo do LangGraph
+    │   ├── builder.py           # Montagem do grafo (nós e arestas)
+    │   ├── config.py            # Modelos, State e bind de tools
+    │   ├── nodes.py             # Lógica de cada nó
+    │   ├── prompts.py           # System prompts de cada modelo
+    │   ├── tools.py             # Ferramentas de leitura de arquivos
+    │   └── utils.py             # Detecção de tags explícitas
+    │
+    └── static/                  # Frontend (HTML/CSS/JS)
+```
+
+## 🔮 Roadmap
+
+- Ferramenta de web scraping, para consulta de documentações externas;
+- Ferramenta de leitura de imagens;
+- Geração de PDFs a partir de conteúdo estruturado.
