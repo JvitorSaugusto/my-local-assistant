@@ -48,12 +48,12 @@ FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content]
 FILE_TOOLS_FULL = [list_directory_files, read_file_content, ingest_directory]
 
 
-router_structured = load_llm().with_structured_output(RouteDecision).with_config(config={"configurable": { "model": "qwen3:4b", "temperature": 0.0, "max_tokens": 32,}})
+router_structured = load_llm().with_structured_output(RouteDecision).with_config(config={"configurable": { "model": "qwen3:4b", "temperature": 0.0, "max_tokens": 100,}})
 standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=16384,)
 code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=16384,)
 note_llm_draft = ChatOllama(model="qwen3:30b-a3b", temperature=0.2, num_predict=8192, num_ctx=32768, think=True,)
 note_llm_final = ChatOllama(model="qwen3:30b-a3b", temperature=0.2, num_predict=24576, num_ctx=32768, think=True,)
-heavy_llm = ChatOllama(model="DeepSeek-R1:70b", temperature=0.1, num_predict=16384, num_ctx=32768)
+heavy_llm = ChatOllama(model="DeepSeek-R1:70b", temperature=0.1, num_predict=16384, num_ctx=65536)
 
 code_llm_with_tools = code_llm.bind_tools(FILE_TOOLS_SURGICAL)
 note_llm_draft_with_tools = note_llm_draft.bind_tools(FILE_TOOLS_SURGICAL)
