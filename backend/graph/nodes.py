@@ -21,7 +21,6 @@ from .prompts import (
 from .utils import detect_explicit_route, strip_leading_tags
 
 
-
 def router_node(state: State):
     if state.get("enhanced_prompt"):
         last_msg = state["enhanced_prompt"]
@@ -139,7 +138,7 @@ def enhancer_node(state: State):
     
 def after_enhancer_route(state: State):
     if state.get("enhance_before_heavy"):
-        return "heavy_task_node_70b"
+        return "heavy_task_node"
 
     return "router_node"
 
@@ -282,7 +281,7 @@ def note_refine_node(state: State) -> State:
     final_response.name = "Qwen3 Notas Final (30B)"
     return {"messages": [final_response]}
 
-def heavy_task_node_70b(state: State):
+def heavy_task_node(state: State):
     persona = SystemMessage(content=HEAVY_NODE_PROMPT)
     
     actual_summary = state.get("summary", "")
@@ -303,7 +302,7 @@ def heavy_task_node_70b(state: State):
     
     return {
         "messages": [response],
-        "active_node": "heavy_task_node_70b",
+        "active_node": "heavy_task_node",
         "enhanced_prompt": None
     }
 
@@ -313,7 +312,7 @@ def route_decision(state: State):
     if destiny == "CODE":
         return "code_node"
     elif destiny == "HEAVY":
-        return "heavy_task_node_70b"
+        return "heavy_task_node"
     elif destiny == "NOTES":
         return "note_draft_node"
     elif destiny == "ENHANCER":

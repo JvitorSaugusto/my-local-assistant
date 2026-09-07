@@ -10,19 +10,19 @@ from .nodes import (
     router_node,
     standard_node_20b,
     code_node,
-    heavy_task_node_70b,
+    heavy_task_node,
     summarize_node,
     route_decision,
     check_context_limit,
 )
 
-from .tools import ingest_directory, list_directory_files, read_file_content
+from .tools import generate_repo_map, list_directory_files, read_file_content
 
 
 def build_graph():
     builder = StateGraph(State)
     
-    all_tools = [list_directory_files, read_file_content, ingest_directory]
+    all_tools = [list_directory_files, read_file_content, generate_repo_map]
     
     builder.add_node("tools", ToolNode(all_tools))
 
@@ -32,7 +32,7 @@ def build_graph():
     builder.add_node("code_node", code_node)
     builder.add_node("note_draft_node", note_draft_node)
     builder.add_node("note_refine_node", note_refine_node)
-    builder.add_node("heavy_task_node_70b", heavy_task_node_70b)
+    builder.add_node("heavy_task_node", heavy_task_node)
     builder.add_node("summarize_node", summarize_node)
     builder.add_node("enhancer_node", enhancer_node)
     
@@ -54,7 +54,7 @@ def build_graph():
             "standard_node_20b": "standard_node_20b",
             "code_node": "code_node",
             "note_draft_node": "note_draft_node",
-            "heavy_task_node_70b": "heavy_task_node_70b",
+            "heavy_task_node": "heavy_task_node",
             "enhancer_node": "enhancer_node",
         }
     )
@@ -63,7 +63,7 @@ def build_graph():
         "enhancer_node",
         after_enhancer_route,
         {
-            "heavy_task_node_70b": "heavy_task_node_70b",
+            "heavy_task_node": "heavy_task_node",
             "router_node": "router_node",
         },
     )
@@ -87,7 +87,7 @@ def build_graph():
     )
     
     builder.add_conditional_edges(
-        "heavy_task_node_70b",
+        "heavy_task_node",
         tools_condition,
             {
                 "tools": "tools",
@@ -101,7 +101,7 @@ def build_graph():
             {
                 "code_node": "code_node",
                 "note_draft_node": "note_draft_node",
-                "heavy_task_node_70b": "heavy_task_node_70b",
+                "heavy_task_node": "heavy_task_node",
             }
         )
 

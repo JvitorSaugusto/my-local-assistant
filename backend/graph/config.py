@@ -7,7 +7,7 @@ from langchain_core.messages import BaseMessage
 from langchain.chat_models import init_chat_model
 from typing import Annotated, Literal, NotRequired, TypedDict, cast
 from pydantic import Field
-from backend.graph.tools import ingest_directory, list_directory_files, read_file_content
+from backend.graph.tools import generate_repo_map, ingest_directory, list_directory_files, read_file_content
 
     
 class RouteDecision(BaseModel):
@@ -25,35 +25,20 @@ class State(TypedDict):
     enhance_before_heavy: bool
     active_node: str
     enhanced_prompt: str | None
-    
-def load_llm() -> BaseChatModel:
-    model = cast(
-        "BaseChatModel",
-        init_chat_model(
-            model="gpt-oss:20b",
-            model_provider="ollama",
-            temperature=0.2,
-            configurable_fields=("model", "model_provider", "temperature", "max_tokens"),
-        ),
-    )
-
-    assert hasattr(model, "bind_tools")
-    assert hasattr(model, "invoke")
-    assert hasattr(model, "with_config")
-
-    return model
-
 
 FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content]
-FILE_TOOLS_FULL = [list_directory_files, read_file_content, ingest_directory]
+FILE_TOOLS_FULL = [list_directory_files, read_file_content, generate_repo_map]
 
 
-router_structured = load_llm().with_structured_output(RouteDecision).with_config(config={"configurable": { "model": "qwen3:4b", "temperature": 0.0, "max_tokens": 100,}})
-standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=16384,)
-code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=16384,)
-note_llm_draft = ChatOllama(model="qwen3:30b-a3b", temperature=0.2, num_predict=8192, num_ctx=32768, think=True,)
-note_llm_final = ChatOllama(model="qwen3:30b-a3b", temperature=0.2, num_predict=24576, num_ctx=32768, think=True,)
-heavy_llm = ChatOllama(model="DeepSeek-R1:70b", temperature=0.1, num_predict=16384, num_ctx=65536)
+router_structured = ChatOllama(model="qwen3:4b", temperature=0.0, num_predict=200, num_ctx=8192,).with_structured_output(RouteDecision)
+
+standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=131072)
+code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=131072)
+
+note_llm_draft = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=8192, num_ctx=65536, think=True)
+note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=24576, num_ctx=65536, think=True)
+
+heavy_llm = ChatOllama(model="deepseek-r1:32b", temperature=0.6, num_predict=16384, num_ctx=65536)
 
 code_llm_with_tools = code_llm.bind_tools(FILE_TOOLS_SURGICAL)
 note_llm_draft_with_tools = note_llm_draft.bind_tools(FILE_TOOLS_SURGICAL)

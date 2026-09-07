@@ -1,5 +1,7 @@
 from pathlib import Path
 import os
+import re
+import ast
 from langchain_core.tools import tool
 
 @tool
@@ -55,44 +57,78 @@ def read_file_content(file_path: str) -> str:
         return f"Erro ao ler o arquivo: {str(error)}"
     
 
+def parse_python_ast(content: str, indent: str) -> list:
+    """Usa o AST para extrair classes e funções com precisão cirúrgica no Python"""
+    signatures = []
+    try:
+        tree = ast.parse(content)
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                signatures.append(f"{indent}    🔹 class {node.name}:")
+                # Pega os métodos dentro da classe
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef) or isinstance(child, ast.AsyncFunctionDef):
+                        signatures.append(f"{indent}        🔸 def {child.name}(...)")
+            
+            elif isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
+                signatures.append(f"{indent}    🔹 def {node.name}(...)")
+    except Exception:
+        signatures.append(f"{indent}    ⚠️ (Erro de sintaxe no AST)")
+    return signatures
+
 @tool
-def ingest_directory(dir_path: str) -> dict:
+def generate_repo_map(dir_path: str) -> str:
     """
-    Lê uma pasta inteira no computador e retorna o conteúdo de todos os arquivos de código encontrados.
-    Use esta ferramenta quando precisar analisar projetos inteiros, ler códigos-fonte de um diretório ou
-    buscar o contexto de múltiplos arquivos de uma só vez (ex: auditorias de segurança ou documentação).
-    
-    A ferramenta ignora automaticamente pastas de sistema (como node_modules, .git, venv) e
-    captura apenas arquivos com extensões de programação (ex: .py, .js, .html, .css).
+    Gera um mapa estrutural do repositório, exibindo a árvore de arquivos e 
+    as assinaturas de classes e funções, sem o corpo do código.
+    Use isso para entender a arquitetura completa antes de decidir quais arquivos ler integralmente.
     
     Args:
-        dir_path (str): O caminho completo (absoluto ou relativo) da pasta que deve ser lida.
+        dir_path (str): O caminho da pasta que deve ser mapeada.
         
     Returns:
-        dict: Um dicionário onde as chaves são os caminhos dos arquivos e os valores são os textos (códigos) contidos neles.
+        str: Uma representação em texto da árvore do projeto com as assinaturas de código.
     """
-    CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.php', '.html', '.css', '.sql'}
+    CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.php'}
     IGNORED_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', 'env'}
+    
+    REGEX_FALLBACK = re.compile(
+        r'^\s*(?:export\s+)?(?:async\s+)?(?:function|class)\s+\w+'
+        r'|^\s*(?:public|private|protected)\s+(?:static\s+)?(?:function)\s+\w+', 
+        re.MULTILINE
+    )
 
-    result = {}
-
+    repo_map = [f"Mapa do Repositório: {dir_path}\n"]
+    
     for root, dirs, files in os.walk(dir_path):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
         
-        allowed_dirs = []
-        for dir_name in dirs:
-            if dir_name not in IGNORED_DIRS:
-                allowed_dirs.append(dir_name)
-                
-        dirs[:] = allowed_dirs
+        level = root.replace(dir_path, '').count(os.sep)
+        indent = ' ' * 4 * level
+        folder_name = os.path.basename(root)
+        
+        if folder_name:
+            repo_map.append(f"{indent}📂 {folder_name}/")
+            
+        sub_indent = ' ' * 4 * (level + 1)
         
         for file_name in files:
-            if Path(file_name).suffix in CODE_EXTENSIONS:
+            ext = Path(file_name).suffix
+            if ext in CODE_EXTENSIONS:
                 file_path = Path(root) / file_name
-
+                repo_map.append(f"{sub_indent}📄 {file_name}")
+                
                 try:
-                    result[str(file_path)] = file_path.read_text(encoding='utf-8')
-
-                except UnicodeDecodeError:
-                    continue
-
-    return result
+                    content = file_path.read_text(encoding='utf-8')
+                    
+                    if ext == '.py':
+                        py_sigs = parse_python_ast(content, sub_indent)
+                        repo_map.extend(py_sigs)
+                    else:
+                        signatures = REGEX_FALLBACK.findall(content)
+                        for sig in signatures:
+                            repo_map.append(f"{sub_indent}    🔹 {sig.strip()}")
+                except Exception:
+                    repo_map.append(f"{sub_indent}    ⚠️ (Erro ao ler arquivo)")
+                    
+    return "\n".join(repo_map)
