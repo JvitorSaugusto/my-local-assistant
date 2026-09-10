@@ -1,4 +1,9 @@
+import re
 import time
+from backend.database.config import async_session_env
+from backend.database.models import TaskModel
+from langchain_core.messages import AIMessage
+from sqlalchemy import select, update
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from .config import (
@@ -9,7 +14,8 @@ from .config import (
     note_llm_draft_with_tools,
     note_llm_final,
     context_gatherer_llm_with_tools,
-    heavy_llm,
+    heavy_llm_structured,
+    generate_llm_with_tools,
 )
 
 from .prompts import (
@@ -75,6 +81,20 @@ def router_node(state: State):
 
         return {
             "actual_route": "ENHANCER",
+            "enhance_before_heavy": False,
+        }
+    
+    if state.get("active_generate_task"):
+        print("🔀 [ROUTER] Rota de Execução em Background: 'GENERATE_EXECUTE'")
+        return {
+            "actual_route": "GENERATE_EXECUTE",
+            "enhance_before_heavy": False,
+        }
+
+    if "@generate" in last_msg.lower():
+        print("🔀 [ROUTER] Rota de Despacho: 'GENERATE_DISPATCH'")
+        return {
+            "actual_route": "GENERATE_DISPATCH",
             "enhance_before_heavy": False,
         }
         
@@ -197,7 +217,112 @@ def code_node(state: State):
         "enhanced_prompt": None
         }
     
+async def generate_dispatch_node(state: State):
+    last_msg = state["messages"][-1].content.lower()
+    thread_id = state["thread_id"]
 
+    match = re.search(r'@generate\s+(.*)', last_msg)
+    target_ids = []
+    if match:
+        target_ids = [int(x) for x in re.findall(r'\d+', match.group(1))]
+
+    from tasks import run_generate_task
+
+    dispatched_count = 0
+
+    async with async_session_env() as db:
+        stmt = select(TaskModel).where(
+            TaskModel.thread_id == thread_id,
+            TaskModel.status == "pending"
+        )
+
+        if target_ids:
+            stmt = stmt.where(TaskModel.id.in_(target_ids))
+
+        result = await db.execute(stmt)
+        tasks_to_run = result.scalars().all()
+
+        if not tasks_to_run:
+            return {
+                "messages": [AIMessage(content="Nenhuma tarefa pendente foi encontrada no banco para executar.")],
+                "active_node": "generate_dispatch_node",
+            }
+
+        for task in tasks_to_run:
+            
+            task_dict = {
+                "id": task.id,
+                "title": task.title,
+                "description": task.description,
+                "files": task.files,
+                "reason": task.reason,
+                "priority": task.priority,
+                "status": "queued"
+            }
+            
+            run_generate_task.delay(thread_id, task_dict)
+            
+            task.status = "queued"
+            dispatched_count += 1
+            
+        await db.commit()
+
+    msg_retorno = f"{dispatched_count} tarefa(s) enviada(s) para execução em background (Celery)."
+
+    return {
+        "messages": [AIMessage(content=msg_retorno)],
+        "active_node": "generate_dispatch_node",
+    }
+
+async def generate_node(state: State):
+    persona = SystemMessage(content=GENERATE_NODE_PROMPT)
+    actual_summary = state.get("summary", "")
+    recent_messages = state["messages"][-1:]
+
+    context = [persona]
+
+    if actual_summary:
+        context.append(SystemMessage(content=f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}"))
+
+    task = state.get("active_generate_task")
+
+    if task:
+        context.append(
+            SystemMessage(
+                content=(
+                    "TAREFA DE IMPLEMENTAÇÃO:\n\n"
+                    f"{task.model_dump_json(indent=2)}"
+                )
+            )
+        )
+
+    if state.get("enhanced_prompt"):
+        recent_messages[-1] = HumanMessage(content=state["enhanced_prompt"])
+
+    context.extend(recent_messages)
+
+    response = await generate_llm_with_tools.ainvoke(context)
+    response.name = "Qwen3-Coder (Generate)"
+
+
+    if task:
+        
+        async with async_session_env() as db:
+            stmt = (
+                update(TaskModel)
+                .where(TaskModel.id == task.id)
+                .values(status="completed")
+            )
+            await db.execute(stmt)
+            await db.commit()
+
+    return {
+        "messages": [response],
+        "active_node": "generate_node",
+        "enhanced_prompt": None,
+        "active_generate_task": None #
+    }
+    
 def note_draft_node(state: State) -> State:
     persona = SystemMessage(content=NOTE_NODE_PROMPT)
 
@@ -345,7 +470,7 @@ def context_gatherer_node(state: State):
         "enhanced_prompt": None,
     }
 
-def heavy_analyzer_node(state: State):
+async def heavy_analyzer_node(state: State):
     persona = SystemMessage(content=HEAVY_NODE_PROMPT)
     actual_summary = state.get("summary", "")
     dossier = state.get("heavy_context", "")
@@ -383,14 +508,39 @@ def heavy_analyzer_node(state: State):
     
     start_time = time.time()
     
-    response = heavy_llm.invoke(context)
-    
+    result = await heavy_llm_structured.ainvoke(context)
+
     elapsed_time = time.time() - start_time
-    print(f"TEMPO DE RESPOSTA DO R1: {elapsed_time:.2f} segundos")
-    response.name = "DeepSeek R1 (32B)"
+
+    print(
+        f"TEMPO DE RESPOSTA DO R1: "
+        f"{elapsed_time:.2f} segundos"
+    )
+
+    response = AIMessage(
+        content=result.analysis,
+        name="DeepSeek R1 (32B)",
+    )
+
+    if result.tasks:
+        async with async_session_env() as db:
+            for task in result.tasks:
+                nova_tarefa = TaskModel(
+                    thread_id=state["thread_id"],
+                    title=task.title,
+                    description=task.description,
+                    files=task.files,
+                    reason=task.reason,
+                    priority=task.priority,
+                    status="pending"
+                )
+                db.add(nova_tarefa)
+            await db.commit() # Salva tudo de uma vez
+
 
     print("\n===== HEAVY ANALYZER =====")
-    print("CONTENT LENGTH:", len(response.content))
+    print("TASKS GERADAS E SALVAS:", len(result.tasks))
+    print("CONTENT LENGTH:", len(result.analysis))
     print("==========================\n")
 
     return {
@@ -398,6 +548,7 @@ def heavy_analyzer_node(state: State):
         "heavy_context": None,
         "enhanced_prompt": None,
         "active_node": "heavy_analyzer_node",
+
     }
     
 def route_decision(state: State):
@@ -406,6 +557,8 @@ def route_decision(state: State):
     elif destiny == "HEAVY": return "context_gatherer_node"
     elif destiny == "NOTES": return "note_draft_node"
     elif destiny == "ENHANCER": return "enhancer_node"
+    elif destiny == "GENERATE_DISPATCH": return "generate_dispatch_node" # Disparado pelo seu texto
+    elif destiny == "GENERATE_EXECUTE": return "generate_node" # Disparado pelo Celery
     return "standard_node_20b"
 
 def check_context_limit(state: State):
