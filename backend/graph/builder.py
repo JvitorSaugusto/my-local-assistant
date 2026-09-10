@@ -3,20 +3,22 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from .config import State
 from .nodes import (
     after_enhancer_route,
+    context_gatherer_node,
     enhancer_node,
+    heavy_analyzer_node,
     note_draft_node,
     note_refine_node,
     return_tool_message,
     router_node,
     standard_node_20b,
     code_node,
-    heavy_task_node,
     summarize_node,
     route_decision,
     check_context_limit,
 )
 
 from .tools import generate_repo_map, list_directory_files, read_file_content
+
 
 
 def build_graph():
@@ -32,7 +34,8 @@ def build_graph():
     builder.add_node("code_node", code_node)
     builder.add_node("note_draft_node", note_draft_node)
     builder.add_node("note_refine_node", note_refine_node)
-    builder.add_node("heavy_task_node", heavy_task_node)
+    builder.add_node("context_gatherer_node", context_gatherer_node)
+    builder.add_node("heavy_analyzer_node", heavy_analyzer_node)
     builder.add_node("summarize_node", summarize_node)
     builder.add_node("enhancer_node", enhancer_node)
     
@@ -54,7 +57,7 @@ def build_graph():
             "standard_node_20b": "standard_node_20b",
             "code_node": "code_node",
             "note_draft_node": "note_draft_node",
-            "heavy_task_node": "heavy_task_node",
+            "context_gatherer_node": "context_gatherer_node",
             "enhancer_node": "enhancer_node",
         }
     )
@@ -63,7 +66,7 @@ def build_graph():
         "enhancer_node",
         after_enhancer_route,
         {
-            "heavy_task_node": "heavy_task_node",
+            "context_gatherer_node": "context_gatherer_node",
             "router_node": "router_node",
         },
     )
@@ -85,26 +88,27 @@ def build_graph():
             "__end__": END,
         }
     )
-    
-    builder.add_conditional_edges(
-        "heavy_task_node",
-        tools_condition,
-            {
-                "tools": "tools",
-                "__end__": END,
-            }
-        )
-    
-    builder.add_conditional_edges(
-            "tools",
-            return_tool_message,
-            {
-                "code_node": "code_node",
-                "note_draft_node": "note_draft_node",
-                "heavy_task_node": "heavy_task_node",
-            }
-        )
 
+    builder.add_conditional_edges(
+        "context_gatherer_node",
+        tools_condition, 
+        {
+            "tools": "tools", 
+            "__end__": "heavy_analyzer_node"
+        }
+    )
+    
+    builder.add_conditional_edges(
+        "tools", 
+        return_tool_message, 
+        {
+            "code_node": "code_node",
+            "note_draft_node": "note_draft_node", 
+            "context_gatherer_node": "context_gatherer_node"
+        }
+    )
+    
+    builder.add_edge("heavy_analyzer_node", END)
 
     builder.add_edge("note_refine_node", END)
     builder.add_edge("standard_node_20b", END)

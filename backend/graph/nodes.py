@@ -1,3 +1,5 @@
+import time
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from .config import (
     State,
@@ -6,10 +8,12 @@ from .config import (
     code_llm_with_tools,
     note_llm_draft_with_tools,
     note_llm_final,
-    heavy_llm_with_tools,
+    context_gatherer_llm_with_tools,
+    heavy_llm,
 )
 
 from .prompts import (
+    CONTEXT_GATHERER_PROMPT,
     PROMPT_ENHANCER_NODE_PROMPT,
     ROUTER_NODE_PROMPT,
     STANDARD_NODE_PROMPT,
@@ -137,9 +141,7 @@ def enhancer_node(state: State):
     return {"enhanced_prompt": response.content,}
     
 def after_enhancer_route(state: State):
-    if state.get("enhance_before_heavy"):
-        return "heavy_task_node"
-
+    if state.get("enhance_before_heavy"): return "context_gatherer_node" # Redireciona pro Coletor
     return "router_node"
 
 def standard_node_20b(state: State):
@@ -281,49 +283,144 @@ def note_refine_node(state: State) -> State:
     final_response.name = "Qwen3 Notas Final (30B)"
     return {"messages": [final_response]}
 
-def heavy_task_node(state: State):
-    persona = SystemMessage(content=HEAVY_NODE_PROMPT)
-    
+def context_gatherer_node(state: State):
+    persona = SystemMessage(
+        content=CONTEXT_GATHERER_PROMPT
+    )
+
     actual_summary = state.get("summary", "")
-    recent_messages = state["messages"][-10:]
-    context = [persona]
-    
+
+    last_human_idx = 0
+    for i in range(len(state["messages"]) - 1, -1, -1):
+        if state["messages"][i].type == "human":
+            last_human_idx = i
+            break
+
+    start_idx = max(0, last_human_idx - 4)
+    recent_messages = state["messages"][start_idx:].copy()
+
     if state.get("enhanced_prompt"):
-        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
-        
+        enhanced = HumanMessage(
+            content=state["enhanced_prompt"]
+        )
+
+        for index in range(len(recent_messages) - 1, -1, -1):
+            if recent_messages[index].type == "human":
+                recent_messages[index] = enhanced
+                break
+
+    context = [persona]
+
     if actual_summary:
-        summary_memory = SystemMessage(content=f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}")
-        context.append(summary_memory)
-        
+        context.append(
+            SystemMessage(
+                content=f"RESUMO DA CONVERSA:\n{actual_summary}"
+            )
+        )
+
     context.extend(recent_messages)
-    
-    response = heavy_llm_with_tools.invoke(context)
-    response.name = "DeepSeek R1 (70B)"
-    
+
+    response = context_gatherer_llm_with_tools.invoke(context)
+
+    response.name = "Qwen3-Coder (Context Gatherer)"
+
+    print("\n===== CONTEXT GATHERER =====")
+    print("TOOL_CALLS:", response.tool_calls)
+
+    if response.content:
+        print("CONTENT LENGTH:", len(response.content))
+
+    print("============================\n")
+
+    if response.tool_calls:
+        return {
+            "messages": [response],
+            "active_node": "context_gatherer_node",
+            "enhanced_prompt": None,
+        }
+
     return {
-        "messages": [response],
-        "active_node": "heavy_task_node",
-        "enhanced_prompt": None
+        "heavy_context": response.content,
+        "active_node": "context_gatherer_node",
+        "enhanced_prompt": None,
     }
 
+def heavy_analyzer_node(state: State):
+    persona = SystemMessage(content=HEAVY_NODE_PROMPT)
+    actual_summary = state.get("summary", "")
+    dossier = state.get("heavy_context", "")
+
+    user_request = None
+    for message in reversed(state["messages"]):
+        if message.type == "human":
+            user_request = message
+            break
+
+    context = [persona]
+
+    if actual_summary:
+        context.append(SystemMessage(content=f"RESUMO DA CONVERSA:\n{actual_summary}"))
+        
+    if dossier and dossier.strip():
+        context.append(
+            SystemMessage(
+                content=(
+                    "--- DOSSIÊ TÉCNICO (DADOS COLETADOS DO SISTEMA) ---\n"
+                    f"{dossier}\n"
+                    "---------------------------------------------------\n"
+                    "AVISO DE SISTEMA: Se o usuário pedir para analisar arquivos ou repositórios, "
+                    "assuma que os dados do Dossiê acima são as leituras reais. "
+                    "NÃO diga que você não tem acesso ao sistema ou não pode ler arquivos. "
+                    "Apenas forneça a análise com base no Dossiê."
+                )
+            )
+        )
+
+    if user_request:
+        context.append(user_request)
+
+    print(f"\n[⏳ AGUARDE] DeepSeek R1 processando {len(context)} mensagens...")
+    
+    start_time = time.time()
+    
+    response = heavy_llm.invoke(context)
+    
+    elapsed_time = time.time() - start_time
+    print(f"TEMPO DE RESPOSTA DO R1: {elapsed_time:.2f} segundos")
+    response.name = "DeepSeek R1 (32B)"
+
+    print("\n===== HEAVY ANALYZER =====")
+    print("CONTENT LENGTH:", len(response.content))
+    print("==========================\n")
+
+    return {
+        "messages": [response],
+        "heavy_context": None,
+        "enhanced_prompt": None,
+        "active_node": "heavy_analyzer_node",
+    }
+    
 def route_decision(state: State):
     destiny = state.get("actual_route", "NORMAL")
-    
-    if destiny == "CODE":
-        return "code_node"
-    elif destiny == "HEAVY":
-        return "heavy_task_node"
-    elif destiny == "NOTES":
-        return "note_draft_node"
-    elif destiny == "ENHANCER":
-        return "enhancer_node"
-    else:
-        return "standard_node_20b"
+    if destiny == "CODE": return "code_node"
+    elif destiny == "HEAVY": return "context_gatherer_node"
+    elif destiny == "NOTES": return "note_draft_node"
+    elif destiny == "ENHANCER": return "enhancer_node"
+    return "standard_node_20b"
 
 def check_context_limit(state: State):
-    messages_qnt = len(state["messages"])
+    meaningful_count = 0
+    
+    for msg in state["messages"]:
+        if msg.type == "tool":
+            continue
+        if msg.type == "ai" and getattr(msg, "tool_calls", None):
+            continue
+            
+        meaningful_count += 1
 
-    if messages_qnt > 10 and (messages_qnt - 1) % 10 == 0:
+    if meaningful_count > 10 and (meaningful_count - 1) % 10 == 0:
+        print(f"\n[🔄 RESUMO] Limite de {meaningful_count} mensagens reais atingido. Gerando resumo...")
         return "go_to_summarize"
         
     return "go_to_router"
@@ -332,7 +429,17 @@ def summarize_node(state: State):
     actual_summary = state.get("summary", "")
     all_messages = state["messages"]
     
-    recent_messages = all_messages[-10:] 
+    meaningful_messages = []
+    
+    for msg in all_messages:
+        if msg.type == "tool":
+            continue
+        if msg.type == "ai" and getattr(msg, "tool_calls", None):
+            continue
+            
+        meaningful_messages.append(msg)
+    
+    recent_messages = meaningful_messages[-10:] 
     
     if actual_summary:
         prompt = f"Resumo atual da conversa: {actual_summary}\n\nLeia as novas mensagens acima e atualize o resumo para incluir esses novos assuntos. Mantenha em apenas um parágrafo conciso."
