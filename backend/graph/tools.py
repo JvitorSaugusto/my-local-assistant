@@ -89,12 +89,12 @@ def generate_repo_map(dir_path: str) -> str:
     Returns:
         str: Uma representação em texto da árvore do projeto com as assinaturas de código.
     """
-    CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.php'}
+    CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.php', '.md'}
     IGNORED_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', 'env'}
     
     REGEX_FALLBACK = re.compile(
         r'^\s*(?:export\s+)?(?:async\s+)?(?:function|class)\s+\w+'
-        r'|^\s*(?:public|private|protected)\s+(?:static\s+)?(?:function)\s+\w+', 
+        r'|^\s*(?:export\s+)?(?:const|let)\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>', 
         re.MULTILINE
     )
 
