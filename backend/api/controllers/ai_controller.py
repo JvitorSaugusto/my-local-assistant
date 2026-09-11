@@ -17,10 +17,12 @@ ai_router = APIRouter()
 class ChatPayload(BaseModel):
     thread_id: str
     message: str
+    workspace_path: str
 
 class BatchPayload(BaseModel):
     thread_id: str
     prompts: list[str]
+    workspace_path: str
 
 
 async def get_compiled_graph(request: Request) -> CompiledStateGraph:
@@ -35,7 +37,10 @@ CompiledGraphDep = Annotated[CompiledStateGraph, Depends(get_compiled_graph)]
 async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep,):
     config: RunnableConfig = {"configurable": {"thread_id": payload.thread_id}}
 
-    inputs = cast(State,{"messages": [HumanMessage(content=payload.message)]},)
+    inputs = cast(State,{
+        "messages": [HumanMessage(content=payload.message)], 
+        "workspace_path": payload.workspace_path,
+        },)
 
     result = await app_graph.ainvoke(inputs, config=config,)
 
@@ -72,7 +77,7 @@ async def send_tasks_background(payload: BatchPayload):
     from tasks import run_langgraph_task
     
     for prompt in payload.prompts:
-        run_langgraph_task.delay(payload.thread_id, prompt)
+        run_langgraph_task.delay(payload.thread_id, prompt, payload.workspace_path,)
         
     return {
         "status": "sucesso", 
