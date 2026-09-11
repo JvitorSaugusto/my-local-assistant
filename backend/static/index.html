@@ -124,6 +124,32 @@
 
         <div id="tasks-panel" class="tasks-panel hidden">
           <div class="tasks-head">
+            
+            <div class="workspace-panel">
+            <div class="workspace-head">
+              <div>
+                <h4>Diretório de trabalho</h4>
+                <p>O diretório ativo será usado como workspace desta conversa.</p>
+              </div>
+            </div>
+
+            <div class="workspace-controls">
+              <input
+                id="workspace-path"
+                class="workspace-input"
+                type="text"
+                placeholder="C:\Users\...\meu-projeto"
+                autocomplete="off"
+              />
+
+              <button id="btn-add-workspace" class="btn btn-secondary" type="button">
+                Adicionar
+              </button>
+            </div>
+
+            <div id="workspace-list" class="workspace-list"></div>
+          </div>
+
             <div>
               <h3>Tarefas Pendentes</h3>
               <p id="tasks-count" class="tasks-count">Nenhuma tarefa pendente.</p>

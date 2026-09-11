@@ -33,6 +33,7 @@ class GenerateTaskSchema(BaseModel):
     description: str
     files: list[str] = Field(default_factory=list)
     reason: str = ""
+    repo_path: str
     priority: Literal["low", "medium", "high"] = "medium"
     status: Literal["pending", "queued", "running", "completed", "failed"] = "pending"
     

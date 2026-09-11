@@ -2038,3 +2038,98 @@ button {
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
   }
 }
+
+/* ============================================================
+   WORKSPACE
+   ============================================================ */
+
+.workspace-panel {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.workspace-head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.workspace-head p {
+  margin: 5px 0 12px;
+  color: var(--faint);
+  font-size: 0.82rem;
+}
+
+.workspace-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.workspace-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--text);
+  outline: none;
+}
+
+.workspace-input:focus {
+  border-color: var(--primary);
+}
+
+.workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.workspace-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.workspace-item.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.workspace-select {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.workspace-remove {
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 2px 5px;
+}
+
+.workspace-remove:hover {
+  color: var(--danger);
+}
+
+.workspace-empty {
+  color: var(--faint);
+  font-size: 0.82rem;
+  padding: 6px 2px;
+}

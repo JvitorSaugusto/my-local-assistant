@@ -34,6 +34,7 @@ class State(TypedDict):
     heavy_context: str | None
     
     active_generate_task: GenerateTaskSchema | None
+    workspace_path: str
 
 FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content]
 FILE_TOOLS_FULL = [read_file_content, generate_repo_map]

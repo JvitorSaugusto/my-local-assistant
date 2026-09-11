@@ -192,6 +192,9 @@ def _check_not_on_protected_branch(file_path: str) -> str | None:
 # TOOLS
 # ──────────────────────────────────────────────────────────────────────────
 
+GENERATE_BRANCHES: dict[str, str] = {}
+
+
 @tool
 def create_git_branch(repo_path: str, branch_name: str) -> str:
     """Cria uma nova branch git a partir da branch atual e muda para ela imediatamente.
@@ -213,13 +216,16 @@ def create_git_branch(repo_path: str, branch_name: str) -> str:
         de erro clara explicando o motivo da falha (branch já existe,
         caminho não é um repositório git, etc).
     """
-    repo = Path(repo_path)
+    repo = Path(repo_path).resolve()
 
     if not repo.exists():
         return f"ERRO: o caminho '{repo_path}' não existe."
 
     if not (repo / ".git").exists():
-        return f"ERRO: '{repo_path}' não é a raiz de um repositório git (pasta .git não encontrada)."
+        return (
+            f"ERRO: '{repo_path}' não é a raiz de um repositório git "
+            "(pasta .git não encontrada)."
+        )
 
     try:
         result = subprocess.run(
@@ -230,20 +236,62 @@ def create_git_branch(repo_path: str, branch_name: str) -> str:
             timeout=30,
         )
     except FileNotFoundError:
-        return "ERRO: comando 'git' não encontrado. Verifique se o Git está instalado e no PATH."
+        return (
+            "ERRO: comando 'git' não encontrado. "
+            "Verifique se o Git está instalado e no PATH."
+        )
     except subprocess.TimeoutExpired:
         return "ERRO: o comando git demorou demais para responder (timeout de 30s)."
 
     if result.returncode != 0:
         stderr = result.stderr.strip()
+
         if "already exists" in stderr:
             return (
-                f"ERRO: a branch '{branch_name}' já existe. Escolha outro nome "
-                "ou use uma branch existente."
+                f"ERRO: a branch '{branch_name}' já existe. "
+                "Escolha outro nome."
             )
+
         return f"ERRO ao criar a branch: {stderr}"
 
-    return f"Branch '{branch_name}' criada e ativada com sucesso em '{repo_path}'."
+    # Confirma qual branch está realmente ativa.
+    try:
+        current_branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            "ERRO DE SEGURANÇA: a branch foi criada, mas não foi possível "
+            "confirmar a branch atual por timeout."
+        )
+
+    if current_branch_result.returncode != 0:
+        return (
+            "ERRO DE SEGURANÇA: a branch foi criada, mas não foi possível "
+            f"confirmar a branch atual: "
+            f"{current_branch_result.stderr.strip()}"
+        )
+
+    current_branch = current_branch_result.stdout.strip()
+
+    if current_branch != branch_name:
+        return (
+            "ERRO DE SEGURANÇA: a branch foi criada, mas a branch atual "
+            f"é '{current_branch}' em vez de '{branch_name}'."
+        )
+
+    # Registra a branch criada pelo Generate para este repositório.
+    GENERATE_BRANCHES[str(repo)] = branch_name
+
+    return (
+        f"Branch '{branch_name}' criada e ativada com sucesso "
+        f"em '{repo_path}'. "
+        f"Branch atual confirmada: '{current_branch}'."
+    )
 
 
 @tool
@@ -399,48 +447,162 @@ def append_to_file(file_path: str, content: str) -> str:
 
 @tool
 def git_commit_changes(repo_path: str, commit_message: str) -> str:
-    """Adiciona todas as mudanças pendentes e cria um commit git.
+    """Cria um commit git apenas com as alterações da tarefa atual.
 
-    Executa 'git add .' seguido de 'git commit -m <commit_message>'. Use
-    esta ferramenta SOMENTE no final da tarefa, depois de já ter feito
-    todas as edições necessárias com as outras ferramentas de escrita —
-    nunca antes de terminar.
+        Use esta ferramenta SOMENTE no final da tarefa, depois de já ter feito
+        todas as edições necessárias com as outras ferramentas de escrita.
 
-    A 'commit_message' deve seguir o padrão Conventional Commits, escolhido
-    de acordo com o tipo de mudança feita:
-    - 'feat: ...' para uma nova funcionalidade;
-    - 'fix: ...' para correção de bug;
-    - 'refactor: ...' para mudança de estrutura sem alterar comportamento;
-    - 'chore: ...' para tarefas de manutenção (configs, dependências);
-    - 'docs: ...' para mudanças em documentação.
+        O commit só é permitido na branch criada pelo Generate para esta execução,
+        e apenas as alterações pertencentes à tarefa devem ser incluídas.
 
-    Exemplo: 'feat: adiciona validação de CPF no cadastro de usuários'.
+        A `commit_message` deve seguir o padrão Conventional Commits, escolhido
+        de acordo com o tipo de mudança feita:
+        - 'feat: ...' para uma nova funcionalidade;
+        - 'fix: ...' para correção de bug;
+        - 'refactor: ...' para mudança de estrutura sem alterar comportamento;
+        - 'chore: ...' para tarefas de manutenção (configs, dependências);
+        - 'docs: ...' para mudanças em documentação.
 
-    Args:
-        repo_path: Caminho absoluto para a raiz do repositório git.
-        commit_message: Mensagem do commit, seguindo o padrão Conventional
-            Commits descrito acima.
+        Exemplo: 'feat: adiciona validação de CPF no cadastro de usuários'.
 
-    Returns:
-        Uma mensagem de sucesso com a saída do commit, ou um erro explicando
-        o motivo da falha (nada para commitar, repositório inválido, etc).
+        Args:
+            repo_path: Caminho absoluto para a raiz do repositório git.
+            commit_message: Mensagem do commit, seguindo o padrão Conventional
+                Commits descrito acima.
+
+        Returns:
+            Uma mensagem de sucesso com a saída do commit, ou um erro explicando
+            o motivo da falha (branch incorreta, nenhuma alteração para commitar,
+            repositório inválido, etc).
     """
-    repo = Path(repo_path)
+
+    repo = Path(repo_path).resolve()
 
     if not (repo / ".git").exists():
         return f"ERRO: '{repo_path}' não é a raiz de um repositório git."
 
+    execution = GENERATE_BRANCHES.get(str(repo))
+
+    if execution is None:
+        return (
+            "ERRO DE SEGURANÇA: nenhuma branch foi criada pelo Generate "
+            "para este repositório nesta execução."
+        )
+
+    expected_branch = execution["branch"]
+    base_commit = execution["base_commit"]
+
     try:
+        # Confirma branch atual.
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if branch_result.returncode != 0:
+            return (
+                "ERRO DE SEGURANÇA: não foi possível verificar "
+                "a branch atual."
+            )
+
+        current_branch = branch_result.stdout.strip()
+
+        if current_branch != expected_branch:
+            return (
+                "ERRO DE SEGURANÇA: a branch atual não é a branch "
+                "criada pelo Generate.\n"
+                f"Esperada: '{expected_branch}'\n"
+                f"Atual: '{current_branch}'"
+            )
+
+        # Descobre os arquivos modificados desde o commit base.
+        diff_result = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                base_commit,
+                "HEAD",
+            ],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if diff_result.returncode != 0:
+            return (
+                "ERRO ao verificar alterações da branch: "
+                f"{diff_result.stderr.strip()}"
+            )
+
+        # Arquivos já commitados depois do base.
+        committed_files = {
+            line.strip()
+            for line in diff_result.stdout.splitlines()
+            if line.strip()
+        }
+
+        # Descobre alterações atuais, incluindo arquivos novos e deletados.
+        status_result = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+            ],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if status_result.returncode != 0:
+            return (
+                "ERRO ao verificar alterações pendentes: "
+                f"{status_result.stderr.strip()}"
+            )
+
+        pending_files = set()
+
+        for line in status_result.stdout.splitlines():
+            if len(line) >= 4:
+                file_path = line[3:].strip()
+
+                # Trata rename no formato:
+                # old -> new
+                if " -> " in file_path:
+                    file_path = file_path.split(" -> ")[-1].strip()
+
+                pending_files.add(file_path)
+
+        # Só podem entrar arquivos que pertençam à execução.
+        execution_files = committed_files | pending_files
+
+        if not execution_files:
+            return (
+                "AVISO: não havia nenhuma alteração da tarefa "
+                "para commitar."
+            )
+
+        # Adiciona somente os arquivos detectados nesta execução.
         add_result = subprocess.run(
-            ["git", "add", "."],
+            ["git", "add", "--", *sorted(execution_files)],
             cwd=str(repo),
             capture_output=True,
             text=True,
             timeout=30,
         )
-        if add_result.returncode != 0:
-            return f"ERRO ao executar 'git add .': {add_result.stderr.strip()}"
 
+        if add_result.returncode != 0:
+            return (
+                "ERRO ao executar git add: "
+                f"{add_result.stderr.strip()}"
+            )
+
+        # Cria o commit.
         commit_result = subprocess.run(
             ["git", "commit", "-m", commit_message],
             cwd=str(repo),
@@ -448,15 +610,31 @@ def git_commit_changes(repo_path: str, commit_message: str) -> str:
             text=True,
             timeout=30,
         )
+
+        if commit_result.returncode != 0:
+            combined_output = (
+                commit_result.stderr + commit_result.stdout
+            ).lower()
+
+            if "nothing to commit" in combined_output:
+                return "AVISO: não havia nenhuma mudança para commitar."
+
+            return (
+                "ERRO ao criar o commit: "
+                f"{commit_result.stderr.strip() or commit_result.stdout.strip()}"
+            )
+
+        return (
+            f"Commit criado com sucesso na branch '{current_branch}'.\n"
+            f"Arquivos incluídos: {', '.join(sorted(execution_files))}\n"
+            f"{commit_result.stdout.strip()}"
+        )
+
     except FileNotFoundError:
-        return "ERRO: comando 'git' não encontrado. Verifique se o Git está instalado e no PATH."
+        return (
+            "ERRO: comando 'git' não encontrado. "
+            "Verifique se o Git está instalado e no PATH."
+        )
+
     except subprocess.TimeoutExpired:
-        return "ERRO: o comando git demorou demais para responder (timeout de 30s)."
-
-    if commit_result.returncode != 0:
-        combined_output = (commit_result.stderr + commit_result.stdout).lower()
-        if "nothing to commit" in combined_output:
-            return "AVISO: não havia nenhuma mudança para commitar (working tree limpa)."
-        return f"ERRO ao criar o commit: {commit_result.stderr.strip() or commit_result.stdout.strip()}"
-
-    return f"Commit criado com sucesso:\n{commit_result.stdout.strip()}"
+        return "ERRO: o comando git demorou demais para responder (timeout)."

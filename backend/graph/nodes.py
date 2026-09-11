@@ -247,12 +247,28 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
 
         if not tasks_to_run:
             return {
-                "messages": [AIMessage(content="Nenhuma tarefa pendente foi encontrada no banco para executar.")],
+                "messages": [
+                    AIMessage(
+                        content="Nenhuma tarefa pendente foi encontrada no banco para executar."
+                    )
+                ],
+                "active_node": "generate_dispatch_node",
+            }
+
+        workspace_path = state.get("workspace_path")
+
+        if not workspace_path:
+            return {
+                "messages": [
+                    AIMessage(
+                        content="Nenhum diretório de trabalho foi definido para esta conversa."
+                    )
+                ],
                 "active_node": "generate_dispatch_node",
             }
 
         for task in tasks_to_run:
-            
+
             task_dict = {
                 "id": task.id,
                 "title": task.title,
@@ -260,23 +276,27 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                 "files": task.files,
                 "reason": task.reason,
                 "priority": task.priority,
-                "status": "queued"
+                "status": "queued",
+                "repo_path": workspace_path,
             }
-            
+
             run_generate_task.delay(thread_id, task_dict)
-            
+
             task.status = "queued"
             dispatched_count += 1
-            
+
         await db.commit()
 
-    msg_retorno = f"{dispatched_count} tarefa(s) enviada(s) para execução em background (Celery)."
+    msg_retorno = (
+        f"{dispatched_count} tarefa(s) enviada(s) para execução "
+        "em background (Celery)."
+    )
 
     return {
         "messages": [AIMessage(content=msg_retorno)],
         "active_node": "generate_dispatch_node",
     }
-
+    
 async def generate_node(state: State):
     persona = SystemMessage(content=GENERATE_NODE_PROMPT)
     actual_summary = state.get("summary", "")

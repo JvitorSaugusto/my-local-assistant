@@ -20,37 +20,32 @@ const API = {
 const el = {
   sidebar: document.getElementById("sidebar"),
   sidebarToggle: document.getElementById("sidebar-toggle"),
-
   chatList: document.getElementById("chat-list"),
   sidebarMsg: document.getElementById("sidebar-msg"),
-
   btnNewChat: document.getElementById("btn-new-chat"),
-
   welcome: document.getElementById("welcome"),
   chatView: document.getElementById("chat-view"),
   chatTitle: document.getElementById("chat-title"),
-
   messages: document.getElementById("messages"),
-
   chatForm: document.getElementById("chat-form"),
   chatInput: document.getElementById("chat-input"),
-
   btnHeavy: document.getElementById("btn-heavy"),
   btnEnhance: document.getElementById("btn-enhance"),
-
   btnToggleBatch: document.getElementById("btn-toggle-batch"),
   batchPanel: document.getElementById("batch-panel"),
   batchInput: document.getElementById("batch-input"),
   btnSendBatch: document.getElementById("btn-send-batch"),
   batchStatus: document.getElementById("batch-status"),
-
   btnToggleTasks: document.getElementById("btn-toggle-tasks"),
   tasksPanel: document.getElementById("tasks-panel"),
   tasksList: document.getElementById("tasks-list"),
   tasksCount: document.getElementById("tasks-count"),
   btnExecuteTasks: document.getElementById("btn-execute-tasks"),
-};
 
+  workspacePath: document.getElementById("workspace-path"),
+  btnAddWorkspace: document.getElementById("btn-add-workspace"),
+  workspaceList: document.getElementById("workspace-list"),
+};
 
 // ============================================================
 // ÍCONES SVG
@@ -121,6 +116,8 @@ const state = {
   pendingChats: new Set(),
   pollingInterval: null,
   expectedAiCount: {},
+  workspacePath: "",
+  workspaces: [],
 };
 
 
@@ -259,6 +256,139 @@ function setSidebarMsg(msg = "", isError = false) {
   el.sidebarMsg.style.color = isError ? "var(--danger)" : "var(--faint)";
 }
 
+// ============================================================
+// WORKSPACES
+// ============================================================
+
+function loadWorkspaces() {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem("assistant_workspaces") || "[]"
+    );
+
+    state.workspaces = Array.isArray(saved) ? saved : [];
+
+    const active = localStorage.getItem("assistant_workspace_active");
+
+    if (active && state.workspaces.includes(active)) {
+      state.workspacePath = active;
+    } else if (state.workspaces.length) {
+      state.workspacePath = state.workspaces[0];
+    }
+  } catch (error) {
+    console.error("[Workspace] Erro ao carregar:", error);
+    state.workspaces = [];
+    state.workspacePath = "";
+  }
+
+  renderWorkspaces();
+}
+
+function saveWorkspaces() {
+  localStorage.setItem(
+    "assistant_workspaces",
+    JSON.stringify(state.workspaces)
+  );
+
+  localStorage.setItem(
+    "assistant_workspace_active",
+    state.workspacePath
+  );
+}
+
+function renderWorkspaces() {
+  el.workspaceList.innerHTML = "";
+
+  if (!state.workspaces.length) {
+    el.workspaceList.innerHTML = `
+      <div class="workspace-empty">
+        Nenhum diretório adicionado.
+      </div>
+    `;
+    el.workspacePath.value = "";
+    return;
+  }
+
+  state.workspaces.forEach((workspace) => {
+    const item = document.createElement("div");
+    item.className =
+      "workspace-item" +
+      (workspace === state.workspacePath ? " active" : "");
+
+    item.innerHTML = `
+      <button
+        type="button"
+        class="workspace-select"
+        title="Usar este diretório"
+      >
+        ${escapeHtml(workspace)}
+      </button>
+
+      <button
+        type="button"
+        class="workspace-remove"
+        title="Remover diretório"
+        aria-label="Remover diretório"
+      >
+        ×
+      </button>
+    `;
+
+    item.querySelector(".workspace-select").addEventListener(
+      "click",
+      () => {
+        setActiveWorkspace(workspace);
+      }
+    );
+
+    item.querySelector(".workspace-remove").addEventListener(
+      "click",
+      () => {
+        removeWorkspace(workspace);
+      }
+    );
+
+    el.workspaceList.appendChild(item);
+  });
+
+  el.workspacePath.value = state.workspacePath;
+}
+
+function setActiveWorkspace(workspace) {
+  state.workspacePath = workspace;
+  saveWorkspaces();
+  renderWorkspaces();
+}
+
+function addWorkspace() {
+  const path = el.workspacePath.value.trim();
+
+  if (!path) {
+    return;
+  }
+
+  if (!state.workspaces.includes(path)) {
+    state.workspaces.push(path);
+  }
+
+  state.workspacePath = path;
+
+  saveWorkspaces();
+  renderWorkspaces();
+}
+
+function removeWorkspace(workspace) {
+  state.workspaces = state.workspaces.filter(
+    (item) => item !== workspace
+  );
+
+  if (state.workspacePath === workspace) {
+    state.workspacePath = state.workspaces[0] || "";
+  }
+
+  saveWorkspaces();
+  renderWorkspaces();
+}
 
 // ============================================================
 // MOBILE SIDEBAR
@@ -785,6 +915,7 @@ async function sendMessage(text) {
       body: JSON.stringify({
         thread_id: requestThreadId,
         message: text,
+        workspace_path: state.workspacePath,
       }),
     });
 
@@ -864,6 +995,7 @@ async function sendBatch() {
       body: JSON.stringify({
         thread_id: chat.thread_id,
         prompts: tasks,
+        workspace_path: state.workspacePath,
       }),
     });
 
@@ -1053,11 +1185,21 @@ el.btnExecuteTasks.addEventListener(
   executePendingTasks
 );
 
+el.btnAddWorkspace.addEventListener("click", addWorkspace);
+
+el.workspacePath.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    addWorkspace();
+  }
+});
+
 // ============================================================
 // INICIALIZAÇÃO
 // ============================================================
 
 loadChats();
+loadWorkspaces();
 autoResize();
 syncChips();
 startPolling();
