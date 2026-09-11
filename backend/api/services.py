@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.api.schemas import ChatRequestSchema
-from backend.database.models import AiChatModel
+from backend.database.models import AiChatModel, TaskModel
 
 
 class ChatService:
@@ -53,3 +53,14 @@ class ChatService:
         await self.db.commit()
         
         return True
+    
+class TaskService:
+    @staticmethod
+    async def get_pending_by_thread(thread_id: str, db) -> list[TaskModel]:
+        stmt = select(TaskModel).where(
+            TaskModel.thread_id == thread_id,
+            TaskModel.status == "pending"
+        ).order_by(TaskModel.id)
+        
+        result = await db.execute(stmt)
+        return result.scalars().all()

@@ -7,6 +7,7 @@ const API = {
   chats: "/api/chats/",
   chat: (id) => `/api/chats/${id}`,
   messages: (thread_id) => `/api/ai/${thread_id}/messages`,
+  tasks: (thread_id) => `/api/ai/${thread_id}/tasks`,
   send: "/api/ai/",
   batch: "/api/ai/batch/",
 };
@@ -35,13 +36,19 @@ const el = {
   chatInput: document.getElementById("chat-input"),
 
   btnHeavy: document.getElementById("btn-heavy"),
-  btnEnhance: document.getElementById("btn-enhance"), // <-- NOVO BOTÃO
+  btnEnhance: document.getElementById("btn-enhance"),
 
   btnToggleBatch: document.getElementById("btn-toggle-batch"),
   batchPanel: document.getElementById("batch-panel"),
   batchInput: document.getElementById("batch-input"),
   btnSendBatch: document.getElementById("btn-send-batch"),
   batchStatus: document.getElementById("batch-status"),
+
+  btnToggleTasks: document.getElementById("btn-toggle-tasks"),
+  tasksPanel: document.getElementById("tasks-panel"),
+  tasksList: document.getElementById("tasks-list"),
+  tasksCount: document.getElementById("tasks-count"),
+  btnExecuteTasks: document.getElementById("btn-execute-tasks"),
 };
 
 
@@ -442,6 +449,147 @@ async function editChat(id, oldTitle) {
   }
 }
 
+// ============================================================
+// TAREFAS PENDENTES
+// ============================================================
+
+async function loadTasks(threadId = null) {
+  const thread = threadId ?? state.chats.find(
+    (chat) => chat.id === state.activeId
+  )?.thread_id;
+
+  if (!thread) {
+    renderTasks([]);
+    return;
+  }
+
+  try {
+    const tasks = await api(API.tasks(thread));
+    renderTasks(Array.isArray(tasks) ? tasks : []);
+  } catch (err) {
+    console.error("[Tasks] loadTasks:", err);
+    renderTasks([]);
+    el.tasksCount.textContent = "Não foi possível carregar as tarefas.";
+  }
+}
+
+function renderTasks(tasks) {
+  el.tasksList.innerHTML = "";
+
+  const pendingTasks = tasks.filter(
+    (task) => task.status === "pending"
+  );
+
+  el.tasksCount.textContent = pendingTasks.length
+    ? `${pendingTasks.length} tarefa${pendingTasks.length === 1 ? "" : "s"} pendente${pendingTasks.length === 1 ? "" : "s"}`
+    : "Nenhuma tarefa pendente.";
+
+  const executableTasks = tasks.filter(
+    (task) =>
+      task.status === "pending" ||
+      task.status === "queued" ||
+      task.status === "running"
+  );
+
+  el.btnExecuteTasks.disabled = !pendingTasks.length;
+
+  if (!tasks.length) {
+    el.tasksList.innerHTML = `
+      <div class="tasks-empty">
+        Nenhuma tarefa foi gerada nesta conversa.
+      </div>
+    `;
+    return;
+  }
+
+  tasks.forEach((task) => {
+    const card = document.createElement("article");
+    card.className = "task-card";
+
+    const files = Array.isArray(task.files)
+      ? task.files
+      : [];
+
+    const priority = task.priority || "medium";
+    const status = task.status || "pending";
+
+    card.innerHTML = `
+      <div class="task-card-head">
+        <h4 class="task-card-title">
+          ${escapeHtml(task.title || "Tarefa sem título")}
+        </h4>
+
+        <span class="task-card-id">
+          #${escapeHtml(task.id)}
+        </span>
+      </div>
+
+      <p class="task-card-description">
+        ${escapeHtml(task.description || "")}
+      </p>
+
+      ${
+        files.length
+          ? `
+            <div class="task-files">
+              ${files.map((file) => `
+                <span class="task-file" title="${escapeHtml(file)}">
+                  ${escapeHtml(file)}
+                </span>
+              `).join("")}
+            </div>
+          `
+          : ""
+      }
+
+      <div class="task-card-footer">
+        <span class="task-priority">
+          ${escapeHtml(priority)}
+        </span>
+
+        <span class="task-status ${escapeHtml(status)}">
+          ${escapeHtml(status)}
+        </span>
+      </div>
+    `;
+
+    el.tasksList.appendChild(card);
+  });
+}
+
+async function executePendingTasks() {
+  const chat = state.chats.find(
+    (item) => item.id === state.activeId
+  );
+
+  if (!chat?.thread_id) return;
+
+  try {
+    const tasks = await api(API.tasks(chat.thread_id));
+
+    const pendingTasks = (Array.isArray(tasks) ? tasks : [])
+      .filter((task) => task.status === "pending");
+
+    if (!pendingTasks.length) {
+      renderTasks(tasks);
+      return;
+    }
+
+    const taskIds = pendingTasks
+      .map((task) => task.id)
+      .join(" ");
+
+    const command = `@generate ${taskIds}`;
+
+    el.tasksPanel.classList.add("hidden");
+
+    await sendMessage(command);
+
+    await loadTasks(chat.thread_id);
+  } catch (err) {
+    console.error("[Tasks] executePendingTasks:", err);
+  }
+}
 
 // ============================================================
 // ABRIR CHAT
@@ -466,6 +614,8 @@ async function openChat(id) {
   }
 
   const requestChatId = id;
+
+  await loadTasks(chat.thread_id);
 
   try {
     const data = await api(API.messages(chat.thread_id));
@@ -748,6 +898,10 @@ function startPolling() {
     if (!chat || !chat.thread_id) return;
 
     try {
+      // Atualiza as tarefas pendentes/status
+      await loadTasks(chat.thread_id);
+
+      // Atualiza as mensagens
       const data = await api(API.messages(chat.thread_id));
       if (state.activeId !== chat.id) return;
 
@@ -760,7 +914,7 @@ function startPolling() {
 
       if (target && aiCount >= target) {
         state.pendingChats.delete(chat.id);
-        state.expectedAiCount[chat.id] = 0; // Fila concluída, zera o alvo!
+        state.expectedAiCount[chat.id] = 0;
       }
       // -------------------------------------------------
 
@@ -769,18 +923,19 @@ function startPolling() {
         msgs.forEach(m => appendMessage(m.role, m.content, m.model));
         
         if (state.pendingChats.has(chat.id)) {
-          appendTyping(); // Mantém a bolinha se não bateu a meta
+          appendTyping();
         }
         
         scrollToBottom();
       } else {
-        // Se a tela não teve mensagens novas, mas a meta já foi batida
         if (!state.pendingChats.has(chat.id)) {
           const typingEl = el.messages.querySelector('[data-typing="1"]');
           if (typingEl) typingEl.remove();
         }
       }
+
     } catch (e) {
+      console.error("[Polling] Erro:", e);
     }
   }, 3000); 
 }
@@ -879,6 +1034,24 @@ el.btnToggleBatch.addEventListener("click", () => {
 el.btnSendBatch.addEventListener("click", sendBatch);
 el.sidebarToggle.addEventListener("click", toggleSidebar);
 
+el.btnToggleTasks.addEventListener("click", async () => {
+  el.tasksPanel.classList.toggle("hidden");
+
+  if (!el.tasksPanel.classList.contains("hidden")) {
+    const chat = state.chats.find(
+      (item) => item.id === state.activeId
+    );
+
+    if (chat?.thread_id) {
+      await loadTasks(chat.thread_id);
+    }
+  }
+});
+
+el.btnExecuteTasks.addEventListener(
+  "click",
+  executePendingTasks
+);
 
 // ============================================================
 // INICIALIZAÇÃO

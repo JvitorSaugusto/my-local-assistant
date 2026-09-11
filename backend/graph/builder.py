@@ -139,7 +139,7 @@ def build_graph():
         {
             "code_node": "code_node",
             "generate_node": "generate_node",
-            "generate_dispatch_node": "generate_dispatch_node"
+            "generate_dispatch_node": "generate_dispatch_node",
             "note_draft_node": "note_draft_node", 
             "context_gatherer_node": "context_gatherer_node"
         }

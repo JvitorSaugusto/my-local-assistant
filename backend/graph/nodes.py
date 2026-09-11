@@ -4,6 +4,7 @@ from backend.database.config import async_session_env
 from backend.database.models import TaskModel
 from langchain_core.messages import AIMessage
 from sqlalchemy import select, update
+from langchain_core.runnables import RunnableConfig
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from .config import (
@@ -26,6 +27,7 @@ from .prompts import (
     CODE_NODE_PROMPT,
     NOTE_NODE_PROMPT,
     HEAVY_NODE_PROMPT,
+    GENERATE_NODE_PROMPT
 )
 
 from .utils import detect_explicit_route, strip_leading_tags
@@ -217,9 +219,10 @@ def code_node(state: State):
         "enhanced_prompt": None
         }
     
-async def generate_dispatch_node(state: State):
+async def generate_dispatch_node(state: State, config: RunnableConfig):
     last_msg = state["messages"][-1].content.lower()
-    thread_id = state["thread_id"]
+    configurable = config.get("configurable") or {}
+    thread_id = configurable.get("thread_id", "thread_ausente")
 
     match = re.search(r'@generate\s+(.*)', last_msg)
     target_ids = []
@@ -470,10 +473,12 @@ def context_gatherer_node(state: State):
         "enhanced_prompt": None,
     }
 
-async def heavy_analyzer_node(state: State):
+async def heavy_analyzer_node(state: State, config: RunnableConfig):
     persona = SystemMessage(content=HEAVY_NODE_PROMPT)
     actual_summary = state.get("summary", "")
     dossier = state.get("heavy_context", "")
+    configurable = config.get("configurable") or {}
+    thread_id = configurable.get("thread_id", "thread_ausente")
 
     user_request = None
     for message in reversed(state["messages"]):
@@ -525,8 +530,8 @@ async def heavy_analyzer_node(state: State):
     if result.tasks:
         async with async_session_env() as db:
             for task in result.tasks:
-                nova_tarefa = TaskModel(
-                    thread_id=state["thread_id"],
+                new_task = TaskModel(
+                    thread_id=thread_id,
                     title=task.title,
                     description=task.description,
                     files=task.files,
@@ -534,7 +539,7 @@ async def heavy_analyzer_node(state: State):
                     priority=task.priority,
                     status="pending"
                 )
-                db.add(nova_tarefa)
+                db.add(new_task)
             await db.commit() # Salva tudo de uma vez
 
 

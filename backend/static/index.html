@@ -96,6 +96,18 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
             Fila de tarefas
           </button>
+          <button id="btn-toggle-tasks" class="btn btn-ghost">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 6h11"/>
+              <path d="M9 12h11"/>
+              <path d="M9 18h11"/>
+              <path d="M4 6h.01"/>
+              <path d="M4 12h.01"/>
+              <path d="M4 18h.01"/>
+            </svg>
+            Tarefas
+          </button>
         </div>
 
         <div id="batch-panel" class="batch-panel hidden">
@@ -108,6 +120,26 @@
             </button>
             <span id="batch-status" class="batch-status"></span>
           </div>
+        </div>
+
+        <div id="tasks-panel" class="tasks-panel hidden">
+          <div class="tasks-head">
+            <div>
+              <h3>Tarefas Pendentes</h3>
+              <p id="tasks-count" class="tasks-count">Nenhuma tarefa pendente.</p>
+            </div>
+
+            <button id="btn-execute-tasks" class="btn btn-primary" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m5 12 7-7 7 7"/>
+                <path d="M12 19V5"/>
+              </svg>
+              Executar Tarefas
+            </button>
+          </div>
+
+          <div id="tasks-list" class="tasks-list"></div>
         </div>
 
         <div id="messages" class="messages" aria-live="polite"></div>

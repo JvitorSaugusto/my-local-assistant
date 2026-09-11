@@ -4,7 +4,12 @@ from typing import Annotated, cast
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
+from sqlalchemy import select
+from backend.api.schemas import TaskResponseSchema
+from backend.api.services import TaskService
+from backend.database.models import TaskModel
 from backend.graph.config import State
+from backend.database.config import async_session_env
 
 
 ai_router = APIRouter()
@@ -73,3 +78,9 @@ async def send_tasks_background(payload: BatchPayload):
         "status": "sucesso", 
         "message": f"{len(payload.prompts)} tarefa(s) enviada(s)."
     }
+    
+
+@ai_router.get("/{thread_id}/tasks", response_model=list[TaskResponseSchema])
+async def get_pending_tasks(thread_id: str):
+    async with async_session_env() as db:
+        return await TaskService.get_pending_by_thread(thread_id, db)

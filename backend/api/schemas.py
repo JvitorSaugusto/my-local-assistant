@@ -40,3 +40,15 @@ class GenerateTaskSchema(BaseModel):
 class HeavyAnalysisSchema(BaseModel):
     analysis: str
     tasks: list[GenerateTaskSchema] = Field(default_factory=list)
+    
+    
+class TaskResponseSchema(BaseModel):
+    id: int
+    title: str
+    description: str
+    files: list[str]
+    reason: str
+    status: str
+
+    class Config:
+        from_attributes = True
