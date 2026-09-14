@@ -303,8 +303,33 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
     
 async def generate_node(state: State):
     actual_summary = state.get("summary", "")
-    recent_messages = state["messages"][-1:]
+    recent_messages = state["messages"][-10:]
     task = state.get("active_generate_task")
+
+    workspace = state.get("workspace_path")
+    branch_context = None
+    if workspace:
+        repo = __import__("pathlib").Path(workspace).resolve()
+        try:
+            import subprocess
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=str(repo),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            current_branch = branch_result.stdout.strip()
+            if current_branch and current_branch not in {"main", "master"}:
+                branch_context = (
+                    "STATUS DA BRANCH DO WORKSPACE: "
+                    f"a branch atual é '{current_branch}'. "
+                    "Uma branch de trabalho já está ativa. NÃO chame "
+                    "'create_git_branch' novamente nesta execução; prossiga "
+                    "para a próxima etapa da tarefa."
+                )
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     if state.get("enhanced_prompt"):
         recent_messages[-1] = HumanMessage(content=state["enhanced_prompt"])
@@ -313,6 +338,7 @@ async def generate_node(state: State):
         build_system_context(
             GENERATE_NODE_PROMPT,
             f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            branch_context,
             (
                 "TAREFA DE IMPLEMENTAÇÃO:\n\n"
                 f"{task.model_dump_json(indent=2)}"
