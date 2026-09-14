@@ -52,7 +52,10 @@ async def _run_langgraph_async(thread_id: str, user_input: str):
         builder = build_graph()
         app_graph = builder.compile(checkpointer=checkpointer)
         
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        config: RunnableConfig = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": 20,
+        }
         inputs = cast(State, {"messages": [HumanMessage(content=user_input)]})
         
         await app_graph.ainvoke(inputs, config=config)
@@ -70,7 +73,10 @@ async def _run_generate_async(thread_id: str, task: GenerateTaskSchema):
         builder = build_graph()
         app_graph = builder.compile(checkpointer=checkpointer)
 
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        config: RunnableConfig = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": 20,
+        }
 
         task_prompt = f"""
             EXECUTE A TAREFA DE IMPLEMENTAÇÃO.
