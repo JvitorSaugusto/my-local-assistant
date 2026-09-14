@@ -4,6 +4,7 @@ import re
 import ast
 import subprocess
 from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
 
 @tool
 def list_directory_files(dir_path: str) -> list:
@@ -140,6 +141,17 @@ def generate_repo_map(dir_path: str) -> str:
 
 PROTECTED_BRANCHES = {"main", "master"}
 
+def _resolve_path(file_path: str, workspace_path: str | None) -> Path:
+    """Resolve o caminho recebido do LLM contra o workspace da conversa.
+    Se o LLM já mandou um caminho absoluto, usa como está; se mandou
+    relativo (o comportamento esperado e mais comum), junta com o
+    workspace_path do State."""
+    path = Path(file_path)
+    if path.is_absolute():
+        return path
+    if workspace_path:
+        return Path(workspace_path) / path
+    return path
 
 def _find_existing_ancestor(path: Path) -> Path:
     """Sobe na árvore de diretórios até achar uma pasta que já existe —
@@ -193,89 +205,88 @@ def _check_not_on_protected_branch(file_path: str) -> str | None:
 # ──────────────────────────────────────────────────────────────────────────
 
 GENERATE_BRANCHES: dict[str, str] = {}
-
+GENERATE_BRANCH_ATTEMPTS: dict[str, int] = {}
+MAX_BRANCH_ATTEMPTS = 2
 
 @tool
-def create_git_branch(repo_path: str, branch_name: str) -> str:
+def create_git_branch(branch_name: str, runtime: ToolRuntime) -> str:
     """Cria uma nova branch git a partir da branch atual e muda para ela imediatamente.
 
     Use esta ferramenta OBRIGATORIAMENTE antes de qualquer edição de arquivo,
     assim que você receber uma nova tarefa. Nunca tente editar arquivos
     diretamente na branch 'main' ou 'master' — as ferramentas de escrita vão
-    bloquear a operação automaticamente se você tentar.
+    bloquear a operação automaticamente se você tentar. O repositório correto
+    já é identificado automaticamente pelo sistema — você não precisa (e não
+    consegue) informá-lo.
 
     Args:
-        repo_path: Caminho absoluto para a raiz do repositório git (a pasta
-            que contém a subpasta .git).
-        branch_name: Nome da nova branch, no padrão 'feature/nome-da-tarefa'
-            (ex: 'feature/adicionar-validacao-cpf'), em minúsculas, com
-            palavras separadas por hífen, sem espaços ou acentos.
+        branch_name: Nome da nova branch, no padrão
+            'feature/<resumo-curto-da-tarefa-atual>' (gere um resumo com base
+            na tarefa que VOCÊ está executando agora — NUNCA reutilize um
+            nome de exemplo genérico), em minúsculas, com palavras separadas
+            por hífen, sem espaços ou acentos.
 
     Returns:
         Uma mensagem de sucesso confirmando a branch criada, ou uma mensagem
         de erro clara explicando o motivo da falha (branch já existe,
         caminho não é um repositório git, etc).
     """
-    repo = Path(repo_path).resolve()
+    workspace_path = runtime.state.get("workspace_path")
+    if not workspace_path:
+        return "ERRO: nenhum workspace definido para esta conversa."
+
+    repo = Path(workspace_path).resolve()
+    repo_key = str(repo)
+
+    attempts = GENERATE_BRANCH_ATTEMPTS.get(repo_key, 0)
+    if attempts >= MAX_BRANCH_ATTEMPTS:
+        return (
+            "ERRO FATAL — EXECUÇÃO BLOQUEADA: já houve "
+            f"{attempts} tentativas de criar uma branch para esta tarefa, "
+            "todas falhando. NÃO tente mais nenhum nome de branch. "
+            "Encerre a execução agora e reporte esta falha na sua resposta final, "
+            "sem chamar nenhuma outra ferramenta."
+        )
 
     if not repo.exists():
-        return f"ERRO: o caminho '{repo_path}' não existe."
-
+        return f"ERRO: o caminho '{workspace_path}' não existe."
     if not (repo / ".git").exists():
-        return (
-            f"ERRO: '{repo_path}' não é a raiz de um repositório git "
-            "(pasta .git não encontrada)."
-        )
+        return f"ERRO: '{workspace_path}' não é a raiz de um repositório git."
+
+    base_commit_result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(repo), capture_output=True, text=True, timeout=10,
+    )
+    if base_commit_result.returncode != 0:
+        return f"ERRO ao obter o commit atual: {base_commit_result.stderr.strip()}"
+    base_commit = base_commit_result.stdout.strip()
 
     try:
         result = subprocess.run(
             ["git", "checkout", "-b", branch_name],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-            timeout=30,
+            cwd=str(repo), capture_output=True, text=True, timeout=30,
         )
     except FileNotFoundError:
-        return (
-            "ERRO: comando 'git' não encontrado. "
-            "Verifique se o Git está instalado e no PATH."
-        )
+        return "ERRO: comando 'git' não encontrado."
     except subprocess.TimeoutExpired:
-        return "ERRO: o comando git demorou demais para responder (timeout de 30s)."
+        return "ERRO: timeout no comando git."
 
     if result.returncode != 0:
+        # 👇 conta a falha
+        GENERATE_BRANCH_ATTEMPTS[repo_key] = attempts + 1
+
         stderr = result.stderr.strip()
-
         if "already exists" in stderr:
-            return (
-                f"ERRO: a branch '{branch_name}' já existe. "
-                "Escolha outro nome."
-            )
-
+            return f"ERRO: a branch '{branch_name}' já existe. Escolha outro nome."
         return f"ERRO ao criar a branch: {stderr}"
 
-    # Confirma qual branch está realmente ativa.
-    try:
-        current_branch_result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return (
-            "ERRO DE SEGURANÇA: a branch foi criada, mas não foi possível "
-            "confirmar a branch atual por timeout."
-        )
+    # sucesso — zera o contador, a execução está progredindo
+    GENERATE_BRANCH_ATTEMPTS[repo_key] = 0
 
-    if current_branch_result.returncode != 0:
-        return (
-            "ERRO DE SEGURANÇA: a branch foi criada, mas não foi possível "
-            f"confirmar a branch atual: "
-            f"{current_branch_result.stderr.strip()}"
-        )
-
+    current_branch_result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=str(repo), capture_output=True, text=True, timeout=10,
+    )
     current_branch = current_branch_result.stdout.strip()
 
     if current_branch != branch_name:
@@ -284,18 +295,13 @@ def create_git_branch(repo_path: str, branch_name: str) -> str:
             f"é '{current_branch}' em vez de '{branch_name}'."
         )
 
-    # Registra a branch criada pelo Generate para este repositório.
-    GENERATE_BRANCHES[str(repo)] = branch_name
+    GENERATE_BRANCHES[repo_key] = {"branch": branch_name, "base_commit": base_commit}
 
-    return (
-        f"Branch '{branch_name}' criada e ativada com sucesso "
-        f"em '{repo_path}'. "
-        f"Branch atual confirmada: '{current_branch}'."
-    )
+    return f"Branch '{branch_name}' criada e ativada com sucesso. Commit base: {base_commit[:8]}."
 
 
 @tool
-def create_new_file(file_path: str, content: str) -> str:
+def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
     """Cria um novo arquivo do zero com o conteúdo especificado.
 
     Use esta ferramenta apenas para arquivos que AINDA NÃO EXISTEM. Se o
@@ -308,9 +314,10 @@ def create_new_file(file_path: str, content: str) -> str:
     'create_git_branch' antes.
 
     Args:
-        file_path: Caminho absoluto (ou relativo à raiz do repositório) do
-            arquivo a ser criado, incluindo nome e extensão
-            (ex: 'backend/api/routes/users.py').
+        file_path: Caminho RELATIVO à raiz do repositório, incluindo nome e
+            extensão (ex: 'backend/api/routes/users.py'). O sistema já
+            resolve isso automaticamente contra o repositório correto — NÃO
+            inclua o caminho absoluto do disco.
         content: O conteúdo completo do arquivo, exatamente como deve ficar
             gravado em disco (incluindo indentação e quebras de linha).
 
@@ -318,21 +325,22 @@ def create_new_file(file_path: str, content: str) -> str:
         Uma mensagem de sucesso com o caminho do arquivo criado, ou uma
         mensagem de erro explicando o motivo da falha.
     """
-    security_error = _check_not_on_protected_branch(file_path)
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_path = _resolve_path(file_path, workspace_path)
+
+    security_error = _check_not_on_protected_branch(str(resolved_path))
     if security_error:
         return security_error
 
-    path = Path(file_path)
-
-    if path.exists():
+    if resolved_path.exists():
         return (
             f"ERRO: o arquivo '{file_path}' já existe. Use 'edit_existing_file' "
             "ou 'append_to_file' para modificar um arquivo existente."
         )
 
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_path.write_text(content, encoding="utf-8")
     except OSError as error:
         return f"ERRO ao criar o arquivo '{file_path}': {error}"
 
@@ -340,7 +348,7 @@ def create_new_file(file_path: str, content: str) -> str:
 
 
 @tool
-def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str) -> str:
+def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str, runtime: ToolRuntime) -> str:
     """Edita um arquivo existente substituindo um trecho exato por outro (search and replace).
 
     Use esta ferramenta em vez de reescrever o arquivo inteiro — isso evita
@@ -355,8 +363,9 @@ def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str) -> st
     branch atual for 'main' ou 'master'. Use 'create_git_branch' antes.
 
     Args:
-        file_path: Caminho absoluto (ou relativo à raiz do repositório) do
-            arquivo a ser editado.
+        file_path: Caminho RELATIVO à raiz do repositório (ex: 'tasks.py'). O
+            sistema já resolve isso automaticamente contra o repositório
+            correto — NÃO inclua o caminho absoluto do disco.
         old_snippet: O trecho exato de texto já existente no arquivo que
             deve ser substituído.
         new_snippet: O novo trecho que deve tomar o lugar de 'old_snippet'.
@@ -365,17 +374,18 @@ def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str) -> st
         Uma mensagem de sucesso, ou um erro claro se o arquivo não existir,
         se 'old_snippet' não for encontrado, ou se aparecer mais de uma vez.
     """
-    security_error = _check_not_on_protected_branch(file_path)
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_path = _resolve_path(file_path, workspace_path)
+
+    security_error = _check_not_on_protected_branch(str(resolved_path))
     if security_error:
         return security_error
 
-    path = Path(file_path)
-
-    if not path.exists():
+    if not resolved_path.exists():
         return f"ERRO: o arquivo '{file_path}' não existe. Use 'create_new_file' para criá-lo."
-
+    
     try:
-        original_content = path.read_text(encoding="utf-8")
+        original_content = resolved_path.read_text(encoding="utf-8")
     except OSError as error:
         return f"ERRO ao ler o arquivo '{file_path}': {error}"
 
@@ -398,7 +408,7 @@ def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str) -> st
     updated_content = original_content.replace(old_snippet, new_snippet)
 
     try:
-        path.write_text(updated_content, encoding="utf-8")
+        resolved_path.write_text(updated_content, encoding="utf-8")
     except OSError as error:
         return f"ERRO ao salvar o arquivo '{file_path}': {error}"
 
@@ -406,7 +416,7 @@ def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str) -> st
 
 
 @tool
-def append_to_file(file_path: str, content: str) -> str:
+def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
     """Adiciona conteúdo ao final de um arquivo existente, sem alterar o que já está lá.
 
     Use esta ferramenta para casos simples de adição no final do arquivo,
@@ -418,8 +428,9 @@ def append_to_file(file_path: str, content: str) -> str:
     branch atual for 'main' ou 'master'. Use 'create_git_branch' antes.
 
     Args:
-        file_path: Caminho absoluto (ou relativo à raiz do repositório) do
-            arquivo existente que receberá o novo conteúdo no final.
+        file_path: Caminho RELATIVO à raiz do repositório. O sistema já
+            resolve isso automaticamente contra o repositório correto — NÃO
+            inclua o caminho absoluto do disco.
         content: O texto a ser adicionado ao final do arquivo. Inclua uma
             quebra de linha no início se o conteúdo precisar começar numa
             linha separada do que já existe.
@@ -427,17 +438,18 @@ def append_to_file(file_path: str, content: str) -> str:
     Returns:
         Uma mensagem de sucesso, ou um erro se o arquivo não existir.
     """
-    security_error = _check_not_on_protected_branch(file_path)
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_path = _resolve_path(file_path, workspace_path)
+
+    security_error = _check_not_on_protected_branch(str(resolved_path))
     if security_error:
         return security_error
 
-    path = Path(file_path)
-
-    if not path.exists():
+    if not resolved_path.exists():
         return f"ERRO: o arquivo '{file_path}' não existe. Use 'create_new_file' para criá-lo."
 
     try:
-        with path.open("a", encoding="utf-8") as file:
+        with resolved_path.open("a", encoding="utf-8") as file:
             file.write(content)
     except OSError as error:
         return f"ERRO ao adicionar conteúdo ao arquivo '{file_path}': {error}"
@@ -446,40 +458,47 @@ def append_to_file(file_path: str, content: str) -> str:
 
 
 @tool
-def git_commit_changes(repo_path: str, commit_message: str) -> str:
+def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
+    @tool
+def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
     """Cria um commit git apenas com as alterações da tarefa atual.
 
-        Use esta ferramenta SOMENTE no final da tarefa, depois de já ter feito
-        todas as edições necessárias com as outras ferramentas de escrita.
+    Use esta ferramenta SOMENTE no final da tarefa, depois de já ter feito
+    todas as edições necessárias com as outras ferramentas de escrita.
 
-        O commit só é permitido na branch criada pelo Generate para esta execução,
-        e apenas as alterações pertencentes à tarefa devem ser incluídas.
+    O commit só é permitido na branch criada pelo Generate para esta execução,
+    e apenas as alterações pertencentes à tarefa devem ser incluídas. O
+    repositório correto já é identificado automaticamente pelo sistema.
 
-        A `commit_message` deve seguir o padrão Conventional Commits, escolhido
-        de acordo com o tipo de mudança feita:
-        - 'feat: ...' para uma nova funcionalidade;
-        - 'fix: ...' para correção de bug;
-        - 'refactor: ...' para mudança de estrutura sem alterar comportamento;
-        - 'chore: ...' para tarefas de manutenção (configs, dependências);
-        - 'docs: ...' para mudanças em documentação.
+    A `commit_message` deve seguir o padrão Conventional Commits, escolhido
+    de acordo com o tipo de mudança feita:
+    - 'feat: ...' para uma nova funcionalidade;
+    - 'fix: ...' para correção de bug;
+    - 'refactor: ...' para mudança de estrutura sem alterar comportamento;
+    - 'chore: ...' para tarefas de manutenção (configs, dependências);
+    - 'docs: ...' para mudanças em documentação.
 
-        Exemplo: 'feat: adiciona validação de CPF no cadastro de usuários'.
+    Exemplo: 'feat: adiciona paginação na listagem de usuários' (gere a
+    mensagem com base na mudança REAL que você implementou nesta execução —
+    nunca reuse este exemplo literalmente).
 
-        Args:
-            repo_path: Caminho absoluto para a raiz do repositório git.
-            commit_message: Mensagem do commit, seguindo o padrão Conventional
-                Commits descrito acima.
+    Args:
+        commit_message: Mensagem do commit, seguindo o padrão Conventional
+            Commits descrito acima.
 
-        Returns:
-            Uma mensagem de sucesso com a saída do commit, ou um erro explicando
-            o motivo da falha (branch incorreta, nenhuma alteração para commitar,
-            repositório inválido, etc).
+    Returns:
+        Uma mensagem de sucesso com a saída do commit, ou um erro explicando
+        o motivo da falha (branch incorreta, nenhuma alteração para commitar,
+        repositório inválido, etc).
     """
+    workspace_path = runtime.state.get("workspace_path")
+    if not workspace_path:
+        return "ERRO: nenhum workspace definido para esta conversa."
 
-    repo = Path(repo_path).resolve()
+    repo = Path(workspace_path).resolve()
 
     if not (repo / ".git").exists():
-        return f"ERRO: '{repo_path}' não é a raiz de um repositório git."
+        return f"ERRO: '{workspace_path}' não é a raiz de um repositório git."
 
     execution = GENERATE_BRANCHES.get(str(repo))
 
@@ -624,6 +643,8 @@ def git_commit_changes(repo_path: str, commit_message: str) -> str:
                 f"{commit_result.stderr.strip() or commit_result.stdout.strip()}"
             )
 
+        del GENERATE_BRANCHES[str(repo)] 
+        
         return (
             f"Commit criado com sucesso na branch '{current_branch}'.\n"
             f"Arquivos incluídos: {', '.join(sorted(execution_files))}\n"
@@ -638,3 +659,4 @@ def git_commit_changes(repo_path: str, commit_message: str) -> str:
 
     except subprocess.TimeoutExpired:
         return "ERRO: o comando git demorou demais para responder (timeout)."
+    
