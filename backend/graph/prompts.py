@@ -670,6 +670,35 @@ Comandos imperativos do usuário (ex: "Crie", "Adicione", "Corrija", "Faça", "I
 ### 🚫 REGRA ANTI-MICROGERENCIAMENTO ABSOLUTA
 É ESTRITAMENTE PROIBIDO criar uma tarefa separada para commits. A ação de commitar DEVE ser a última instrução dentro da 'description' da tarefa principal. Se você gerar mais de uma tarefa para um pedido simples do usuário, o sistema vai falhar.
 
+### 🚫 REGRA DE DEPENDÊNCIAS EXTERNAS AO ESCOPO DA TAREFA
+
+Ao gerar uma tarefa, você tem acesso ao Dossiê Técnico completo — incluindo
+os imports e dependências de cada arquivo envolvido. O Executor (Generate)
+NÃO tem esse acesso amplo: ele só deve ler os arquivos estritamente listados
+em `files`.
+
+Portanto, sempre que a tarefa envolver um arquivo que importa/depende de
+outros módulos do sistema (ex: `tasks.py` importando `app_graph` de
+`backend/graph`), você — não o Executor — decide como tratar essa
+dependência, e registra a decisão diretamente na `description` da tarefa.
+Duas opções:
+
+1. Se a dependência for relevante o suficiente para precisar ser lida de
+   verdade, inclua o caminho dela em `files` e explique na `description`
+   o que o Executor precisa saber sobre ela (voce já tem essa informação
+   no Dossiê — resuma o necessário, não mande ele redescobrir sozinho).
+
+2. Se a dependência deve ser tratada como uma caixa-preta (ex: testes
+   unitários, onde o comportamento interno não importa), diga isso
+   EXPLICITAMENTE na `description`: "Trate `app_graph` como dependência
+   externa — use unittest.mock.patch ou MagicMock para mockar sua
+   importação. NÃO é necessário nem esperado que o Executor leia o
+   conteúdo de backend/graph/ para esta tarefa."
+
+Nunca gere uma tarefa que deixe essa decisão em aberto para o Executor —
+isso o leva a explorar arquivos fora do escopo tentando decidir sozinho,
+o que gera loops de leitura e estouro de limite de execução.
+
 O Agente Executor (Generate) JÁ POSSUI ferramentas de Git integradas (`create_git_branch`, `git_commit_changes`). Portanto, NUNCA crie tarefas isoladas para Git. Agrupe essas instruções na descrição da tarefa principal.
 
 ### QUANDO GERAR TAREFAS (critério ampliado)
@@ -1294,7 +1323,15 @@ Você tem acesso a ferramentas de leitura (`list_directory_files`,
    parâmetro `files_to_commit`. NUNCA tente commitar arquivos que você não 
    leu/editou diretamente nesta execução.
 
-9. Não faça push. A conclusão da tarefa termina no commit local.
+9. Leia SOMENTE os arquivos listados em "files" da tarefa, e apenas
+   arquivos adicionais que você precise CRIAR ou EDITAR diretamente. Se a
+   "description" mencionar que uma dependência deve ser mockada, NÃO leia
+   o código-fonte dela — use unittest.mock.patch/MagicMock conforme
+   instruído. Se surgir uma dependência não coberta pela "description" e
+   você genuinamente não souber como tratá-la, pare e reporte isso como
+   tarefa ambígua (não explore o projeto tentando decidir sozinho).
+   
+10. Não faça push. A conclusão da tarefa termina no commit local.
 """
 
 
