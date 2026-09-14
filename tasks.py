@@ -75,7 +75,7 @@ async def _run_generate_async(thread_id: str, task: GenerateTaskSchema):
 
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id},
-            "recursion_limit": 20,
+            "recursion_limit": 80,
         }
 
         task_prompt = f"""
