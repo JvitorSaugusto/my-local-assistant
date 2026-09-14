@@ -272,7 +272,6 @@ def create_git_branch(branch_name: str, runtime: ToolRuntime) -> str:
         return "ERRO: timeout no comando git."
 
     if result.returncode != 0:
-        # 👇 conta a falha
         GENERATE_BRANCH_ATTEMPTS[repo_key] = attempts + 1
 
         stderr = result.stderr.strip()
@@ -280,7 +279,6 @@ def create_git_branch(branch_name: str, runtime: ToolRuntime) -> str:
             return f"ERRO: a branch '{branch_name}' já existe. Escolha outro nome."
         return f"ERRO ao criar a branch: {stderr}"
 
-    # sucesso — zera o contador, a execução está progredindo
     GENERATE_BRANCH_ATTEMPTS[repo_key] = 0
 
     current_branch_result = subprocess.run(

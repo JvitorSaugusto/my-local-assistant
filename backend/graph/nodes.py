@@ -33,6 +33,12 @@ from .prompts import (
 from .utils import detect_explicit_route, strip_leading_tags
 
 
+def build_system_context(*parts: str | None) -> SystemMessage:
+    """Junta múltiplas partes de contexto de sistema em uma única SystemMessage, separadas por um divisor."""
+    valid_parts = [p.strip() for p in parts if p and p.strip()]
+    return SystemMessage(content="\n\n---\n\n".join(valid_parts))
+
+
 def router_node(state: State):
     if state.get("enhanced_prompt"):
         last_msg = state["enhanced_prompt"]
@@ -167,58 +173,55 @@ def after_enhancer_route(state: State):
     return "router_node"
 
 def standard_node_20b(state: State):
-    persona = SystemMessage(content=STANDARD_NODE_PROMPT)
-    
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-6:]
-    
+
     if state.get("enhanced_prompt"):
          recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
-    
-    context = [persona]
-    
-    if actual_summary:
-        summary_memory = SystemMessage(content=f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}")
-        context.append(summary_memory)
-        
+
+    context = [
+        build_system_context(
+            STANDARD_NODE_PROMPT,
+            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
+        )
+    ]
+
     context.extend(recent_messages)
-    
+
     response = standard_llm.invoke(context)
     print("=== STANDARD ===")
     print("length:", len(response.content))
     print("metadata:", response.response_metadata)
     print("content:", repr(response.content[-500:]))
     response.name = "GPT-OSS (20B)"
-    
+
     return {"messages": [response], "enhanced_prompt": None}
 
-
 def code_node(state: State):
-    persona = SystemMessage(content=CODE_NODE_PROMPT)
-    
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-6:]
-    
+
     if state.get("enhanced_prompt"):
         recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
-    
-    context = [persona]
-    
-    if actual_summary:
-        summary_memory = SystemMessage(content=f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}")
-        context.append(summary_memory)
-        
+
+    context = [
+        build_system_context(
+            CODE_NODE_PROMPT,
+            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
+        )
+    ]
+
     context.extend(recent_messages)
-    
+
     response = code_llm_with_tools.invoke(context)
     response.name = "GPT-OSS (20B) CODE"
-    
+
     return {
         "messages": [response],
         "active_node": "code_node",
         "enhanced_prompt": None
         }
-    
+
 async def generate_dispatch_node(state: State, config: RunnableConfig):
     last_msg = state["messages"][-1].content.lower()
     configurable = config.get("configurable") or {}
@@ -297,35 +300,36 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
         "active_node": "generate_dispatch_node",
     }
     
+    
 async def generate_node(state: State):
-    persona = SystemMessage(content=GENERATE_NODE_PROMPT)
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-1:]
-
-    context = [persona]
-
-    if actual_summary:
-        context.append(SystemMessage(content=f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}"))
-
     task = state.get("active_generate_task")
-
-    if task:
-        context.append(
-            SystemMessage(
-                content=(
-                    "TAREFA DE IMPLEMENTAÇÃO:\n\n"
-                    f"{task.model_dump_json(indent=2)}"
-                )
-            )
-        )
 
     if state.get("enhanced_prompt"):
         recent_messages[-1] = HumanMessage(content=state["enhanced_prompt"])
+
+    context = [
+        build_system_context(
+            GENERATE_NODE_PROMPT,
+            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            (
+                "TAREFA DE IMPLEMENTAÇÃO:\n\n"
+                f"{task.model_dump_json(indent=2)}"
+            ) if task else None,
+        )
+    ]
 
     context.extend(recent_messages)
 
     response = await generate_llm_with_tools.ainvoke(context)
     response.name = "Qwen3-Coder (Generate)"
+    
+    print("\n===== GENERATE =====")
+    print("TOOL_CALLS:", response.tool_calls)
+    if response.content:
+        print("CONTENT:\n", response.content)
+    print("====================\n")
 
 
     if task:
@@ -432,10 +436,6 @@ def note_refine_node(state: State) -> State:
     return {"messages": [final_response]}
 
 def context_gatherer_node(state: State):
-    persona = SystemMessage(
-        content=CONTEXT_GATHERER_PROMPT
-    )
-
     actual_summary = state.get("summary", "")
 
     last_human_idx = 0
@@ -457,14 +457,20 @@ def context_gatherer_node(state: State):
                 recent_messages[index] = enhanced
                 break
 
-    context = [persona]
+    workspace = state.get("workspace_path")
 
-    if actual_summary:
-        context.append(
-            SystemMessage(
-                content=f"RESUMO DA CONVERSA:\n{actual_summary}"
-            )
+    context = [
+        build_system_context(
+            CONTEXT_GATHERER_PROMPT,
+            f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            (
+                "Ao usar 'list_directory_files' ou 'read_file_content', envie SEMPRE "
+                "caminhos relativos à raiz do projeto (ex: 'tasks.py', 'backend/main.py'). "
+                "O sistema já resolve isso automaticamente contra o workspace correto — "
+                "não é necessário (e não deve) incluir o caminho completo do disco."
+            ) if workspace else None,
         )
+    ]
 
     context.extend(recent_messages)
 
@@ -494,7 +500,6 @@ def context_gatherer_node(state: State):
     }
 
 async def heavy_analyzer_node(state: State, config: RunnableConfig):
-    persona = SystemMessage(content=HEAVY_NODE_PROMPT)
     actual_summary = state.get("summary", "")
     dossier = state.get("heavy_context", "")
     configurable = config.get("configurable") or {}
@@ -506,25 +511,21 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
             user_request = message
             break
 
-    context = [persona]
-
-    if actual_summary:
-        context.append(SystemMessage(content=f"RESUMO DA CONVERSA:\n{actual_summary}"))
-        
-    if dossier and dossier.strip():
-        context.append(
-            SystemMessage(
-                content=(
-                    "--- DOSSIÊ TÉCNICO (DADOS COLETADOS DO SISTEMA) ---\n"
-                    f"{dossier}\n"
-                    "---------------------------------------------------\n"
-                    "AVISO DE SISTEMA: Se o usuário pedir para analisar arquivos ou repositórios, "
-                    "assuma que os dados do Dossiê acima são as leituras reais. "
-                    "NÃO diga que você não tem acesso ao sistema ou não pode ler arquivos. "
-                    "Apenas forneça a análise com base no Dossiê."
-                )
-            )
+    context = [
+        build_system_context(
+            HEAVY_NODE_PROMPT,
+            f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            (
+                "--- DOSSIÊ TÉCNICO (DADOS COLETADOS DO SISTEMA) ---\n"
+                f"{dossier}\n"
+                "---------------------------------------------------\n"
+                "AVISO DE SISTEMA: Se o usuário pedir para analisar arquivos ou repositórios, "
+                "assuma que os dados do Dossiê acima são as leituras reais. "
+                "NÃO diga que você não tem acesso ao sistema ou não pode ler arquivos. "
+                "Apenas forneça a análise com base no Dossiê."
+            ) if dossier and dossier.strip() else None,
         )
+    ]
 
     if user_request:
         context.append(user_request)
