@@ -457,8 +457,6 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
 
 @tool
 def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
-    @tool
-def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
     """Cria um commit git apenas com as alterações da tarefa atual.
 
     Use esta ferramenta SOMENTE no final da tarefa, depois de já ter feito
@@ -534,8 +532,7 @@ def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
                 f"Esperada: '{expected_branch}'\n"
                 f"Atual: '{current_branch}'"
             )
-
-        # Descobre os arquivos modificados desde o commit base.
+            
         diff_result = subprocess.run(
             [
                 "git",
@@ -588,14 +585,11 @@ def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
             if len(line) >= 4:
                 file_path = line[3:].strip()
 
-                # Trata rename no formato:
-                # old -> new
                 if " -> " in file_path:
                     file_path = file_path.split(" -> ")[-1].strip()
 
                 pending_files.add(file_path)
 
-        # Só podem entrar arquivos que pertençam à execução.
         execution_files = committed_files | pending_files
 
         if not execution_files:
@@ -604,7 +598,6 @@ def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
                 "para commitar."
             )
 
-        # Adiciona somente os arquivos detectados nesta execução.
         add_result = subprocess.run(
             ["git", "add", "--", *sorted(execution_files)],
             cwd=str(repo),
@@ -619,7 +612,6 @@ def git_commit_changes(commit_message: str, runtime: ToolRuntime) -> str:
                 f"{add_result.stderr.strip()}"
             )
 
-        # Cria o commit.
         commit_result = subprocess.run(
             ["git", "commit", "-m", commit_message],
             cwd=str(repo),
