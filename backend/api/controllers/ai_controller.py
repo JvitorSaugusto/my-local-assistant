@@ -52,7 +52,10 @@ async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep,):
 @ai_router.get("/{thread_id}/messages")
 async def get_chat_history(thread_id: str, app_graph: CompiledGraphDep):
     
-    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+    config: RunnableConfig = {
+        "configurable": {"thread_id": payload.thread_id},
+        "recursion_limit": 40,
+    }
     
     state = await app_graph.aget_state(config)
     
