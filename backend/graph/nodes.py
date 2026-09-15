@@ -303,7 +303,7 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
     
 async def generate_node(state: State):
     actual_summary = state.get("summary", "")
-    recent_messages = state["messages"][-10:]
+    recent_messages = state["messages"][-20:]
     task = state.get("active_generate_task")
 
     workspace = state.get("workspace_path")
