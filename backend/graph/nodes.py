@@ -303,7 +303,15 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
     
 async def generate_node(state: State):
     actual_summary = state.get("summary", "")
-    recent_messages = state["messages"][-20:]
+    
+    last_human_idx = 0
+    for i in range(len(state["messages"]) - 1, -1, -1):
+        if state["messages"][i].type == "human":
+            last_human_idx = i
+            break
+    
+    recent_messages = state["messages"][last_human_idx:].copy()
+    
     task = state.get("active_generate_task")
 
     workspace = state.get("workspace_path")
@@ -470,8 +478,7 @@ def context_gatherer_node(state: State):
             last_human_idx = i
             break
 
-    start_idx = max(0, last_human_idx - 4)
-    recent_messages = state["messages"][start_idx:].copy()
+    recent_messages = state["messages"][last_human_idx:].copy()
 
     if state.get("enhanced_prompt"):
         enhanced = HumanMessage(
@@ -511,6 +518,16 @@ def context_gatherer_node(state: State):
         print("CONTENT LENGTH:", len(response.content))
 
     print("============================\n")
+    from .config import FILE_TOOLS_FULL
+    
+    print(
+    "CONTEXT GATHERER TOOL NAMES:",
+    [
+        getattr(tool, "name", getattr(tool, "__name__", str(tool)))
+        
+        for tool in FILE_TOOLS_FULL
+    ],
+)
 
     if response.tool_calls:
         return {

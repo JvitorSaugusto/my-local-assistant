@@ -86,3 +86,19 @@ code_llm_with_tools = code_llm.bind_tools(FILE_TOOLS_SURGICAL)
 note_llm_draft_with_tools = note_llm_draft.bind_tools(FILE_TOOLS_SURGICAL)
 context_gatherer_llm_with_tools = context_gatherer_llm.bind_tools(FILE_TOOLS_FULL)
 generate_llm_with_tools = generate_llm.bind_tools(WRITE_AND_GIT_TOOLS)
+
+print(
+    "CONTEXT TOOLS:",
+    [
+        getattr(tool, "name", getattr(tool, "__name__", str(tool)))
+        for tool in FILE_TOOLS_FULL
+    ],
+)
+
+print(
+    "GENERATE TOOLS:",
+    [
+        getattr(tool, "name", getattr(tool, "__name__", str(tool)))
+        for tool in WRITE_AND_GIT_TOOLS
+    ],
+)
