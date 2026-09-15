@@ -594,6 +594,12 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
     print("TASKS GERADAS E SALVAS:", len(result.tasks))
     print("CONTENT LENGTH:", len(result.analysis))
     print("==========================\n")
+    
+    for task in result.tasks:
+        print(f"\n--- TAREFA GERADA: {task.title} ---")
+        print("files:", task.files)
+        print("description:", task.description)
+        print("---\n")
 
     return {
         "messages": [response],

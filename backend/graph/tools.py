@@ -6,8 +6,21 @@ import subprocess
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
+
+MAX_READS_PER_GENERATE_TASK = 8
+
+def _count_read_calls(messages) -> int:
+    return sum(
+        1
+        for msg in messages
+        if getattr(msg, "tool_calls", None)
+        for call in msg.tool_calls
+        if call["name"] in ("read_file_content", "list_directory_files")
+    )
+    
+    
 @tool
-def list_directory_files(dir_path: str) -> list:
+def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
     """
     Lista todos os arquivos de código dentro de uma pasta e suas subpastas.
     Use esta ferramenta para descobrir a estrutura do diretório e ver quais arquivos existem 
@@ -23,6 +36,33 @@ def list_directory_files(dir_path: str) -> list:
     IGNORED_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', 'env'}
 
     file_paths = []
+    
+    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
+        return (
+            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: você já fez muitas "
+            "chamadas de leitura nesta execução sem produzir uma edição. PARE de "
+            "usar ferramentas de leitura. Se você já tem o suficiente, prossiga "
+            "para criar/editar arquivos. Se não tem, reporte a tarefa como ambígua "
+            "e encerre — não chame mais nenhuma ferramenta de leitura."
+        )
+    
+    already_listed = any(
+        call["name"] == "list_directory_files" and call["args"].get("dir_path") == dir_path
+        for msg in runtime.state.get("messages", [])
+        if getattr(msg, "tool_calls", None)
+        for call in msg.tool_calls
+    )
+
+    if already_listed:
+        return (
+            "AVISO: você já listou este diretório nesta mesma execução. "
+            "Releitura desnecessária. Use a lista que você já obteve e avance: "
+            "leia o arquivo específico necessário, edite/crie o arquivo, ou "
+            "finalize se a investigação já é suficiente."
+        )
+
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_dir = _resolve_path(dir_path, workspace_path)
     
     for root, dirs, files in os.walk(dir_path):
         
@@ -41,7 +81,7 @@ def list_directory_files(dir_path: str) -> list:
     return file_paths
 
 @tool
-def read_file_content(file_path: str) -> str:
+def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     """
     Lê e retorna o conteúdo (código-fonte) de um único arquivo específico.
     Use esta ferramenta APÓS usar a ferramenta 'list_directory_files', quando você já souber 
@@ -53,6 +93,34 @@ def read_file_content(file_path: str) -> str:
     Returns:
         str: O texto com o código contido dentro do arquivo, ou uma mensagem de erro.
     """
+    
+    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
+        return (
+            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: você já fez muitas "
+            "chamadas de leitura nesta execução sem produzir uma edição. PARE de "
+            "usar ferramentas de leitura. Se você já tem o suficiente, prossiga "
+            "para criar/editar arquivos. Se não tem, reporte a tarefa como ambígua "
+            "e encerre — não chame mais nenhuma ferramenta de leitura."
+        )
+    
+    already_read = any(
+        call["name"] == "read_file_content" and call["args"].get("file_path") == file_path
+        
+        for msg in runtime.state.get("messages", [])
+        if getattr(msg, "tool_calls", None)
+        for call in msg.tool_calls
+    )
+
+    if already_read:
+        return (
+            "AVISO: você já leu este arquivo nesta mesma execução. Releitura "
+            "desnecessária. Use o conteúdo que você já obteve e avance: edite/crie "
+            "o arquivo necessário, ou finalize se a investigação já é suficiente."
+        )
+
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_path = _resolve_path(file_path, workspace_path)
+    
     try:
         return Path(file_path).read_text(encoding='utf-8')
     except Exception as error:
