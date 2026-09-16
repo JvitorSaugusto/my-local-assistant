@@ -1582,8 +1582,11 @@ Você tem acesso a ferramentas de leitura (`list_directory_files`,
 
 12. Leia SOMENTE os arquivos listados em `files` da tarefa, salvo quando
     uma dependência adicional precisar ser criada ou editada diretamente.
+    
+13. **PADRÃO DE MENSAGEM DE COMMIT**
+    Toda mensagem de commit gerada por você deve conter obrigatoriamente a tag de identificação da inteligência artificial (por exemplo: `docs: [🤖 IA] cria documentação do módulo`). Se você esquecer, a ferramenta de commit se encarregará de adicionar, mas procure seguir o padrão desde a chamada.
 
-13. Não faça push.
+14. Não faça push.
 
     Como padrão, a conclusão da tarefa termina no commit local.
 

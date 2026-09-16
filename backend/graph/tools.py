@@ -656,10 +656,6 @@ def git_commit_changes(commit_message: str, files_to_commit: list[str], runtime:
                 "Crie uma nova branch primeiro usando 'create_git_branch'."
             )
 
-        # Removemos completamente a dependência de GENERATE_BRANCHES/execution
-        # pois se não for main/master, o commit está autorizado.
-
-        # Adiciona apenas os arquivos que a IA declarou que mexeu
         add_command = ["git", "add", "--"] + files_to_commit
         add_result = subprocess.run(
             add_command,
@@ -669,7 +665,13 @@ def git_commit_changes(commit_message: str, files_to_commit: list[str], runtime:
         if add_result.returncode != 0:
             return f"ERRO ao executar git add para os arquivos ({files_to_commit}): {add_result.stderr.strip()}"
 
-        # Cria o commit
+        if "[🤖 IA]" not in commit_message and "AI-generated" not in commit_message:
+                    if ":" in commit_message:
+                        parts = commit_message.split(":", 1)
+                        commit_message = f"{parts[0]}: [🤖 IA] {parts[1].strip()}"
+                    else:
+                        commit_message = f"[🤖 IA] {commit_message}"
+                        
         commit_result = subprocess.run(
             ["git", "commit", "-m", commit_message],
             cwd=str(repo), capture_output=True, text=True, timeout=30,
