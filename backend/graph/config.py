@@ -80,7 +80,7 @@ note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGU
 
 context_gatherer_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=131072,)
 
-heavy_llm = ChatOllama(model="deepseek-r1:32b", temperature=0.5, num_predict=16384, num_ctx=49152, reasoning=True)
+heavy_llm = ChatOllama(model="deepseek-r1:32b", temperature=0.3, num_predict=16384, num_ctx=49152, reasoning=True)
 
 heavy_llm_structured = heavy_llm.with_structured_output(HeavyAnalysisSchema)
 
