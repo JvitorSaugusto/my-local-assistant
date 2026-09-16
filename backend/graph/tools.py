@@ -117,20 +117,20 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
             "e encerre — não chame mais nenhuma ferramenta de leitura."
         )
     
-    already_read = any(
-        call["name"] == "read_file_content" and call["args"].get("file_path") == file_path
+    # already_read = any(
+    #     call["name"] == "read_file_content" and call["args"].get("file_path") == file_path
         
-        for msg in _messages_since_last_human(runtime.state)
-        if getattr(msg, "tool_calls", None)
-        for call in msg.tool_calls
-    )
+    #     for msg in _messages_since_last_human(runtime.state)
+    #     if getattr(msg, "tool_calls", None)
+    #     for call in msg.tool_calls
+    # )
 
-    if already_read:
-        return (
-            "AVISO: você já leu este arquivo nesta mesma execução. Releitura "
-            "desnecessária. Use o conteúdo que você já obteve e avance: edite/crie "
-            "o arquivo necessário, ou finalize se a investigação já é suficiente."
-        )
+    # if already_read:
+    #     return (
+    #         "AVISO: você já leu este arquivo nesta mesma execução. Releitura "
+    #         "desnecessária. Use o conteúdo que você já obteve e avance: edite/crie "
+    #         "o arquivo necessário, ou finalize se a investigação já é suficiente."
+    #     )
 
     workspace_path = runtime.state.get("workspace_path")
     resolved_path = _resolve_path(file_path, workspace_path)
@@ -523,6 +523,9 @@ def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str, runti
         original_content = resolved_path.read_text(encoding="utf-8")
     except OSError as error:
         return f"ERRO ao ler o arquivo '{file_path}': {error}"
+
+    old_snippet = old_snippet.strip("\n\r")
+    new_snippet = new_snippet.strip("\n\r")
 
     occurrences = original_content.count(old_snippet)
 
