@@ -4,10 +4,8 @@ from typing import Annotated, cast
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
-from sqlalchemy import select
 from backend.api.schemas import TaskResponseSchema
 from backend.api.services import TaskService
-from backend.database.models import TaskModel
 from backend.graph.config import State
 from backend.database.config import async_session_env
 
