@@ -209,13 +209,17 @@ def standard_node_20b(state: State):
 def code_node(state: State):
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-6:]
+    
+    workspace_path = state.get("workspace_path", "Diretório não informado")
 
     if state.get("enhanced_prompt"):
         recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
 
+    prompt_with_workspace = f"{CODE_NODE_PROMPT}\n\n[CONTEXTO DO AMBIENTE]\nO caminho raiz do workspace atual é: {workspace_path}"
+
     context = [
         build_system_context(
-            CODE_NODE_PROMPT,
+            prompt_with_workspace,
             f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
         )
     ]
@@ -229,7 +233,7 @@ def code_node(state: State):
         "messages": [response],
         "active_node": "code_node",
         "enhanced_prompt": None
-        }
+    }
 
 async def generate_dispatch_node(state: State, config: RunnableConfig):
     last_msg = state["messages"][-1].content.lower()
