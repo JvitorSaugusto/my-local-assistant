@@ -17,7 +17,17 @@ def _count_read_calls(messages) -> int:
         for call in msg.tool_calls
         if call["name"] in ("read_file_content", "list_directory_files")
     )
-    
+
+def _messages_since_last_human(state: dict) -> list:
+    """Espelha o mesmo corte usado em generate_node/context_gatherer_node —
+    conta só o que aconteceu na tarefa atual, não o histórico da conversa."""
+    messages = state.get("messages", [])
+    last_human_idx = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].type == "human":
+            last_human_idx = i
+            break
+    return messages[last_human_idx:]
     
 @tool
 def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
@@ -48,7 +58,7 @@ def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
     
     already_listed = any(
         call["name"] == "list_directory_files" and call["args"].get("dir_path") == dir_path
-        for msg in runtime.state.get("messages", [])
+        for msg in _messages_since_last_human(runtime.state)
         if getattr(msg, "tool_calls", None)
         for call in msg.tool_calls
     )
@@ -64,28 +74,32 @@ def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
     workspace_path = runtime.state.get("workspace_path")
     resolved_dir = _resolve_path(dir_path, workspace_path)
     
-    for root, dirs, files in os.walk(dir_path):
-        
-        allowed_dirs = []
-        for dir_name in dirs:
-            if dir_name not in IGNORED_DIRS:
-                allowed_dirs.append(dir_name)
-        
+    print(f"[LEITURA] resolved_dir={resolved_dir}")
+
+    for root, dirs, files in os.walk(resolved_dir):
+        allowed_dirs = [d for d in dirs if d not in IGNORED_DIRS]
         dirs[:] = allowed_dirs
-        
+
         for file_name in files:
             if Path(file_name).suffix in CODE_EXTENSIONS:
                 file_path = Path(root) / file_name
                 file_paths.append(str(file_path))
-                
+    
+    read_count = _count_read_calls(_messages_since_last_human(runtime.state))
+    print(f"[LEITURA] {read_count}/{MAX_READS_PER_GENERATE_TASK} chamadas nesta execução | resolved_dir={resolved_dir}")
+
     return file_paths
 
 @tool
 def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     """
     Lê e retorna o conteúdo (código-fonte) de um único arquivo específico.
-    Use esta ferramenta APÓS usar a ferramenta 'list_directory_files', quando você já souber 
-    o caminho exato do arquivo que precisa analisar.
+
+    Use esta ferramenta quando você já possuir o caminho do arquivo que precisa
+    analisar. O caminho deve ser relativo à raiz do workspace.
+
+    Para pedidos em que o usuário já informou explicitamente o arquivo,
+    leia diretamente esse arquivo.
     
     Args:
         file_path (str): O caminho exato do arquivo que você deseja ler.
@@ -106,7 +120,7 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     already_read = any(
         call["name"] == "read_file_content" and call["args"].get("file_path") == file_path
         
-        for msg in runtime.state.get("messages", [])
+        for msg in _messages_since_last_human(runtime.state)
         if getattr(msg, "tool_calls", None)
         for call in msg.tool_calls
     )
@@ -121,8 +135,11 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     workspace_path = runtime.state.get("workspace_path")
     resolved_path = _resolve_path(file_path, workspace_path)
     
+    read_count = _count_read_calls(_messages_since_last_human(runtime.state))
+    print(f"[LEITURA] {read_count}/{MAX_READS_PER_GENERATE_TASK} chamadas nesta execução | resolved_path={resolved_path}")
+
     try:
-        return Path(file_path).read_text(encoding='utf-8')
+        return resolved_path.read_text(encoding='utf-8')
     except Exception as error:
         return f"Erro ao ler o arquivo: {str(error)}"
     
@@ -147,7 +164,7 @@ def parse_python_ast(content: str, indent: str) -> list:
     return signatures
 
 @tool
-def generate_repo_map(dir_path: str) -> str:
+def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
     """
     Gera um mapa estrutural do repositório, exibindo a árvore de arquivos e 
     as assinaturas de classes e funções, sem o corpo do código.
@@ -159,6 +176,21 @@ def generate_repo_map(dir_path: str) -> str:
     Returns:
         str: Uma representação em texto da árvore do projeto com as assinaturas de código.
     """
+    
+    already_mapped = any(
+        call["name"] == "generate_repo_map" and call["args"].get("dir_path") == dir_path
+        for msg in _messages_since_last_human(runtime.state)
+        if getattr(msg, "tool_calls", None)
+        for call in msg.tool_calls
+    )
+    if already_mapped:
+        return (
+            "AVISO: você já gerou o mapa deste diretório nesta mesma execução. "
+            "Use o mapa que já obteve — não gere de novo. Se precisar de mais "
+            "detalhes, leia um arquivo específico com read_file_content, ou "
+            "finalize a investigação se já tem o suficiente."
+        )
+        
     CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.php', '.md'}
     IGNORED_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', 'env'}
     
@@ -168,29 +200,33 @@ def generate_repo_map(dir_path: str) -> str:
         re.MULTILINE
     )
 
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_dir = str(_resolve_path(dir_path, workspace_path))
+    print(f"[LEITURA] resolved_dir={resolved_dir}")
+
     repo_map = [f"Mapa do Repositório: {dir_path}\n"]
-    
-    for root, dirs, files in os.walk(dir_path):
+
+    for root, dirs, files in os.walk(resolved_dir):
         dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
-        
-        level = root.replace(dir_path, '').count(os.sep)
+
+        level = root.replace(resolved_dir, '').count(os.sep)
         indent = ' ' * 4 * level
         folder_name = os.path.basename(root)
-        
+
         if folder_name:
             repo_map.append(f"{indent}📂 {folder_name}/")
-            
+
         sub_indent = ' ' * 4 * (level + 1)
-        
+
         for file_name in files:
             ext = Path(file_name).suffix
             if ext in CODE_EXTENSIONS:
                 file_path = Path(root) / file_name
                 repo_map.append(f"{sub_indent}📄 {file_name}")
-                
+
                 try:
                     content = file_path.read_text(encoding='utf-8')
-                    
+
                     if ext == '.py':
                         py_sigs = parse_python_ast(content, sub_indent)
                         repo_map.extend(py_sigs)
@@ -200,7 +236,7 @@ def generate_repo_map(dir_path: str) -> str:
                             repo_map.append(f"{sub_indent}    🔹 {sig.strip()}")
                 except Exception:
                     repo_map.append(f"{sub_indent}    ⚠️ (Erro ao ler arquivo)")
-                    
+
     return "\n".join(repo_map)
 
 # ──────────────────────────────────────────────────────────────────────────
