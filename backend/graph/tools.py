@@ -177,19 +177,19 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
         str: Uma representação em texto da árvore do projeto com as assinaturas de código.
     """
     
-    already_mapped = any(
-        call["name"] == "generate_repo_map" and call["args"].get("dir_path") == dir_path
-        for msg in _messages_since_last_human(runtime.state)
-        if getattr(msg, "tool_calls", None)
-        for call in msg.tool_calls
-    )
-    if already_mapped:
-        return (
-            "AVISO: você já gerou o mapa deste diretório nesta mesma execução. "
-            "Use o mapa que já obteve — não gere de novo. Se precisar de mais "
-            "detalhes, leia um arquivo específico com read_file_content, ou "
-            "finalize a investigação se já tem o suficiente."
-        )
+    # already_mapped = any(
+    #     call["name"] == "generate_repo_map" and call["args"].get("dir_path") == dir_path
+    #     for msg in _messages_since_last_human(runtime.state)
+    #     if getattr(msg, "tool_calls", None)
+    #     for call in msg.tool_calls
+    # )
+    # if already_mapped:
+    #     return (
+    #         "AVISO: você já gerou o mapa deste diretório nesta mesma execução. "
+    #         "Use o mapa que já obteve — não gere de novo. Se precisar de mais "
+    #         "detalhes, leia um arquivo específico com read_file_content, ou "
+    #         "finalize a investigação se já tem o suficiente."
+    #     )
         
     CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.php', '.md'}
     IGNORED_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', 'env'}
