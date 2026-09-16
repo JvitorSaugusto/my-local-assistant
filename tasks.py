@@ -99,6 +99,7 @@ async def _run_generate_async(thread_id: str, task: GenerateTaskSchema):
             "actual_route": "GENERATE_EXECUTE",
             "active_generate_task": task,
             "thread_id": thread_id,
+            "generate_start_idx": 0,
             "workspace_path": task.repo_path,
         }
 

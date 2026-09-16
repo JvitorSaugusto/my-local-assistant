@@ -74,6 +74,7 @@ def build_graph():
             "generate_node": "generate_node",
             "generate_dispatch_node": "generate_dispatch_node",
             "note_draft_node": "note_draft_node",
+            "heavy_analyzer_node": "heavy_analyzer_node",
             "context_gatherer_node": "context_gatherer_node",
             "enhancer_node": "enhancer_node",
         }

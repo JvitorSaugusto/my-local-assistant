@@ -33,11 +33,20 @@ from .prompts import (
 from .utils import detect_explicit_route, strip_leading_tags
 
 
+WRITE_TOOL_NAMES = {"create_new_file", "edit_existing_file", "append_to_file", "git_commit_changes"}
+
+def _has_write_call(messages) -> bool:
+    return any(
+        call["name"] in WRITE_TOOL_NAMES
+        for msg in messages
+        if getattr(msg, "tool_calls", None)
+        for call in msg.tool_calls
+    )
+    
 def build_system_context(*parts: str | None) -> SystemMessage:
     """Junta múltiplas partes de contexto de sistema em uma única SystemMessage, separadas por um divisor."""
     valid_parts = [p.strip() for p in parts if p and p.strip()]
     return SystemMessage(content="\n\n---\n\n".join(valid_parts))
-
 
 def router_node(state: State):
     if state.get("enhanced_prompt"):
@@ -298,20 +307,22 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
     return {
         "messages": [AIMessage(content=msg_retorno)],
         "active_node": "generate_dispatch_node",
-    }
-    
+    } 
     
 async def generate_node(state: State):
     actual_summary = state.get("summary", "")
     
-    last_human_idx = 0
-    for i in range(len(state["messages"]) - 1, -1, -1):
-        if state["messages"][i].type == "human":
-            last_human_idx = i
-            break
+    generate_start_idx = state.get("generate_start_idx")
     
-    recent_messages = state["messages"][last_human_idx:].copy()
-    
+    if generate_start_idx is None:
+        last_human_idx = 0
+        for i in range(len(state["messages"]) - 1, -1, -1):
+            if state["messages"][i].type == "human":
+                last_human_idx = i
+                break
+        generate_start_idx = last_human_idx
+        
+    recent_messages = state["messages"][generate_start_idx:].copy()
     task = state.get("active_generate_task")
 
     workspace = state.get("workspace_path")
@@ -340,7 +351,10 @@ async def generate_node(state: State):
             pass
 
     if state.get("enhanced_prompt"):
-        recent_messages[-1] = HumanMessage(content=state["enhanced_prompt"])
+        for i in range(len(recent_messages) - 1, -1, -1):
+            if recent_messages[i].type == "human":
+                recent_messages[i] = HumanMessage(content=state["enhanced_prompt"])
+                break
 
     context = [
         build_system_context(
@@ -365,23 +379,63 @@ async def generate_node(state: State):
         print("CONTENT:\n", response.content)
     print("====================\n")
 
+    messages_to_return = [response]
+    is_final_response = not bool(response.tool_calls)
 
-    if task:
+    if task and is_final_response:
+        all_messages_this_run = recent_messages + messages_to_return
+        wrote_something = _has_write_call(all_messages_this_run)
         
-        async with async_session_env() as db:
-            stmt = (
-                update(TaskModel)
-                .where(TaskModel.id == task.id)
-                .values(status="completed")
-            )
-            await db.execute(stmt)
-            await db.commit()
+        content_str = str(response.content).strip().upper() if response.content else ""
+        reported_ambiguous = content_str.startswith("TAREFA AMBÍGUA")
+
+        if not wrote_something and not reported_ambiguous:
+            print("⚠️ [GENERATE] Tentativa de finalizar sem ação. Aplicando Nudge...")
+            nudge = HumanMessage(content=(
+                "Você não chamou nenhuma ferramenta de escrita e não editou nenhum "
+                "arquivo. Se pretende fazer uma alteração, chame agora a ferramenta "
+                "necessária (create_git_branch, depois edit_existing_file/create_new_file). "
+                "Se a tarefa não pode ser concluída com segurança, responda começando "
+                "EXATAMENTE com 'TAREFA AMBÍGUA:' e explique o motivo."
+            ))
+            
+            response2 = await generate_llm_with_tools.ainvoke(context + [response, nudge])
+            response2.name = "Qwen3-Coder (Generate)"
+            
+            print("\n===== GENERATE (NUDGE) =====")
+            print("TOOL_CALLS:", response2.tool_calls)
+            if response2.content:
+                print("CONTENT:\n", response2.content)
+            print("====================\n")
+            
+            messages_to_return.extend([nudge, response2])
+            
+            is_final_response = not bool(response2.tool_calls)
+            all_messages_this_run = recent_messages + messages_to_return
+            wrote_something = _has_write_call(all_messages_this_run)
+            content_str2 = str(response2.content).strip().upper() if response2.content else ""
+            reported_ambiguous = content_str2.startswith("TAREFA AMBÍGUA")
+
+        if is_final_response:
+            final_status = "completed" if (wrote_something or reported_ambiguous) else "failed"
+            
+            if final_status == "failed":
+                print("❌ [GENERATE] Falhou em executar ações mesmo após o nudge. Marcando como failed.")
+                
+            async with async_session_env() as db:
+                stmt = (
+                    update(TaskModel)
+                    .where(TaskModel.id == task.id)
+                    .values(status=final_status)
+                )
+                await db.execute(stmt)
+                await db.commit()
 
     return {
-        "messages": [response],
+        "messages": messages_to_return,
         "active_node": "generate_node",
         "enhanced_prompt": None,
-        "active_generate_task": None #
+        "active_generate_task": None if is_final_response else task
     }
     
 def note_draft_node(state: State) -> State:
@@ -516,6 +570,8 @@ def context_gatherer_node(state: State):
 
     if response.content:
         print("CONTENT LENGTH:", len(response.content))
+        print("CONTENT:")
+        print(response.content)
 
     print("============================\n")
     from .config import FILE_TOOLS_FULL
@@ -629,7 +685,20 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
 def route_decision(state: State):
     destiny = state.get("actual_route", "NORMAL")
     if destiny == "CODE": return "code_node"
-    elif destiny == "HEAVY": return "context_gatherer_node"
+    elif destiny == "HEAVY": 
+        workspace = state.get("workspace_path", "")
+        
+        if workspace is None:
+            workspace = ""
+            
+        if workspace.strip():
+            print("🔀 [EDGE] Rota HEAVY com tools. Indo para: context_gatherer_node")
+            return "context_gatherer_node"
+        
+        else:
+            print("🔀 [EDGE] Rota HEAVY sem tools. Indo para: heavy_analyzer_node")
+            return "heavy_analyzer_node"
+        
     elif destiny == "NOTES": return "note_draft_node"
     elif destiny == "ENHANCER": return "enhancer_node"
     elif destiny == "GENERATE_DISPATCH": return "generate_dispatch_node" # Disparado pelo seu texto
