@@ -7,7 +7,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
 
-MAX_READS_PER_GENERATE_TASK = 8
+MAX_READS_PER_GENERATE_TASK = 50
 
 def _count_read_calls(messages) -> int:
     return sum(
