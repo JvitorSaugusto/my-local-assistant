@@ -139,8 +139,11 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     print(f"[LEITURA] {read_count}/{MAX_READS_PER_GENERATE_TASK} chamadas nesta execução | resolved_path={resolved_path}")
 
     try:
-        return resolved_path.read_text(encoding='utf-8')
+        result = resolved_path.read_text(encoding='utf-8')
+        print(f"[LEITURA] sucesso, {len(result)} chars")
+        return result
     except Exception as error:
+        print(f"[LEITURA] FALHOU: {error}")
         return f"Erro ao ler o arquivo: {str(error)}"
     
 

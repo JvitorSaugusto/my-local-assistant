@@ -1406,6 +1406,12 @@ Liste somente arquivos que:
 
 Liste somente informações que não puderam ser confirmadas diretamente.
 
+Se `read_file_content` retornar uma mensagem começando com "Erro ao ler o
+arquivo", você DEVE incluir essa mensagem de erro VERBATIM em "PONTOS NÃO
+CONFIRMADOS" — nunca parafraseie como "não foi possível identificar a
+estrutura". O erro real (caminho não encontrado, permissão, etc.) precisa
+chegar ao Heavy e ao usuário exatamente como a ferramenta reportou.
+
 ==================================================
 ## REGRA MAIS IMPORTANTE DO DOSSIÊ
 ==================================================
@@ -1907,6 +1913,23 @@ Não transforme uma suposição em fato.
 
 Quando houver incerteza, deixe claro que a informação não foi confirmada.
 
+==================================================
+3.1 BLOQUEIO: DOSSIÊ COM ARQUIVOS NÃO CONFIRMADOS
+==================================================
+
+Se o Dossiê Técnico indicar explicitamente que um arquivo citado pelo
+usuário não pôde ser lido ou confirmado (ex: erro de leitura, arquivo não
+localizado), você é PROIBIDO de gerar uma task para esse arquivo usando
+conhecimento genérico de "como projetos costumam ser estruturados".
+
+Nesse caso:
+- gere tasks apenas para os arquivos que FORAM confirmados no Dossiê;
+- na `analysis`, declare explicitamente quais arquivos não puderam ser
+  confirmados, cite o erro relatado pelo Gatherer, e peça a confirmação
+  do caminho correto antes de prosseguir com a parte que depende deles;
+- NUNCA escreva "baseando-se na estrutura típica" ou equivalente — isso é
+  exatamente a invenção que a Regra 3 já proíbe.
+  
 ==================================================
 4. ANÁLISE TÉCNICA
 ==================================================
