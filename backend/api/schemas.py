@@ -39,45 +39,37 @@ class GenerateTaskSchema(BaseModel):
     
 
 class HeavyGeneratedTask(BaseModel):
-    """Schema usado APENAS pelo Heavy ao gerar tarefas.
-    Não inclui id/repo_path/status: esses são preenchidos pelo sistema."""
-
     title: str = Field(
-        description=(
-            "Título curto e objetivo, focado no RESULTADO da tarefa. "
-            "Ex: 'Abrir card de gestão OEE em nova aba'."
-        )
-    )
-    description: str = Field(
-        description=(
-            "Roteiro COMPLETO e AUTOSSUFICIENTE para o Agente Executor, que NÃO "
-            "tem acesso ao dossiê técnico — só a este texto e aos arquivos em 'files'. "
-            "OBRIGATÓRIO: (1) se o dossiê contém o trecho de código a alterar, cite "
-            "o código ATUAL e o código DEPOIS, ambos em blocos de crases; (2) repita "
-            "ao final toda restrição de processo que o usuário pediu (ex: 'NÃO faça "
-            "commit — apenas edite e pare'); (3) se alguma dependência deve ser "
-            "mockada em vez de lida, diga isso explicitamente. "
-            "NUNCA escreva uma descrição genérica de uma linha como 'substituir a "
-            "lógica para abrir em nova aba' — isso é insuficiente e a tarefa falhará."
-        )
-    )
-    files: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Caminhos relativos dos arquivos que serão criados ou editados "
-            "(ex: 'components/quick-access-cards.tsx'). Inclua também arquivos que "
-            "o Executor precise LER para concluir a tarefa."
-        ),
-    )
-    reason: str = Field(
-        default="",
-        description="Por que esta alteração é necessária, do ponto de vista do usuário.",
-    )
-    priority: Literal["low", "medium", "high"] = Field(
-        default="medium",
-        description="Urgência da tarefa. Use 'medium' quando não houver indicação clara.",
+        description="Título curto e específico da tarefa."
     )
 
+    objective: str = Field(
+        description="Objetivo exato da alteração."
+    )
+
+    target: str = Field(
+        description="Localização exata: arquivo, classe, função, método, rota ou componente."
+    )
+
+    logic: str = Field(
+        description="Descrição cirúrgica de como a alteração deve ser implementada, usando os nomes reais encontrados no dossiê."
+    )
+
+    constraints: str = Field(
+        description="Restrições específicas impostas pelo usuário para esta tarefa."
+    )
+
+    files: list[str] = Field(
+        description="Somente os arquivos realmente envolvidos na tarefa."
+    )
+
+    reason: str = Field(
+        description="Justificativa técnica baseada nas evidências do dossiê."
+    )
+
+    priority: str = Field(
+        description="Prioridade técnica da tarefa: alta, média ou baixa."
+    )
 
 class HeavyAnalysisSchema(BaseModel):
     analysis: str = Field(

@@ -653,18 +653,32 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
 
     if result.tasks:
         async with async_session_env() as db:
-            for task in result.tasks:
-                new_task = TaskModel(
-                    thread_id=thread_id,
-                    title=task.title,
-                    description=task.description,
-                    files=task.files,
-                    reason=task.reason,
-                    priority=task.priority,
-                    status="pending"
-                )
-                db.add(new_task)
-            await db.commit() # Salva tudo de uma vez
+            try:
+                for task in result.tasks:
+                    description = (
+                        f"**Objetivo:**\n{task.objective}\n\n"
+                        f"**Localização Alvo:**\n{task.target}\n\n"
+                        f"**Lógica da Alteração (Instruções Detalhadas):**\n{task.logic}\n\n"
+                        f"**Restrições do Usuário:**\n{task.constraints}"
+                    )
+                    
+                    new_task = TaskModel(
+                        thread_id=thread_id,
+                        title=task.title,
+                        description=description,
+                        files=task.files,
+                        reason=task.reason,
+                        priority=task.priority,
+                        status="pending"
+                    )
+                    db.add(new_task)
+                
+                await db.commit()
+                
+            except Exception as e:
+                await db.rollback()
+                print(f"Erro ao salvar as tasks: {e}")
+                raise e
 
 
     print("\n===== HEAVY ANALYZER =====")
@@ -675,7 +689,7 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
     for task in result.tasks:
         print(f"\n--- TAREFA GERADA: {task.title} ---")
         print("files:", task.files)
-        print("description:", task.description)
+        print("description:", description)
         print("---\n")
 
     return {
