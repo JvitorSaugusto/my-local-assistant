@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from backend.graph.builder import build_graph
 from backend.api.controllers.chat_controller import chat_router
 from backend.api.controllers.ai_controller import ai_router
+from backend.api.controllers.tasks_controller import task_router
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from contextlib import asynccontextmanager
@@ -46,3 +47,4 @@ async def serve_index():
 
 app.include_router(ai_router, prefix="/api/ai", tags=["InteligenciaArtificial"])
 app.include_router(chat_router, prefix="/api/chats", tags=["ChatInteligenciaArtificial"])
+app.include_router(task_router, prefix="/api/tasks", tags=["Tarefas"])
