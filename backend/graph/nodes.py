@@ -338,7 +338,7 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
     )
 
     return {
-        "messages": [AIMessage(content=msg_retorno)],
+        "messages": [AIMessage(content=msg_retorno, additional_kwargs={'message_tag': 'response_dispatch'})],
         "active_node": "generate_dispatch_node",
     } 
     
