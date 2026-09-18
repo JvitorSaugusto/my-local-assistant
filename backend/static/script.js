@@ -7,7 +7,7 @@ const API = {
   chats: "/api/chats/",
   chat: (id) => `/api/chats/${id}`,
   messages: (thread_id) => `/api/ai/${thread_id}/messages`,
-  tasks: (thread_id) => `/api/ai/${thread_id}/tasks`,
+  tasks: (thread_id) => `/api/tasks/${thread_id}/tasks`,
   send: "/api/ai/",
   batch: "/api/ai/batch/",
 };
