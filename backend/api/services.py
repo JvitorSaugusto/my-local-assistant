@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -50,17 +51,50 @@ class ChatService:
             return False
             
         await self.db.delete(chat)
+        
         await self.db.commit()
         
         return True
     
 class TaskService:
-    @staticmethod
-    async def get_pending_by_thread(thread_id: str, db) -> list[TaskModel]:
+    
+    def __init__(self, db: AsyncSession):
+            self.db = db
+            
+    async def get_pending_by_thread(self, thread_id: str) -> Sequence[TaskModel]:
         stmt = select(TaskModel).where(
             TaskModel.thread_id == thread_id,
             TaskModel.status == "pending"
         ).order_by(TaskModel.id)
         
-        result = await db.execute(stmt)
+        result = await self.db.execute(stmt)
         return result.scalars().all()
+    
+    async def get_all(self) -> Sequence[TaskModel]:
+        stmt = select(TaskModel).order_by(TaskModel.id)
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
+    
+    async def update(self, task_id: int, updates: dict) -> TaskModel | None:
+        task = await self.db.get(TaskModel, task_id)
+        if not task:
+            return None
+            
+        for key, value in updates.items():
+            if hasattr(task, key):
+                setattr(task, key, value)
+                
+        await self.db.commit()
+        await self.db.refresh(task)
+        
+        return task
+    
+    async def delete(self, task_id: int) -> bool:
+        task = await self.db.get(TaskModel, task_id)
+        if not task:
+            return False
+            
+        await self.db.delete(task)
+        await self.db.commit()
+        
+        return True

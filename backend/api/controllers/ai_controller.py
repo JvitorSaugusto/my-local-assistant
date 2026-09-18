@@ -85,8 +85,3 @@ async def send_tasks_background(payload: BatchPayload):
         "message": f"{len(payload.prompts)} tarefa(s) enviada(s)."
     }
     
-
-@ai_router.get("/{thread_id}/tasks", response_model=list[TaskResponseSchema])
-async def get_pending_tasks(thread_id: str):
-    async with async_session_env() as db:
-        return await TaskService.get_pending_by_thread(thread_id, db)
