@@ -32,6 +32,7 @@ class State(TypedDict):
     enhanced_prompt: str | None
     
     heavy_context: str | None
+    gatherer_tool_trace: list[dict]
     
     active_generate_task: GenerateTaskSchema | None
     generate_start_idx: NotRequired[int | None]

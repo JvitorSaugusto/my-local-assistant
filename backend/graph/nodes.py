@@ -1,12 +1,11 @@
+
 import re
 import time
 from backend.database.config import async_session_env
 from backend.database.models import TaskModel
-from langchain_core.messages import AIMessage
 from sqlalchemy import select, update
 from langchain_core.runnables import RunnableConfig
-
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage, AIMessage
 from .config import (
     State,
     router_structured,
@@ -32,8 +31,38 @@ from .prompts import (
 
 from .utils import detect_explicit_route, strip_leading_tags
 
+def _extract_gatherer_tool_trace(messages, start_idx: int) -> list[dict]:
+    """
+    Extrai somente o nome e os argumentos das tools utilizadas
+    durante a execução atual do Context Gatherer.
 
-WRITE_TOOL_NAMES = {"create_new_file", "edit_existing_file", "append_to_file", "git_commit_changes"}
+    Não preserva:
+    - conteúdo de ToolMessage;
+    - pensamentos do modelo;
+    - IDs das tool calls;
+    - respostas completas das ferramentas.
+    """
+    trace = []
+
+    for msg in messages[start_idx + 1:]:
+        if msg.type != "ai":
+            continue
+
+        tool_calls = getattr(msg, "tool_calls", None)
+
+        if not tool_calls:
+            continue
+
+        for tool_call in tool_calls:
+            trace.append(
+                {
+                    "name": tool_call.get("name"),
+                    "args": tool_call.get("args", {}),
+                }
+            )
+
+    return trace
+
 
 def _has_write_call(messages) -> bool:
     return any(
@@ -331,6 +360,7 @@ async def generate_node(state: State):
 
     workspace = state.get("workspace_path")
     branch_context = None
+    
     if workspace:
         repo = __import__("pathlib").Path(workspace).resolve()
         try:
@@ -342,7 +372,9 @@ async def generate_node(state: State):
                 text=True,
                 timeout=10,
             )
+            
             current_branch = branch_result.stdout.strip()
+            
             if current_branch and current_branch not in {"main", "master"}:
                 branch_context = (
                     "STATUS DA BRANCH DO WORKSPACE: "
@@ -531,6 +563,7 @@ def context_gatherer_node(state: State):
     actual_summary = state.get("summary", "")
 
     last_human_idx = 0
+
     for i in range(len(state["messages"]) - 1, -1, -1):
         if state["messages"][i].type == "human":
             last_human_idx = i
@@ -553,13 +586,19 @@ def context_gatherer_node(state: State):
     context = [
         build_system_context(
             CONTEXT_GATHERER_PROMPT,
-            f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            (
+                f"RESUMO DA CONVERSA:\n{actual_summary}"
+                if actual_summary
+                else None
+            ),
             (
                 "Ao usar 'list_directory_files' ou 'read_file_content', envie SEMPRE "
                 "caminhos relativos à raiz do projeto (ex: 'tasks.py', 'backend/main.py'). "
                 "O sistema já resolve isso automaticamente contra o workspace correto — "
                 "não é necessário (e não deve) incluir o caminho completo do disco."
-            ) if workspace else None,
+            )
+            if workspace
+            else None,
         )
     ]
 
@@ -578,16 +617,6 @@ def context_gatherer_node(state: State):
         print(response.content)
 
     print("============================\n")
-    from .config import FILE_TOOLS_FULL
-    
-    print(
-    "CONTEXT GATHERER TOOL NAMES:",
-    [
-        getattr(tool, "name", getattr(tool, "__name__", str(tool)))
-        
-        for tool in FILE_TOOLS_FULL
-    ],
-)
 
     if response.tool_calls:
         return {
@@ -596,19 +625,59 @@ def context_gatherer_node(state: State):
             "enhanced_prompt": None,
         }
 
+    gatherer_tool_trace = _extract_gatherer_tool_trace(
+        state["messages"],
+        last_human_idx,
+    )
+
+    messages_to_remove = [
+        RemoveMessage(id=msg.id)
+        for msg in state["messages"][last_human_idx + 1:]
+        if getattr(msg, "id", None)
+    ]
+
+    print("\n===== LIMPEZA DO GATHERER =====")
+    print(
+        f"[🧹] Mensagens internas removidas: "
+        f"{len(messages_to_remove)}"
+    )
+    print(
+        f"[🧰] Tool calls preservadas no trace: "
+        f"{len(gatherer_tool_trace)}"
+    )
+    print(
+        f"[📄] Dossiê salvo em heavy_context: "
+        f"{len(response.content or '')} caracteres"
+    )
+    print("===============================\n")
+
     return {
+        "messages": messages_to_remove,
+
         "heavy_context": response.content,
+
+        "gatherer_tool_trace": gatherer_tool_trace,
+
         "active_node": "context_gatherer_node",
         "enhanced_prompt": None,
     }
 
-async def heavy_analyzer_node(state: State, config: RunnableConfig):
+async def heavy_analyzer_node(
+    state: State,
+    config: RunnableConfig,
+):
     actual_summary = state.get("summary", "")
     dossier = state.get("heavy_context", "")
+    gatherer_tool_trace = state.get("gatherer_tool_trace", [])
+
     configurable = config.get("configurable") or {}
-    thread_id = configurable.get("thread_id", "thread_ausente")
+    thread_id = configurable.get(
+        "thread_id",
+        "thread_ausente",
+    )
 
     user_request = None
+
     for message in reversed(state["messages"]):
         if message.type == "human":
             user_request = message
@@ -617,26 +686,43 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
     context = [
         build_system_context(
             HEAVY_NODE_PROMPT,
-            f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            f"RESUMO DA CONVERSA:\n{actual_summary}"
+            if actual_summary else None,
             (
+                "--- TOOL CALLS REALIZADAS PELO CONTEXT GATHERER ---\n"
+                f"{gatherer_tool_trace}\n"
+                "---------------------------------------------------\n\n"
                 "--- DOSSIÊ TÉCNICO (DADOS COLETADOS DO SISTEMA) ---\n"
                 f"{dossier}\n"
                 "---------------------------------------------------\n"
-                "AVISO DE SISTEMA: Se o usuário pedir para analisar arquivos ou repositórios, "
-                "assuma que os dados do Dossiê acima são as leituras reais. "
-                "NÃO diga que você não tem acesso ao sistema ou não pode ler arquivos. "
-                "Apenas forneça a análise com base no Dossiê."
-            ) if dossier and dossier.strip() else None,
+                "O Dossiê acima contém as evidências reais coletadas durante "
+                "a investigação. Use essas evidências como fonte primária."
+            )
+            if dossier and dossier.strip()
+            else None,
         )
     ]
 
     if user_request:
         context.append(user_request)
 
-    print(f"\n[⏳ AGUARDE] DeepSeek R1 processando {len(context)} mensagens...")
-    
+    print(
+        f"\n[⏳ AGUARDE] DeepSeek R1 processando "
+        f"{len(context)} mensagens..."
+    )
+
+    print(
+        f"[📄 HEAVY] Tamanho do dossiê: "
+        f"{len(dossier or '')} caracteres"
+    )
+
+    print(
+        f"[🧰 HEAVY] Tool calls recebidas: "
+        f"{len(gatherer_tool_trace)}"
+    )
+
     start_time = time.time()
-    
+
     result = await heavy_llm_structured.ainvoke(context)
 
     elapsed_time = time.time() - start_time
@@ -658,10 +744,12 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
                     description = (
                         f"**Objetivo:**\n{task.objective}\n\n"
                         f"**Localização Alvo:**\n{task.target}\n\n"
-                        f"**Lógica da Alteração (Instruções Detalhadas):**\n{task.logic}\n\n"
-                        f"**Restrições do Usuário:**\n{task.constraints}"
+                        f"**Lógica da Alteração (Instruções Detalhadas):**\n"
+                        f"{task.logic}\n\n"
+                        f"**Restrições do Usuário:**\n"
+                        f"{task.constraints}"
                     )
-                    
+
                     new_task = TaskModel(
                         thread_id=thread_id,
                         title=task.title,
@@ -669,35 +757,54 @@ async def heavy_analyzer_node(state: State, config: RunnableConfig):
                         files=task.files,
                         reason=task.reason,
                         priority=task.priority,
-                        status="pending"
+                        status="pending",
                     )
+
                     db.add(new_task)
-                
+
+                    print(
+                        f"\n--- TAREFA GERADA: {task.title} ---"
+                    )
+                    print("files:", task.files)
+                    print("description:")
+                    print(description)
+                    print("---")
+
                 await db.commit()
-                
+
             except Exception as e:
                 await db.rollback()
-                print(f"Erro ao salvar as tasks: {e}")
-                raise e
+                print(
+                    f"Erro ao salvar as tasks: {e}"
+                )
+                raise
 
 
     print("\n===== HEAVY ANALYZER =====")
-    print("TASKS GERADAS E SALVAS:", len(result.tasks))
-    print("CONTENT LENGTH:", len(result.analysis))
+    print(
+        "TASKS GERADAS E SALVAS:",
+        len(result.tasks),
+    )
+    print(
+        "CONTENT LENGTH:",
+        len(result.analysis),
+    )
+    print(
+        "TOOL CALLS RECEBIDAS:",
+        len(gatherer_tool_trace),
+    )
+    print(
+        "DOSSIÊ RECEBIDO:",
+        "SIM" if dossier else "NÃO",
+    )
     print("==========================\n")
-    
-    for task in result.tasks:
-        print(f"\n--- TAREFA GERADA: {task.title} ---")
-        print("files:", task.files)
-        print("description:", description)
-        print("---\n")
 
     return {
         "messages": [response],
         "heavy_context": None,
+        "gatherer_tool_trace": [],
         "enhanced_prompt": None,
         "active_node": "heavy_analyzer_node",
-
     }
     
 def route_decision(state: State):
