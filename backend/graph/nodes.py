@@ -259,6 +259,7 @@ def code_node(state: State):
 
     response = code_llm_with_tools.invoke(context)
     response.name = "GPT-OSS (20B) CODE"
+    response.additional_kwargs['message_tag'] = 'response_code'
 
     return {
         "messages": [response],
