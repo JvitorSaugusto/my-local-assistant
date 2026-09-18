@@ -233,6 +233,7 @@ def standard_node_20b(state: State):
     print("metadata:", response.response_metadata)
     print("content:", repr(response.content[-500:]))
     response.name = "GPT-OSS (20B)"
+    response.additional_kwargs['message_tag'] = 'response_standard'
 
     return {"messages": [response], "enhanced_prompt": None}
 
