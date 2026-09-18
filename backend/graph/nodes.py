@@ -510,6 +510,7 @@ def note_draft_node(state: State) -> State:
 
     draft = note_llm_draft_with_tools.invoke(context)
     draft.name = "Qwen3 Notas Draft"
+    draft.additional_kwargs['message_tag'] = 'internal_thought_draft'
 
     print("\n=== DRAFT NODE ===")
     print("Possui tool calls?", bool(draft.tool_calls))
