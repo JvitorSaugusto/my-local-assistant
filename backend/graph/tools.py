@@ -393,13 +393,6 @@ def create_git_branch(branch_name: str, runtime: ToolRuntime) -> str:
     )
     current_branch = current_branch_result.stdout.strip()
 
-    if current_branch and current_branch not in PROTECTED_BRANCHES:
-        return (
-            "ERRO DE SEGURANÇA: o repositório já está em uma branch não protegida "
-            f"('{current_branch}'). Não crie outra branch nesta execução. "
-            "Prossiga usando a branch atual."
-        )
-
     try:
         result = subprocess.run(
             ["git", "checkout", "-b", branch_name],

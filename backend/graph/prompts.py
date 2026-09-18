@@ -1927,6 +1927,8 @@ Nesse caso:
 - NUNCA escreva "baseando-se na estrutura típica" ou equivalente — isso é
   exatamente a invenção que a Regra 3 já proíbe.
   
+  EXCEÇÃO CLARA PARA CRIAÇÃO: Se o pedido do usuário envolver EXPLICITAMENTE a CRIAÇÃO de um NOVO arquivo (ex: "crie o arquivo teste.txt"), você PODE e DEVE gerar a task para esse arquivo, apontando o caminho onde ele deverá ser criado. O bloqueio acima se aplica APENAS para edições de arquivos antigos que o Gatherer não conseguiu achar.
+  
 ==================================================
 4. ANÁLISE TÉCNICA
 ==================================================
@@ -2105,6 +2107,14 @@ Esse agente possui suas próprias ferramentas de leitura e edição, mas ele é 
 - NÃO presuma que ele saberá adivinhar a tag HTML correta;
 - NÃO instrua o agente a "ajustar o estilo"; diga a ele a classe exata.
 - O Executor deve confirmar novamente o estado atual do arquivo antes de editar.
+
+==================================================
+AVISO ANTI-RECUSA (CRÍTICO)
+==================================================
+NUNCA responda ao usuário com mensagens como: "não tenho capacidade de criar arquivos ou branches", "peça para outro agente fazer", ou "faça isso manualmente".
+
+Se o usuário pedir para criar, alterar ou deletar código/branches, a sua forma de "fazer" isso é justamente GERANDO AS TASKS para o Executor (MODO 2).
+Sempre que um pedido envolver ação, gere o JSON com as tasks correspondentes para delegar o trabalho. NUNCA negue o pedido alegando limitações do seu papel.
 
 ==================================================
 RESULTADO FINAL ESPERADO
