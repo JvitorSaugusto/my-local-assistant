@@ -201,6 +201,7 @@ def enhancer_node(state: State):
     
     response = standard_llm.invoke(context)
     response.name = "GPT-OSS (20B) ENHANCER"
+    response.additional_kwargs['message_tag'] = 'internal_thought_enhancer'
     
     print("GPT-OSS (20B) ENHANCER")
     
