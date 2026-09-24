@@ -234,5 +234,18 @@
     </form>
   </dialog>
 
+<dialog id="import-tasks-modal" class="modal">
+  <h3>Importar Tarefas (JSON)</h3>
+  <form id="import-tasks-form">
+    <div class="form-group">
+      <label for="import_json_content">Cole o Array de Tarefas (JSON)</label>
+      <textarea id="import_json_content" required placeholder="[ { &quot;title&quot;: &quot;...&quot; } ]" style="min-height: 200px; font-family: var(--font-mono);"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="btn-cancel-import" class="btn btn-ghost">Cancelar</button>
+      <button type="submit" class="btn btn-primary">Importar</button>
+    </div>
+  </form>
+</dialog>
 </body>
 </html>
