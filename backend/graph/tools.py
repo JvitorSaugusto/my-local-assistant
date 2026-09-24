@@ -616,6 +616,95 @@ def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str, runti
 
     return f"Arquivo '{file_path}' editado com sucesso."
 
+@tool
+def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> str:
+    """Aplica múltiplas substituições de texto (search and replace) em um único arquivo, numa só chamada.
+
+    Use esta ferramenta em vez de várias chamadas separadas de 'edit_existing_file'
+    quando precisar fazer MUITAS edições pequenas e independentes no MESMO arquivo
+    (ex: adicionar um parâmetro em várias declarações de método, ajustar várias
+    chamadas de função). Cada chamada de ferramenta consome uma etapa do limite de
+    execução do agente — agrupar edições numa única chamada evita estourar esse
+    limite em refatorações grandes.
+
+    Use 'edit_existing_file' (não esta) quando precisar editar apenas um ou dois
+    trechos no arquivo.
+
+    As edições são aplicadas NA ORDEM em que aparecem na lista, uma após a outra,
+    sobre o conteúdo já parcialmente editado pelas edições anteriores. Cada
+    'old_snippet' deve ser copiado EXATAMENTE do conteúdo retornado por
+    'read_file_content' (mesma indentação, mesmas quebras de linha) e deve ser
+    único no momento em que for aplicado — se uma edição anterior já mudou o
+    trecho, a próxima 'old_snippet' precisa refletir o texto já atualizado.
+
+    IMPORTANTE: esta ferramenta bloqueia automaticamente a edição enquanto a
+    branch atual for 'main' ou 'master'. Use 'create_git_branch' antes.
+
+    Args:
+        file_path: Caminho RELATIVO à raiz do repositório (ex: 'backend/api/services.py').
+        edits: Lista de objetos, cada um com as chaves 'old_snippet' e 'new_snippet'
+            (ex: [{"old_snippet": "def foo():", "new_snippet": "def foo(self):"}, ...]).
+            Inclua quantas edições forem necessárias nesta única chamada.
+
+    Returns:
+        Um relatório do resultado de cada edição. Se QUALQUER edição falhar, NENHUMA
+        edição desta chamada é salva no arquivo (tudo ou nada) — evita deixar o
+        arquivo num estado parcialmente editado e inconsistente.
+    """
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_path = _resolve_path(file_path, workspace_path)
+
+    security_error = _check_not_on_protected_branch(str(resolved_path))
+    if security_error:
+        return security_error
+
+    if not resolved_path.exists():
+        return f"ERRO: o arquivo '{file_path}' não existe. Use 'create_new_file' para criá-lo."
+
+    if not edits:
+        return "ERRO: a lista 'edits' está vazia. Forneça ao menos uma edição."
+
+    try:
+        working_content = resolved_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"ERRO ao ler o arquivo '{file_path}': {error}"
+
+    report_lines = []
+    for index, edit in enumerate(edits, start=1):
+        old_snippet = (edit.get("old_snippet") or "").strip("\n\r")
+        new_snippet = (edit.get("new_snippet") or "").strip("\n\r")
+
+        if not old_snippet:
+            report_lines.append(f"[{index}] ERRO: 'old_snippet' vazio.")
+            return "FALHA — nenhuma edição foi salva.\n" + "\n".join(report_lines)
+
+        occurrences = working_content.count(old_snippet)
+
+        if occurrences == 0:
+            report_lines.append(
+                f"[{index}] ERRO: trecho não encontrado (pode já ter sido alterado "
+                "por uma edição anterior desta mesma chamada, ou copiado incorretamente)."
+            )
+            return "FALHA — nenhuma edição foi salva.\n" + "\n".join(report_lines)
+
+        if occurrences > 1:
+            report_lines.append(
+                f"[{index}] ERRO: trecho aparece {occurrences} vezes — precisa ser único "
+                "neste ponto da edição. Adicione mais contexto."
+            )
+            return "FALHA — nenhuma edição foi salva.\n" + "\n".join(report_lines)
+
+        working_content = working_content.replace(old_snippet, new_snippet)
+        report_lines.append(f"[{index}] OK")
+
+    try:
+        resolved_path.write_text(working_content, encoding="utf-8")
+    except OSError as error:
+        return f"ERRO ao salvar o arquivo '{file_path}' após aplicar as edições: {error}"
+
+    report_lines.append(f"\nArquivo '{file_path}' salvo com sucesso — {len(edits)} edição(ões) aplicada(s).")
+    return "\n".join(report_lines)
+
 
 @tool
 def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:

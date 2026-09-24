@@ -1,5 +1,7 @@
 
 import re
+import uuid
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 import time
 from backend.database.config import async_session_env
 from backend.database.models import TaskModel
@@ -16,6 +18,7 @@ from .config import (
     context_gatherer_llm_with_tools,
     heavy_llm_structured,
     generate_llm_with_tools,
+    WRITE_AND_GIT_TOOLS,
 )
 
 from .prompts import (
@@ -63,6 +66,13 @@ def _extract_gatherer_tool_trace(messages, start_idx: int) -> list[dict]:
 
     return trace
 
+WRITE_TOOL_NAMES = {
+    "create_new_file",
+    "edit_existing_file",
+    "batch_edit_file",
+    "create_git_branch",
+    "git_commit_changes"
+}
 
 def _has_write_call(messages) -> bool:
     return any(
@@ -71,6 +81,69 @@ def _has_write_call(messages) -> bool:
         if getattr(msg, "tool_calls", None)
         for call in msg.tool_calls
     )
+    
+GENERATE_TOOL_NAMES = {
+    tool.name
+    for tool in WRITE_AND_GIT_TOOLS
+}
+
+
+def _parse_xml_tool_fallback(content: str) -> list[dict]:
+    """
+    Recupera tool calls que o Qwen escreveu em formato XML no conteúdo
+    da resposta quando o Ollama não conseguiu convertê-las para
+    response.tool_calls.
+    """
+
+    if not content or "<function=" not in content:
+        return []
+
+    recovered_calls = []
+
+    function_matches = re.finditer(
+        r"<function=([^>\s]+)>(.*?)</function>",
+        content,
+        re.DOTALL,
+    )
+
+    for function_match in function_matches:
+        tool_name = function_match.group(1).strip()
+
+        # Segurança: só aceita ferramentas realmente registradas
+        # no Generate.
+        if tool_name not in GENERATE_TOOL_NAMES:
+            print(
+                f"⚠️ [PARSER FALLBACK] Tool '{tool_name}' "
+                "não está registrada no Generate. Ignorando."
+            )
+            continue
+
+        function_body = function_match.group(2)
+
+        args = {}
+
+        parameter_matches = re.finditer(
+            r"<parameter=([^>\s]+)>(.*?)</parameter>",
+            function_body,
+            re.DOTALL,
+        )
+
+        for parameter_match in parameter_matches:
+            parameter_name = parameter_match.group(1).strip()
+            parameter_value = parameter_match.group(2).strip()
+
+            args[parameter_name] = parameter_value
+
+        recovered_calls.append(
+            {
+                "name": tool_name,
+                "args": args,
+                "id": f"fallback-{uuid.uuid4().hex}",
+                "type": "tool_call",
+            }
+        )
+
+    return recovered_calls
     
 def build_system_context(*parts: str | None) -> SystemMessage:
     """Junta múltiplas partes de contexto de sistema em uma única SystemMessage, separadas por um divisor."""
@@ -347,27 +420,32 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
     
 async def generate_node(state: State):
     actual_summary = state.get("summary", "")
-    
+
     generate_start_idx = state.get("generate_start_idx")
-    
+
     if generate_start_idx is None:
         last_human_idx = 0
+
         for i in range(len(state["messages"]) - 1, -1, -1):
             if state["messages"][i].type == "human":
                 last_human_idx = i
                 break
+
         generate_start_idx = last_human_idx
-        
+
     recent_messages = state["messages"][generate_start_idx:].copy()
+
     task = state.get("active_generate_task")
 
     workspace = state.get("workspace_path")
     branch_context = None
-    
+
     if workspace:
         repo = __import__("pathlib").Path(workspace).resolve()
+
         try:
             import subprocess
+
             branch_result = subprocess.run(
                 ["git", "branch", "--show-current"],
                 cwd=str(repo),
@@ -375,9 +453,9 @@ async def generate_node(state: State):
                 text=True,
                 timeout=10,
             )
-            
+
             current_branch = branch_result.stdout.strip()
-            
+
             if current_branch and current_branch not in {"main", "master"}:
                 branch_context = (
                     "STATUS DA BRANCH DO WORKSPACE: "
@@ -386,87 +464,238 @@ async def generate_node(state: State):
                     "'create_git_branch' novamente nesta execução; prossiga "
                     "para a próxima etapa da tarefa."
                 )
+
         except (OSError, subprocess.SubprocessError):
             pass
 
     if state.get("enhanced_prompt"):
         for i in range(len(recent_messages) - 1, -1, -1):
             if recent_messages[i].type == "human":
-                recent_messages[i] = HumanMessage(content=state["enhanced_prompt"])
+                recent_messages[i] = HumanMessage(
+                    content=state["enhanced_prompt"]
+                )
                 break
 
     context = [
         build_system_context(
             GENERATE_NODE_PROMPT,
-            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
+
+            (
+                f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n"
+                f"{actual_summary}"
+            )
+            if actual_summary
+            else None,
+
             branch_context,
+
             (
                 "TAREFA DE IMPLEMENTAÇÃO:\n\n"
                 f"{task.model_dump_json(indent=2)}"
-            ) if task else None,
+            )
+            if task
+            else None,
         )
     ]
 
     context.extend(recent_messages)
 
     response = await generate_llm_with_tools.ainvoke(context)
+
     response.name = "Qwen3-Coder (Generate)"
-    
+    response.additional_kwargs["message_tag"] = "internal_thought_generate"
+
+    recovered_tool_calls = []
+
+    if not response.tool_calls and response.content:
+        recovered_tool_calls = _parse_xml_tool_fallback(
+            str(response.content)
+        )
+
+    if recovered_tool_calls:
+        print(
+            "\n⚠️ [PARSER FALLBACK] "
+            "Ollama retornou uma chamada de ferramenta como texto."
+        )
+
+        print(
+            "🔧 [PARSER FALLBACK] Ferramentas recuperadas:",
+            [
+                call["name"]
+                for call in recovered_tool_calls
+            ],
+        )
+
+        response = AIMessage(
+            content="",
+            tool_calls=recovered_tool_calls,
+            additional_kwargs={
+                "message_tag": "internal_tool_fallback",
+            },
+            name="Qwen3-Coder (Generate)",
+        )
+
     print("\n===== GENERATE =====")
     print("TOOL_CALLS:", response.tool_calls)
+
     if response.content:
         print("CONTENT:\n", response.content)
+
     print("====================\n")
 
     messages_to_return = [response]
+
     is_final_response = not bool(response.tool_calls)
 
     if task and is_final_response:
+
         all_messages_this_run = recent_messages + messages_to_return
-        wrote_something = _has_write_call(all_messages_this_run)
-        
-        content_str = str(response.content).strip().upper() if response.content else ""
-        reported_ambiguous = content_str.startswith("TAREFA AMBÍGUA")
+
+        wrote_something = _has_write_call(
+            all_messages_this_run
+        )
+
+        content_str = (
+            str(response.content).strip().upper()
+            if response.content
+            else ""
+        )
+
+        reported_ambiguous = content_str.startswith(
+            "TAREFA AMBÍGUA"
+        )
 
         if not wrote_something and not reported_ambiguous:
-            print("⚠️ [GENERATE] Tentativa de finalizar sem ação. Aplicando Nudge...")
-            nudge = HumanMessage(content=(
-                "Você não chamou nenhuma ferramenta de escrita e não editou nenhum "
-                "arquivo. Se pretende fazer uma alteração, chame agora a ferramenta "
-                "necessária (create_git_branch, depois edit_existing_file/create_new_file). "
-                "Se a tarefa não pode ser concluída com segurança, responda começando "
-                "EXATAMENTE com 'TAREFA AMBÍGUA:' e explique o motivo."
-            ))
-            
-            response2 = await generate_llm_with_tools.ainvoke(context + [response, nudge])
+
+            print(
+                "⚠️ [GENERATE] Tentativa de finalizar sem ação. "
+                "Aplicando Nudge..."
+            )
+
+            nudge = HumanMessage(
+                content=(
+                    "Sua última resposta não executou nenhuma ferramenta "
+                    "de forma válida.\n\n"
+                    "Se ainda precisar investigar ou modificar o projeto, "
+                    "USE AS FERRAMENTAS DISPONÍVEIS por meio do mecanismo "
+                    "de Tool Calling.\n\n"
+                    "Quando o formato XML de chamada for utilizado pelo "
+                    "sistema, mantenha CADA chamada em UMA ÚNICA LINHA, "
+                    "sem quebras de linha dentro de <function> ou "
+                    "<parameter>.\n\n"
+                    "CORRETO:\n"
+                    "<function=read_file_chunk><parameter=file_path>"
+                    "core/views.py</parameter><parameter=offset>400"
+                    "</parameter><parameter=length>50</parameter>"
+                    "</function>\n\n"
+                    "NÃO escreva explicações no lugar da execução da "
+                    "ferramenta.\n\n"
+                    "Se a tarefa não puder ser concluída com segurança, "
+                    "responda começando EXATAMENTE com "
+                    "'TAREFA AMBÍGUA:' e explique o motivo."
+                )
+            )
+
+            response2 = await generate_llm_with_tools.ainvoke(
+                context + [response, nudge]
+            )
+
             response2.name = "Qwen3-Coder (Generate)"
-            
+            response2.additional_kwargs[
+                "message_tag"
+            ] = "internal_system_nudge"
+
+            if not response2.tool_calls and response2.content:
+                recovered_tool_calls = _parse_xml_tool_fallback(
+                    str(response2.content)
+                )
+
+                if recovered_tool_calls:
+                    print(
+                        "\n⚠️ [PARSER FALLBACK] "
+                        "Nudge também retornou XML."
+                    )
+
+                    print(
+                        "🔧 [PARSER FALLBACK] "
+                        "Ferramentas recuperadas:",
+                        [
+                            call["name"]
+                            for call in recovered_tool_calls
+                        ],
+                    )
+
+                    response2 = AIMessage(
+                        content="",
+                        tool_calls=recovered_tool_calls,
+                        additional_kwargs={
+                            "message_tag": "internal_tool_fallback"
+                        },
+                        name="Qwen3-Coder (Generate)",
+                    )
+
             print("\n===== GENERATE (NUDGE) =====")
             print("TOOL_CALLS:", response2.tool_calls)
+
             if response2.content:
-                print("CONTENT:\n", response2.content)
-            print("====================\n")
-            
-            messages_to_return.extend([nudge, response2])
-            
-            is_final_response = not bool(response2.tool_calls)
-            all_messages_this_run = recent_messages + messages_to_return
-            wrote_something = _has_write_call(all_messages_this_run)
-            content_str2 = str(response2.content).strip().upper() if response2.content else ""
-            reported_ambiguous = content_str2.startswith("TAREFA AMBÍGUA")
+                print(
+                    "CONTENT:\n",
+                    response2.content
+                )
+
+            print("============================\n")
+
+            messages_to_return.extend(
+                [nudge, response2]
+            )
+
+            is_final_response = not bool(
+                response2.tool_calls
+            )
+
+            all_messages_this_run = (
+                recent_messages + messages_to_return
+            )
+
+            wrote_something = _has_write_call(
+                all_messages_this_run
+            )
+
+            content_str2 = (
+                str(response2.content).strip().upper()
+                if response2.content
+                else ""
+            )
+
+            reported_ambiguous = content_str2.startswith(
+                "TAREFA AMBÍGUA"
+            )
 
         if is_final_response:
-            final_status = "completed" if (wrote_something or reported_ambiguous) else "failed"
-            
+
+            final_status = (
+                "completed"
+                if (
+                    wrote_something
+                    or reported_ambiguous
+                )
+                else "failed"
+            )
+
             if final_status == "failed":
-                print("❌ [GENERATE] Falhou em executar ações mesmo após o nudge. Marcando como failed.")
-                
+                print(
+                    "❌ [GENERATE] Falhou em executar ações "
+                    "mesmo após o nudge. Marcando como failed."
+                )
+
             async with async_session_env() as db:
+
                 stmt = (
                     update(TaskModel)
                     .where(TaskModel.id == task.id)
                     .values(status=final_status)
                 )
+
                 await db.execute(stmt)
                 await db.commit()
 
@@ -474,7 +703,11 @@ async def generate_node(state: State):
         "messages": messages_to_return,
         "active_node": "generate_node",
         "enhanced_prompt": None,
-        "active_generate_task": None if is_final_response else task
+        "active_generate_task": (
+            None
+            if is_final_response
+            else task
+        ),
     }
     
 def note_draft_node(state: State) -> State:
@@ -561,6 +794,7 @@ def note_refine_node(state: State) -> State:
             final_response = draft_msg
 
     final_response.name = "Qwen3 Notas Final (30B)"
+    final_response.additional_kwargs['message_tag'] = 'response_note'
     return {"messages": [final_response]}
 
 def context_gatherer_node(state: State):
@@ -611,6 +845,7 @@ def context_gatherer_node(state: State):
     response = context_gatherer_llm_with_tools.invoke(context)
 
     response.name = "Qwen3-Coder (Context Gatherer)"
+    response.additional_kwargs['message_tag'] = 'internal_thought_gatherer'
 
     print("\n===== CONTEXT GATHERER =====")
     print("TOOL_CALLS:", response.tool_calls)
@@ -739,6 +974,7 @@ async def heavy_analyzer_node(
     response = AIMessage(
         content=result.analysis,
         name="DeepSeek R1 (32B)",
+        additional_kwargs={'message_tag': 'response_heavy'}
     )
 
     if result.tasks:

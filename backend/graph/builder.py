@@ -19,7 +19,7 @@ from .nodes import (
     generate_node,
 )
 
-from .tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, generate_repo_map, git_commit_changes, list_directory_files, read_file_content, search_in_file, read_file_chunk
+from .tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, batch_edit_file, generate_repo_map, git_commit_changes, list_directory_files, read_file_content, search_in_file, read_file_chunk
 
 
 def build_graph():
@@ -32,6 +32,7 @@ def build_graph():
     create_git_branch,
     create_new_file,
     edit_existing_file,
+    batch_edit_file,
     append_to_file,
     git_commit_changes,
     read_file_content,

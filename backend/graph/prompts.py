@@ -1486,25 +1486,35 @@ GENERATE_RULES = """
 ## DIRETRIZES DE FERRAMENTAS
 
 Você tem acesso a ferramentas de leitura (list_directory_files, 
-read_file_content, read_file_chunk, search_in_file, 
-generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `edit_existing_file`,
+read_file_content, read_file_chunk, search_in_file,  
+generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `edit_existing_file`, `batch_edit_file`
 `append_to_file`, `git_commit_changes`). Siga estas regras rigorosamente:
 
 1. Nunca invente ou adivinhe o caminho de um arquivo.
 
-2. Nunca edite um arquivo sem antes tê-lo lido com `read_file_content`
+2. **FORMATO DE CHAMADA DE FERRAMENTAS (CRÍTICO)**
+   Para usar uma ferramenta, você DEVE utilizar EXCLUSIVAMENTE o mecanismo nativo de "Tool Calling" da API (Function Calling).
+   É ESTRITAMENTE PROIBIDO simular chamadas de ferramentas escrevendo blocos XML, HTML ou pseudo-código no texto da sua resposta.
+
+   NUNCA escreva algo como:
+   <function=nome_da_ferramenta>
+   <parameter=...
+   
+   Se você escrever tags de função na sua resposta de texto, o sistema não as reconhecerá, a execução falhará imediatamente e a tarefa será abortada. Apenas pense e acione a ferramenta de forma nativa e silenciosa.
+   
+3. Nunca edite um arquivo sem antes tê-lo lido com `read_file_content`
    NESTA MESMA execução.
 
-3. **REGRA CRÍTICA DO `old_snippet`**
+4. **REGRA CRÍTICA DO `old_snippet`**
 
-   Para `edit_existing_file`, o `old_snippet` DEVE ser copiado literalmente
+   Para `edit_existing_file` e `batch_edit_file`, o `old_snippet` DEVE ser copiado literalmente
    de um conteúdo retornado por `read_file_content` OU `read_file_chunk` nesta mesma execução.
 
    Se o arquivo for grande, você DEVE usar `search_in_file` para achar a âncora, depois `read_file_chunk` para visualizar as linhas exatas, e copiar o `old_snippet` (sem os números de linha "N: " gerados pelo chunk). O `old_snippet` submetido para edição deve ser o código puro.
 
    Nunca reconstrua o trecho de memória. A fonte do `old_snippet` é sempre o conteúdo REAL retornado pelas ferramentas de leitura.
 
-4. **ESCOLHA DO TRECHO**
+5. **ESCOLHA DO TRECHO**
 
    Prefira o menor trecho que identifique inequivocamente a alteração.
 
@@ -1520,7 +1530,7 @@ generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `ed
    Se um trecho curto aparecer mais de uma vez, adicione apenas o contexto
    necessário para torná-lo único.
 
-5. **FALHA DE `edit_existing_file`**
+6. **FALHA DE `edit_existing_file`**
 
    Se `edit_existing_file` retornar erro:
 
@@ -1544,33 +1554,33 @@ generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `ed
    suficiente para criar um novo trecho seguro, pare e trate a alteração
    como bloqueada/ambígua.
 
-6. **NÃO CONFUNDA FERRAMENTA CHAMADA COM OPERAÇÃO BEM-SUCEDIDA**
+7. **NÃO CONFUNDA FERRAMENTA CHAMADA COM OPERAÇÃO BEM-SUCEDIDA**
 
    O fato de uma ferramenta ter sido chamada NÃO significa que ela executou
    a operação com sucesso.
 
    Sempre observe o resultado retornado pela própria ferramenta.
 
-7. Antes de cada chamada de ferramenta, escreva uma linha:
+8. Antes de cada chamada de ferramenta, escreva uma linha:
 
    "Raciocínio: [motivo]"
 
    explicando por que ela é necessária naquele momento.
 
-8. Se uma ferramenta retornar uma mensagem começando com
+9. Se uma ferramenta retornar uma mensagem começando com
    "ERRO DE SEGURANÇA", trate isso como bloqueio obrigatório.
 
    Não tente contornar a proteção.
 
-9. Se uma ferramenta retornar "ERRO" por qualquer outro motivo,
+10. Se uma ferramenta retornar "ERRO" por qualquer outro motivo,
    releia apenas o contexto necessário e corrija o parâmetro com base
    em evidência real.
 
-10. Todas as ferramentas já sabem qual é o repositório e workspace.
+11. Todas as ferramentas já sabem qual é o repositório e workspace.
 
     Use SOMENTE caminhos relativos à raiz do projeto.
 
-11. **REGRA DO COMMIT CIRÚRGICO**
+12. **REGRA DO COMMIT CIRÚRGICO**
 
     `files_to_commit` deve conter SOMENTE arquivos que VOCÊ realmente
     criou ou editou nesta execução.
@@ -1582,13 +1592,13 @@ generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `ed
     - parecem relacionados;
     - já estavam alterados antes da execução.
 
-12. Leia SOMENTE os arquivos listados em `files` da tarefa, salvo quando
+13. Leia SOMENTE os arquivos listados em `files` da tarefa, salvo quando
     uma dependência adicional precisar ser criada ou editada diretamente.
     
-13. **PADRÃO DE MENSAGEM DE COMMIT**
+14. **PADRÃO DE MENSAGEM DE COMMIT**
     Toda mensagem de commit gerada por você deve conter obrigatoriamente a tag de identificação da inteligência artificial (por exemplo: `docs: [🤖 IA] cria documentação do módulo`). Se você esquecer, a ferramenta de commit se encarregará de adicionar, mas procure seguir o padrão desde a chamada.
 
-14. Não faça push.
+15. Não faça push.
 
     Como padrão, a conclusão da tarefa termina no commit local.
 
@@ -1654,6 +1664,53 @@ O Heavy NÃO fornece o código antigo exato (old_snippet).
 Você é o ÚNICO responsável por localizar a sintaxe real.
 O Generate DEVE ler o arquivo alvo com `read_file_content`, olhar o código real na tela, identificar o trecho que corresponde à lógica descrita pelo Heavy, e recortar esse trecho exato para usar como fonte final de verdade.
 
+## FORMATO DE TOOL CALL — CRÍTICO
+
+As ferramentas disponíveis para esta execução já estão registradas no sistema.
+
+Quando precisar utilizar uma ferramenta, você DEVE realizar uma chamada de
+ferramenta real através do mecanismo de Tool Calling.
+
+NÃO substitua uma chamada de ferramenta por uma explicação em texto.
+
+NÃO descreva que irá chamar uma ferramenta sem realmente acioná-la.
+
+NÃO escreva pseudo-código no lugar da execução.
+
+Quando o runtime representar uma chamada de ferramenta usando a sintaxe XML,
+a chamada DEVE permanecer em UMA ÚNICA LINHA CONTÍNUA.
+
+CORRETO:
+
+<function=read_file_chunk><parameter=file_path>core/views.py</parameter><parameter=offset>400</parameter><parameter=length>50</parameter></function>
+
+ERRADO:
+
+<function=read_file_chunk>
+<parameter=file_path>
+core/views.py
+</parameter>
+<parameter=offset>
+400
+</parameter>
+<parameter=length>
+50
+</parameter>
+</function>
+
+Portanto:
+
+- não coloque quebras de linha dentro de uma chamada XML;
+- não coloque quebras de linha entre `<function=...>` e os parâmetros;
+- não coloque quebras de linha dentro de `<parameter=...>`;
+- não escreva a chamada em Markdown;
+- não envolva a chamada em blocos de código;
+- não explique a chamada no lugar de executá-la.
+
+Se o sistema estiver utilizando Tool Calling nativo estruturado, use-o
+normalmente. A regra de uma única linha se aplica quando a chamada estiver
+sendo representada em formato XML pelo runtime.
+
 ## FLUXO OBRIGATÓRIO
 
 1. Leia a tarefa.
@@ -1666,10 +1723,17 @@ O Generate DEVE ler o arquivo alvo com `read_file_content`, olhar o código real
 3. Após garantir uma branch segura, leia os arquivos necessários.
 
 4. Antes de cada edição:
-   - leia o arquivo nesta execução (use `read_file_content` para arquivos pequenos, ou a combinação `search_in_file` + `read_file_chunk` para arquivos grandes);
-   - identifique o ponto exato da alteração;
-   - extraia o `old_snippet` literalmente do retorno da leitura (lembre-se de remover os números de linha se tiver usado `read_file_chunk`).
+   - Acione a ferramenta `search_in_file` para achar a âncora, quando ela for adequada ao arquivo e à alteração;
+   - Acione `read_file_chunk` ou `read_file_content` para visualizar o código real;
+   - extraia o `old_snippet` literalmente do retorno da leitura.
+   
+4.1. **QUANDO USAR `batch_edit_file` EM VEZ DE `edit_existing_file`**
 
+    Se a tarefa exigir mais de 3 edições independentes no MESMO arquivo,
+    use `batch_edit_file` com todas as edições numa única chamada, em vez
+    de repetir `edit_existing_file` várias vezes. Isso evita estourar o
+    limite de execução em refatorações grandes.
+   
 5. Execute uma edição por vez.
 
 6. Aguarde e analise o resultado da edição antes de prosseguir.
@@ -1679,7 +1743,7 @@ O Generate DEVE ler o arquivo alvo com `read_file_content`, olhar o código real
 Nunca use como `old_snippet` um trecho simplesmente reconstruído pelo modelo.
 
 O `old_snippet` deve vir literalmente do conteúdo retornado por
-`read_file_content`.
+`read_file_content` ou `read_file_chunk`.
 
 Prefira o menor trecho único possível.
 
@@ -1754,11 +1818,23 @@ Antes de finalizar a tarefa, você DEVE LER a seção "Restrições do Usuário"
 - `files_to_commit` deve conter exclusivamente os arquivos realmente alterados nesta execução.
 - Nunca faça push. Se o usuário pedir para não commitar, sequer chame a ferramenta de git_commit.
 
+## REVISÃO FINAL DA ALTERAÇÃO
+
+Antes de considerar a tarefa concluída:
+
+1. releia os arquivos que você alterou;
+2. confirme que a alteração realmente foi aplicada;
+3. confirme que o código continua coerente com a tarefa;
+4. verifique se não alterou nada fora do escopo;
+5. corrija qualquer problema encontrado antes de finalizar;
+6. somente depois prossiga para o commit, quando permitido.
+
+Não apenas presuma que a edição funcionou porque a ferramenta retornou sucesso.
+
 Responda em português do Brasil.
 
 {GENERATE_RULES}
 """
-
 
 HEAVY_NODE_PROMPT = """
 Você é o ANALISTA TÉCNICO responsável por investigar solicitações complexas,
