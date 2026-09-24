@@ -57,7 +57,12 @@ const el = {
   inputId: document.getElementById("task_id"),
   inputTitle: document.getElementById("task_title"),
   inputDesc: document.getElementById("task_description"),
-  inputFiles: document.getElementById("task_files")
+  inputFiles: document.getElementById("task_files"),
+  btnImportTasks: document.getElementById('btn-import-tasks'),
+  importTasksModal: document.getElementById('import-tasks-modal'),
+  importTasksForm: document.getElementById('import-tasks-form'),
+  btnCancelImport: document.getElementById('btn-cancel-import'),
+  inputImportJson: document.getElementById('import_json_content')
 };
 
 // ============================================================
