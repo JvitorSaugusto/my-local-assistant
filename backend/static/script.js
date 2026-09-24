@@ -11,6 +11,7 @@ const API = {
   createTask: (threadId) => `/api/tasks/${threadId}`,
   updateTask: (taskId) => `/api/tasks/${taskId}`,
   deleteTask: (taskId) => `/api/tasks/${taskId}`,
+  createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
   send: "/api/ai/",
   batch: "/api/ai/batch/",
 };
