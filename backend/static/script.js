@@ -778,3 +778,61 @@ loadWorkspaces();
 autoResize();
 syncChips();
 startPolling();
+// ============================================================
+// LÓGICA DO MODAL DE IMPORTAÇÃO DE TAREFAS
+// ============================================================
+
+el.btnImportTasks.addEventListener('click', () => {
+  // Limpa o textarea antes de abrir o modal
+  el.inputImportJson.value = '';
+  // Abre o modal
+  el.importTasksModal.showModal();
+});
+
+el.btnCancelImport.addEventListener('click', () => {
+  // Fecha o modal
+  el.importTasksModal.close();
+});
+
+el.importTasksForm.addEventListener('submit', async (event) => {
+  // Previne o envio padrão do formulário
+  event.preventDefault();
+  
+  try {
+    // Tenta fazer o parse do JSON
+    const parsed = JSON.parse(el.inputImportJson.value);
+    
+    // Garante que seja um array
+    const tasksArray = Array.isArray(parsed) ? parsed : [parsed];
+    
+    // Pega o thread_id ativo
+    const chat = state.chats.find(c => c.thread_id === state.activeId);
+    
+    if (!chat) {
+      alert('Nenhuma conversa ativa encontrada.');
+      return;
+    }
+    
+    // Faz o POST para criar as tarefas em batch
+    const response = await fetch(API.createTasksBatch(chat.thread_id), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(tasksArray)
+    });
+    
+    if (response.ok) {
+      // Carrega as tarefas atualizadas
+      loadTasks(chat.thread_id);
+      // Fecha o modal
+      el.importTasksModal.close();
+    } else {
+      alert('Erro ao importar tarefas. Verifique o console para mais detalhes.');
+      console.error('Erro na importação:', response);
+    }
+  } catch (error) {
+    alert('Erro ao fazer parse do JSON. Verifique se o formato está correto.');
+    console.error('Erro de parsing:', error);
+  }
+});
