@@ -95,7 +95,7 @@ async def _run_generate_async(thread_id: str, task: GenerateTaskSchema):
         """
 
         inputs = {
-            "messages": [HumanMessage(content=task_prompt, name="hidden_task_prompt")],
+            "messages": [HumanMessage(content=task_prompt, name="hidden_task_prompt", additional_kwargs={'message_tag': 'internal_task_instruction'})],
             "actual_route": "GENERATE_EXECUTE",
             "active_generate_task": task,
             "thread_id": thread_id,
