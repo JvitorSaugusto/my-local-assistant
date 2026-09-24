@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from backend.api.schemas import ChatRequestSchema
+from backend.api.schemas import ChatRequestSchema, TaskCreateSchema
 from backend.database.models import AiChatModel, TaskModel
 
 
@@ -60,6 +60,20 @@ class TaskService:
     
     def __init__(self, db: AsyncSession):
             self.db = db
+            
+    async def create(self, tasks_data: list[TaskCreateSchema], thread_id: str) -> list[TaskModel]:
+        new_tasks = [
+            TaskModel(**task.model_dump(), thread_id=thread_id) 
+            for task in tasks_data
+        ]
+        
+        self.db.add_all(new_tasks)
+        await self.db.commit()
+        
+        for task in new_tasks:
+            await self.db.refresh(task)
+            
+        return new_tasks
             
     async def get_pending_by_thread(self, thread_id: str) -> Sequence[TaskModel]:
         stmt = select(TaskModel).where(

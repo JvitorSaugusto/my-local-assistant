@@ -101,3 +101,12 @@ class TaskResponseSchema(BaseModel):
 
     class Config:
         from_attributes = True
+        
+        
+class TaskCreateSchema(BaseModel):
+    title: str
+    description: str
+    files: list[str]
+    reason: str
+    priority: str
+    status: str = "pending"

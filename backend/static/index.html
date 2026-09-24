@@ -31,7 +31,6 @@
     <aside class="sidebar" id="sidebar">
       <div class="brand">
         <span class="brand-glyph" aria-hidden="true">
-          <!-- brain / node glyph -->
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 5a3 3 0 0 0-3 3 2.5 2.5 0 0 0-1.5 4.5A2.5 2.5 0 0 0 9 17a3 3 0 0 0 3 2"/>
             <path d="M12 5a3 3 0 0 1 3 3 2.5 2.5 0 0 1 1.5 4.5A2.5 2.5 0 0 1 15 17a3 3 0 0 1-3 2"/>
@@ -97,8 +96,7 @@
             Fila de tarefas
           </button>
           <button id="btn-toggle-tasks" class="btn btn-ghost">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M9 6h11"/>
               <path d="M9 12h11"/>
               <path d="M9 18h11"/>
@@ -126,36 +124,37 @@
           <div class="tasks-head">
             
             <div class="workspace-panel">
-            <div class="workspace-head">
-              <div>
-                <h4>Diretório de trabalho</h4>
-                <p>O diretório ativo será usado como workspace desta conversa.</p>
+              <div class="workspace-head">
+                <div>
+                  <h4>Diretório de trabalho</h4>
+                  <p>O diretório ativo será usado como workspace desta conversa.</p>
+                </div>
               </div>
+
+              <div class="workspace-controls">
+                <input
+                  id="workspace-path"
+                  class="workspace-input"
+                  type="text"
+                  placeholder="C:\Users\...\meu-projeto"
+                  autocomplete="off"
+                />
+
+                <button id="btn-add-workspace" class="btn btn-secondary" type="button">
+                  Adicionar
+                </button>
+              </div>
+
+              <div id="workspace-list" class="workspace-list"></div>
             </div>
 
-            <div class="workspace-controls">
-              <input
-                id="workspace-path"
-                class="workspace-input"
-                type="text"
-                placeholder="C:\Users\...\meu-projeto"
-                autocomplete="off"
-              />
-
-              <button id="btn-add-workspace" class="btn btn-secondary" type="button">
-                Adicionar
-              </button>
-            </div>
-
-            <div id="workspace-list" class="workspace-list"></div>
-          </div>
-
-            <div>
+            <div style="margin-top: 16px;">
               <h3>Tarefas Pendentes</h3>
+              <button id="btn-add-task" class="btn btn-secondary btn-sm" style="margin-top: 8px">+ Nova Tarefa</button>
               <p id="tasks-count" class="tasks-count">Nenhuma tarefa pendente.</p>
             </div>
 
-            <button id="btn-execute-tasks" class="btn btn-primary" type="button">
+            <button id="btn-execute-tasks" class="btn btn-primary" type="button" style="margin-top: 16px;">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="m5 12 7-7 7 7"/>
@@ -179,7 +178,6 @@
                 @heavy
               </button>
 
-              <!-- NOVO BOTÃO ENHANCE -->
               <button type="button" id="btn-enhance" class="chip" title="Inserir @enhance para refinamento de conteúdo">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
                 @enhance
@@ -211,6 +209,30 @@
     </button>
 
   </div>
+
+  <!-- Modal de Tarefas -->
+  <dialog id="task-modal" class="modal">
+    <h3 id="task-modal-title">Nova Tarefa</h3>
+    <form id="task-form">
+      <input type="hidden" id="task_id" name="task_id" />
+      <div class="form-group">
+        <label for="task_title">Título *</label>
+        <input type="text" id="task_title" name="title" required />
+      </div>
+      <div class="form-group">
+        <label for="task_description">Descrição</label>
+        <textarea id="task_description" name="description"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="task_files">Arquivos (separados por vírgula)</label>
+        <input type="text" id="task_files" name="files" placeholder="ex: main.py, app/services.py" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="btn-cancel-modal" class="btn btn-ghost">Cancelar</button>
+        <button type="submit" class="btn btn-primary">Salvar</button>
+      </div>
+    </form>
+  </dialog>
 
 </body>
 </html>

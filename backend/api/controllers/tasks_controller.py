@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Annotated
 
 from backend.api.services import TaskService
-from backend.api.schemas import TaskResponseSchema
+from backend.api.schemas import TaskCreateSchema, TaskResponseSchema
 from backend.database.config import get_db
 
 
@@ -14,6 +14,9 @@ async def get_task_service(db: Annotated[AsyncSession, Depends(get_db)]) -> Task
 
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 
+@task_router.post("/{thread_id}", response_model=list[TaskResponseSchema], status_code=201)
+async def create_tasks(tasks_data: list[TaskCreateSchema], thread_id: str, service: TaskServiceDep):
+    return await service.create(tasks_data, thread_id)
 
 @task_router.get("/", response_model=list[TaskResponseSchema])
 async def list_tasks(service: TaskServiceDep):

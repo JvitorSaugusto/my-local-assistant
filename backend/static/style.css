@@ -335,7 +335,7 @@ button {
 
   background: transparent;
 
-  opacity: 0; /* Hidden by default on desktop */
+  opacity: 0;
 
   transition:
     opacity 0.15s ease,
@@ -345,7 +345,7 @@ button {
 
 .chat-item:hover .chat-edit,
 .chat-item:hover .chat-del {
-  opacity: 1; /* Shows on hover on desktop */
+  opacity: 1; 
 }
 
 .chat-edit:hover {
@@ -423,6 +423,12 @@ button {
   flex: 0 0 auto;
 }
 
+.btn-sm {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 .btn-block {
   width: 100%;
 }
@@ -439,6 +445,17 @@ button {
 .btn-primary:hover {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
+}
+
+.btn-secondary {
+  background: var(--surface-3);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent-ring);
+  color: var(--accent);
 }
 
 .btn-ghost {
@@ -1701,7 +1718,9 @@ button {
 .messages::-webkit-scrollbar,
 .msg-content pre::-webkit-scrollbar,
 .msg-raw::-webkit-scrollbar,
-#chat-input::-webkit-scrollbar {
+#chat-input::-webkit-scrollbar,
+#workspace-list::-webkit-scrollbar,
+.tasks-list::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
@@ -1710,7 +1729,9 @@ button {
 .messages::-webkit-scrollbar-thumb,
 .msg-content pre::-webkit-scrollbar-thumb,
 .msg-raw::-webkit-scrollbar-thumb,
-#chat-input::-webkit-scrollbar-thumb {
+#chat-input::-webkit-scrollbar-thumb,
+#workspace-list::-webkit-scrollbar-thumb,
+.tasks-list::-webkit-scrollbar-thumb {
   background: var(--surface-3);
 
   border-radius: 999px;
@@ -1720,12 +1741,217 @@ button {
 .messages::-webkit-scrollbar-thumb:hover,
 .msg-content pre::-webkit-scrollbar-thumb:hover,
 .msg-raw::-webkit-scrollbar-thumb:hover,
-#chat-input::-webkit-scrollbar-thumb:hover {
+#chat-input::-webkit-scrollbar-thumb:hover,
+#workspace-list::-webkit-scrollbar-thumb:hover,
+.tasks-list::-webkit-scrollbar-thumb:hover {
   background: #353b46;
 }
 
 /* ============================================================
-   MOBILE
+   WORKSPACE
+   ============================================================ */
+
+.workspace-panel {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.workspace-head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.workspace-head p {
+  margin: 5px 0 12px;
+  color: var(--faint);
+  font-size: 0.82rem;
+}
+
+.workspace-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.workspace-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
+}
+
+.workspace-input:focus {
+  border-color: var(--accent);
+}
+
+.workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.workspace-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.workspace-item.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.workspace-select {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.workspace-remove {
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 2px 5px;
+}
+
+.workspace-remove:hover {
+  color: var(--danger);
+}
+
+.workspace-empty {
+  color: var(--faint);
+  font-size: 0.82rem;
+  padding: 6px 2px;
+}
+
+/* ============================================================
+   MODAL DE TAREFAS (CRUD)
+   ============================================================ */
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  width: 90%;
+  max-width: 500px;
+  margin: auto;
+}
+
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+}
+
+.modal h3 {
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  font-size: 1.2rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
+
+.modal input,
+.modal textarea {
+  width: 100%;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+}
+
+.modal input:focus,
+.modal textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.modal textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+/* Botões do Card de Tarefas */
+
+.task-card-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-icon-task {
+  background: transparent;
+  border: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 6px;
+  color: var(--faint);
+  transition: color 0.2s ease, background 0.2s ease;
+}
+
+.btn-icon-task svg {
+  width: 14px;
+  height: 14px;
+}
+
+.btn-edit-task:hover {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.btn-delete-task:hover {
+  color: var(--danger);
+  background: rgba(239, 117, 108, 0.1);
+}
+
+
+/* ============================================================
+   MOBILE (MEDIA QUERIES)
    ============================================================ */
 
 @media (max-width: 780px) {
@@ -1830,24 +2056,24 @@ button {
   }
 
   .tasks-panel {
-  padding: 14px 16px;
-}
+    padding: 14px 16px;
+  }
 
-.tasks-head {
-  align-items: flex-start;
+  .tasks-head {
+    align-items: flex-start;
 
-  flex-direction: column;
-}
+    flex-direction: column;
+  }
 
-.tasks-head .btn {
-  width: 100%;
-}
+  .tasks-head .btn {
+    width: 100%;
+  }
 
-.tasks-list {
-  grid-template-columns: 1fr;
+  .tasks-list {
+    grid-template-columns: 1fr;
 
-  max-height: 320px;
-}
+    max-height: 320px;
+  }
 
   /* Messages mobile */
 
@@ -2037,99 +2263,4 @@ button {
   .chat-form {
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
   }
-}
-
-/* ============================================================
-   WORKSPACE
-   ============================================================ */
-
-.workspace-panel {
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
-}
-
-.workspace-head h4 {
-  margin: 0;
-  font-size: 0.95rem;
-}
-
-.workspace-head p {
-  margin: 5px 0 12px;
-  color: var(--faint);
-  font-size: 0.82rem;
-}
-
-.workspace-controls {
-  display: flex;
-  gap: 8px;
-}
-
-.workspace-input {
-  flex: 1;
-  min-width: 0;
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--input);
-  color: var(--text);
-  outline: none;
-}
-
-.workspace-input:focus {
-  border-color: var(--primary);
-}
-
-.workspace-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.workspace-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-}
-
-.workspace-item.active {
-  border-color: var(--primary);
-  background: var(--primary-soft);
-}
-
-.workspace-select {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  font-size: 0.82rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.workspace-remove {
-  border: 0;
-  background: transparent;
-  color: var(--faint);
-  font-size: 1.1rem;
-  cursor: pointer;
-  padding: 2px 5px;
-}
-
-.workspace-remove:hover {
-  color: var(--danger);
-}
-
-.workspace-empty {
-  color: var(--faint);
-  font-size: 0.82rem;
-  padding: 6px 2px;
 }
