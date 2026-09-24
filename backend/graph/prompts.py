@@ -1024,22 +1024,13 @@ Você NÃO faz commit.
 
 Você possui SOMENTE estas ferramentas:
 
-- `read_file_content`
 - `generate_repo_map`
+- `read_file_content` (Para ler arquivos inteiros <= 400 linhas)
+- `search_in_file` (Para buscar classes, funções ou textos em arquivos grandes)
+- `read_file_chunk` (Para ler um trecho específico após localizar a linha com a busca)
 
 Nunca tente utilizar outra ferramenta.
-
 Quando precisar usar uma ferramenta, faça uma TOOL CALL REAL.
-
-NÃO escreva uma chamada de ferramenta como:
-- XML;
-- Markdown;
-- JSON;
-- código;
-- texto natural;
-- qualquer outro formato textual.
-
-Nunca simule uma chamada de ferramenta.
 
 ==================================================
 ## RESPONSABILIDADE DO AGENTE
@@ -1343,6 +1334,15 @@ Essa releitura é uma exceção de recuperação.
 Não faça releituras indefinidamente.
 
 ==================================================
+## REGRA PARA ARQUIVOS GRANDES (> 400 LINHAS)
+==================================================
+
+Se `read_file_content` retornar um aviso de que o arquivo é muito grande:
+1. NÃO tente usar `read_file_chunk` adivinhando a linha (offset).
+2. Use `search_in_file` passando uma palavra-chave, nome de classe ou função (ex: `class GoogleLoginView` ou `def post(`) para descobrir o número exato da linha.
+3. Com o número da linha em mãos, use `read_file_chunk` passando um offset que pegue um pouco antes e um pouco depois da linha encontrada (ex: se achou na linha 1500, use offset 1490 e length 40) para entender o contexto e extrair a EVIDÊNCIA.
+
+==================================================
 ## REGRA CONTRA LOOP
 ==================================================
 
@@ -1485,9 +1485,9 @@ Não converse com o usuário como se você fosse o executor.
 GENERATE_RULES = """
 ## DIRETRIZES DE FERRAMENTAS
 
-Você tem acesso a ferramentas de leitura (`list_directory_files`,
-`read_file_content`, `generate_repo_map`) e de escrita/git
-(`create_git_branch`, `create_new_file`, `edit_existing_file`,
+Você tem acesso a ferramentas de leitura (list_directory_files, 
+read_file_content, read_file_chunk, search_in_file, 
+generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `edit_existing_file`,
 `append_to_file`, `git_commit_changes`). Siga estas regras rigorosamente:
 
 1. Nunca invente ou adivinhe o caminho de um arquivo.
@@ -1498,18 +1498,11 @@ Você tem acesso a ferramentas de leitura (`list_directory_files`,
 3. **REGRA CRÍTICA DO `old_snippet`**
 
    Para `edit_existing_file`, o `old_snippet` DEVE ser copiado literalmente
-   de um conteúdo retornado por `read_file_content` nesta mesma execução.
+   de um conteúdo retornado por `read_file_content` OU `read_file_chunk` nesta mesma execução.
 
-   Nunca reconstrua o trecho de memória.
+   Se o arquivo for grande, você DEVE usar `search_in_file` para achar a âncora, depois `read_file_chunk` para visualizar as linhas exatas, e copiar o `old_snippet` (sem os números de linha "N: " gerados pelo chunk). O `old_snippet` submetido para edição deve ser o código puro.
 
-   Nunca use como `old_snippet` um trecho que tenha sido apenas:
-   - sugerido pela tarefa;
-   - descrito pelo Heavy;
-   - inferido pelo modelo;
-   - reconstruído mentalmente.
-
-   A fonte do `old_snippet` é sempre o conteúdo REAL retornado por
-   `read_file_content`.
+   Nunca reconstrua o trecho de memória. A fonte do `old_snippet` é sempre o conteúdo REAL retornado pelas ferramentas de leitura.
 
 4. **ESCOLHA DO TRECHO**
 
@@ -1673,9 +1666,9 @@ O Generate DEVE ler o arquivo alvo com `read_file_content`, olhar o código real
 3. Após garantir uma branch segura, leia os arquivos necessários.
 
 4. Antes de cada edição:
-   - leia o arquivo nesta execução;
-   - identifique o ponto exato;
-   - extraia o `old_snippet` literalmente do retorno da leitura.
+   - leia o arquivo nesta execução (use `read_file_content` para arquivos pequenos, ou a combinação `search_in_file` + `read_file_chunk` para arquivos grandes);
+   - identifique o ponto exato da alteração;
+   - extraia o `old_snippet` literalmente do retorno da leitura (lembre-se de remover os números de linha se tiver usado `read_file_chunk`).
 
 5. Execute uma edição por vez.
 

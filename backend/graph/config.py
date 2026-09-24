@@ -6,7 +6,7 @@ from langchain_core.messages import BaseMessage
 from typing import Annotated, Literal, NotRequired, TypedDict, cast
 from pydantic import Field
 from backend.api.schemas import GenerateTaskSchema, HeavyAnalysisSchema
-from backend.graph.tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, generate_repo_map, git_commit_changes, list_directory_files, read_file_content
+from backend.graph.tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, generate_repo_map, git_commit_changes, read_file_chunk, search_in_file, list_directory_files, read_file_content
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -39,8 +39,8 @@ class State(TypedDict):
     
     workspace_path: str
 
-FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content]
-FILE_TOOLS_FULL = [read_file_content, generate_repo_map]
+FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content, read_file_chunk, search_in_file]
+FILE_TOOLS_FULL = [read_file_content, generate_repo_map, read_file_chunk, search_in_file]
 WRITE_AND_GIT_TOOLS = [
     create_git_branch,
     create_new_file,
@@ -50,6 +50,8 @@ WRITE_AND_GIT_TOOLS = [
     read_file_content,
     generate_repo_map,
     list_directory_files,
+    read_file_chunk,
+    search_in_file,
 ]
 
 def load_llm() -> BaseChatModel:

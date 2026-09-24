@@ -9,13 +9,14 @@ from langgraph.prebuilt import ToolRuntime
 
 MAX_READS_PER_GENERATE_TASK = 50
 
+
 def _count_read_calls(messages) -> int:
     return sum(
         1
         for msg in messages
         if getattr(msg, "tool_calls", None)
         for call in msg.tool_calls
-        if call["name"] in ("read_file_content", "list_directory_files")
+        if call["name"] in ("read_file_content", "list_directory_files", "read_file_chunk")
     )
 
 def _messages_since_last_human(state: dict) -> list:
@@ -93,21 +94,108 @@ def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
 @tool
 def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     """
-    Lê e retorna o conteúdo (código-fonte) de um único arquivo específico.
+    Lê e retorna o conteúdo COMPLETO de um arquivo pequeno.
 
-    Use esta ferramenta quando você já possuir o caminho do arquivo que precisa
-    analisar. O caminho deve ser relativo à raiz do workspace.
+    NÃO aceita offset/length. Para arquivos grandes, onde ler tudo de uma vez
+    não é prático, use `read_file_chunk` em vez desta.
 
-    Para pedidos em que o usuário já informou explicitamente o arquivo,
-    leia diretamente esse arquivo.
-    
     Args:
-        file_path (str): O caminho exato do arquivo que você deseja ler.
-        
+        file_path (str): Caminho relativo do arquivo.
+
     Returns:
-        str: O texto com o código contido dentro do arquivo, ou uma mensagem de erro.
+        str: Conteúdo completo do arquivo, ou mensagem de erro/orientação.
     """
-    
+    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
+        return (
+            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: ..."
+        )
+
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_path = _resolve_path(file_path, workspace_path)
+
+    try:
+        content = resolved_path.read_text(encoding='utf-8')
+    except Exception as error:
+        return f"Erro ao ler o arquivo: {str(error)}"
+
+    total_lines = content.count("\n") + 1
+    if total_lines > 400:
+        return (
+            f"Este arquivo tem {total_lines} linhas — grande demais para ler de uma vez. "
+            f"Use a ferramenta `read_file_chunk(file_path, offset, length)` para ler em partes, "
+            f"ou `search_in_file(file_path, pattern)` para localizar um trecho específico primeiro."
+        )
+
+    return content
+
+@tool
+def read_file_chunk(file_path: str, offset: int, length: int, runtime: ToolRuntime) -> str:
+    """
+    Lê um trecho específico (por linha) de um arquivo, numerado por linha.
+
+    Use esta ferramenta para arquivos grandes, quando você já sabe (via
+    `search_in_file` ou por contexto) aproximadamente onde procurar, e não
+    precisa/quer o arquivo inteiro.
+
+    Args:
+        file_path (str): Caminho relativo do arquivo.
+        offset (int): Número da primeira linha a retornar (1 = início do arquivo).
+        length (int): Quantidade de linhas a retornar a partir do offset.
+
+    Returns:
+        str: Linhas no formato "N: conteúdo", mais um resumo indicando quantas
+        linhas o arquivo tem no total e se o trecho retornado é o final dele.
+    """
+    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
+        return (
+            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: ..."
+        )
+
+    workspace_path = runtime.state.get("workspace_path")
+    resolved_path = _resolve_path(file_path, workspace_path)
+
+    try:
+        lines = resolved_path.read_text(encoding='utf-8').splitlines()
+    except Exception as error:
+        return f"Erro ao ler o arquivo: {str(error)}"
+
+    total_lines = len(lines)
+    start = max(0, offset - 1)
+    end = min(total_lines, start + length)
+
+    if start >= total_lines:
+        return f"O arquivo tem apenas {total_lines} linhas — offset {offset} está além do final."
+
+    chunk = "\n".join(f"{i+1}: {lines[i]}" for i in range(start, end))
+    footer = f"\n\n[linhas {start+1}-{end} de {total_lines} totais]"
+    if end < total_lines:
+        footer += " (arquivo continua além deste trecho)"
+
+    return chunk + footer
+
+@tool
+def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
+    """
+    Busca uma string ou regex dentro de um arquivo e retorna as linhas
+    correspondentes com seus números de linha.
+
+    Use esta ferramenta quando precisar LOCALIZAR onde algo está em um arquivo
+    (ex: o início de uma classe, uma função, um texto específico), em vez de
+    ler o arquivo inteiro ou tentar adivinhar a posição lendo em pedaços.
+
+    Depois de localizar a linha certa aqui, use `read_file_chunk` com um
+    offset próximo a ela para ver o contexto completo antes de editar.
+
+    Args:
+        file_path (str): Caminho relativo do arquivo.
+        pattern (str): Texto ou regex a buscar.
+
+    Returns:
+        str: Linhas correspondentes, formatadas como "N: conteúdo da linha",
+        ou uma mensagem indicando que nada foi encontrado.
+    """
+    import re
+
     if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
         return (
             "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: você já fez muitas "
@@ -116,55 +204,35 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
             "para criar/editar arquivos. Se não tem, reporte a tarefa como ambígua "
             "e encerre — não chame mais nenhuma ferramenta de leitura."
         )
-    
-    # already_read = any(
-    #     call["name"] == "read_file_content" and call["args"].get("file_path") == file_path
-        
-    #     for msg in _messages_since_last_human(runtime.state)
-    #     if getattr(msg, "tool_calls", None)
-    #     for call in msg.tool_calls
-    # )
-
-    # if already_read:
-    #     return (
-    #         "AVISO: você já leu este arquivo nesta mesma execução. Releitura "
-    #         "desnecessária. Use o conteúdo que você já obteve e avance: edite/crie "
-    #         "o arquivo necessário, ou finalize se a investigação já é suficiente."
-    #     )
 
     workspace_path = runtime.state.get("workspace_path")
     resolved_path = _resolve_path(file_path, workspace_path)
-    
-    read_count = _count_read_calls(_messages_since_last_human(runtime.state))
-    print(f"[LEITURA] {read_count}/{MAX_READS_PER_GENERATE_TASK} chamadas nesta execução | resolved_path={resolved_path}")
+
+    print(f"[BUSCA] arquivo={resolved_path} pattern={pattern!r}")
 
     try:
-        result = resolved_path.read_text(encoding='utf-8')
-        print(f"[LEITURA] sucesso, {len(result)} chars")
-        return result
+        lines = resolved_path.read_text(encoding='utf-8').splitlines()
     except Exception as error:
-        print(f"[LEITURA] FALHOU: {error}")
+        print(f"[BUSCA] FALHOU: {error}")
         return f"Erro ao ler o arquivo: {str(error)}"
-    
 
-def parse_python_ast(content: str, indent: str) -> list:
-    """Usa o AST para extrair classes e funções com precisão cirúrgica no Python"""
-    signatures = []
     try:
-        tree = ast.parse(content)
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef):
-                signatures.append(f"{indent}    🔹 class {node.name}:")
-                # Pega os métodos dentro da classe
-                for child in node.body:
-                    if isinstance(child, ast.FunctionDef) or isinstance(child, ast.AsyncFunctionDef):
-                        signatures.append(f"{indent}        🔸 def {child.name}(...)")
-            
-            elif isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
-                signatures.append(f"{indent}    🔹 def {node.name}(...)")
-    except Exception:
-        signatures.append(f"{indent}    ⚠️ (Erro de sintaxe no AST)")
-    return signatures
+        compiled = re.compile(pattern)
+    except re.error as error:
+        return f"Padrão de busca inválido: {error}"
+
+    matches = [
+        f"{i+1}: {line}"
+        for i, line in enumerate(lines)
+        if compiled.search(line)
+    ]
+
+    if not matches:
+        print("[BUSCA] nenhuma ocorrência")
+        return f"Nenhuma ocorrência de '{pattern}' encontrada em {file_path}."
+
+    print(f"[BUSCA] {len(matches)} ocorrência(s) encontrada(s)")
+    return "\n".join(matches)
 
 @tool
 def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
