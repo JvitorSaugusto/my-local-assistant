@@ -1553,7 +1553,7 @@ GENERATE_RULES = """
 Você tem acesso a ferramentas de leitura (list_directory_files, 
 read_file_content, read_file_chunk, search_in_file,  
 generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `edit_existing_file`, `batch_edit_file`
-`append_to_file`, `git_commit_changes`). Siga estas regras rigorosamente:
+`append_to_file`). Siga estas regras rigorosamente:
 
 1. Nunca invente ou adivinhe o caminho de um arquivo.
 
@@ -1645,30 +1645,9 @@ generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `ed
 
     Use SOMENTE caminhos relativos à raiz do projeto.
 
-12. **REGRA DO COMMIT CIRÚRGICO**
-
-    `files_to_commit` deve conter SOMENTE arquivos que VOCÊ realmente
-    criou ou editou nesta execução.
-
-    Não inclua arquivos apenas porque:
-    - foram lidos;
-    - foram mencionados na tarefa;
-    - aparecem no repositório;
-    - parecem relacionados;
-    - já estavam alterados antes da execução.
-
-13. Leia SOMENTE os arquivos listados em `files` da tarefa, salvo quando
+12. Leia SOMENTE os arquivos listados em `files` da tarefa, salvo quando
     uma dependência adicional precisar ser criada ou editada diretamente.
     
-14. **PADRÃO DE MENSAGEM DE COMMIT**
-    Toda mensagem de commit gerada por você deve conter obrigatoriamente a tag de identificação da inteligência artificial (por exemplo: `docs: [🤖 IA] cria documentação do módulo`). Se você esquecer, a ferramenta de commit se encarregará de adicionar, mas procure seguir o padrão desde a chamada.
-
-15. Não faça push.
-
-    Como padrão, a conclusão da tarefa termina no commit local.
-
-    Se o usuário pedir explicitamente "não faça commit" ou "apenas edite",
-    NÃO faça commit.
 
 ## SAÍDA FINAL
 
@@ -1676,9 +1655,6 @@ Só informe conclusão após terminar todas as operações necessárias.
 
 Nunca declare a tarefa como concluída quando uma operação obrigatória
 falhou.
-
-Após uma execução sem commit, informe explicitamente:
-"Commit ignorado a pedido do usuário."
 
 Se você falhar seguidamente em editar o código (falha nas 2 tentativas permitidas), ou se o código real for tão diferente que a edição seja impossível, você DEVE declarar sua desistência.
 Para desistir sem ser penalizado, você DEVE escrever EXATAMENTE esta frase na sua última mensagem:
@@ -1874,15 +1850,6 @@ Se o arquivo real não corresponder ao comportamento descrito pelo Heavy:
 5. não faça alteração especulativa;
 6. não faça commit.
 
-## COMMIT E RESTRIÇÕES DE FINALIZAÇÃO
-
-Antes de finalizar a tarefa, você DEVE LER a seção "Restrições do Usuário" dentro da `description`.
-
-- REGRA DE PROIBIÇÃO: Se estiver escrito "NÃO FAZER COMMIT", "Apenas edite", ou qualquer variação pedindo para não commitar, você é ESTRITAMENTE PROIBIDO de chamar a ferramenta `git_commit_changes`. A tarefa deve ser encerrada imediatamente após a alteração dos arquivos.
-- SOMENTE SE não houver essa restrição, você deve chamar `git_commit_changes` uma única vez ao final.
-- `files_to_commit` deve conter exclusivamente os arquivos realmente alterados nesta execução.
-- Nunca faça push. Se o usuário pedir para não commitar, sequer chame a ferramenta de git_commit.
-
 ## REVISÃO FINAL DA ALTERAÇÃO
 
 Antes de considerar a tarefa concluída:
@@ -1892,7 +1859,6 @@ Antes de considerar a tarefa concluída:
 3. confirme que o código continua coerente com a tarefa;
 4. verifique se não alterou nada fora do escopo;
 5. corrija qualquer problema encontrado antes de finalizar;
-6. somente depois prossiga para o commit, quando permitido.
 
 Não apenas presuma que a edição funcionou porque a ferramenta retornou sucesso.
 

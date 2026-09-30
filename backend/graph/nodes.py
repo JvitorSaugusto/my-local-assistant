@@ -71,7 +71,6 @@ WRITE_TOOL_NAMES = {
     "edit_existing_file",
     "batch_edit_file",
     "create_git_branch",
-    "git_commit_changes"
 }
 
 def _has_write_call(messages) -> bool:

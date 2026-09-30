@@ -748,169 +748,169 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
     return f"Conteúdo adicionado ao final de '{file_path}' com sucesso."
 
 
-@tool
-def git_commit_changes(commit_message: str, files_to_commit: list[str], runtime: ToolRuntime) -> str:
-    """Cria um commit git APENAS com os arquivos especificados.
+# @tool
+# def git_commit_changes(commit_message: str, files_to_commit: list[str], runtime: ToolRuntime) -> str:
+#     """Cria um commit git APENAS com os arquivos especificados.
 
-    Use esta ferramenta SOMENTE no final da tarefa, depois de já ter feito
-    todas as edições necessárias com as outras ferramentas de escrita.
+#     Use esta ferramenta SOMENTE no final da tarefa, depois de já ter feito
+#     todas as edições necessárias com as outras ferramentas de escrita.
 
-    Você DEVE passar explicitamente a lista dos arquivos que VOCÊ modificou
-    ou criou. Nunca tente commitar arquivos em que você não trabalhou.
+#     Você DEVE passar explicitamente a lista dos arquivos que VOCÊ modificou
+#     ou criou. Nunca tente commitar arquivos em que você não trabalhou.
 
-    O commit só é permitido em branches de desenvolvimento (nunca em main/master).
+#     O commit só é permitido em branches de desenvolvimento (nunca em main/master).
 
-    A `commit_message` deve seguir o padrão Conventional Commits:
-    - 'feat: ...' para uma nova funcionalidade;
-    - 'fix: ...' para correção de bug;
-    - 'refactor: ...' para mudança de estrutura sem alterar comportamento;
-    - 'chore: ...' para tarefas de manutenção (configs, dependências);
-    - 'docs: ...' para mudanças em documentação.
+#     A `commit_message` deve seguir o padrão Conventional Commits:
+#     - 'feat: ...' para uma nova funcionalidade;
+#     - 'fix: ...' para correção de bug;
+#     - 'refactor: ...' para mudança de estrutura sem alterar comportamento;
+#     - 'chore: ...' para tarefas de manutenção (configs, dependências);
+#     - 'docs: ...' para mudanças em documentação.
 
-    Exemplo: 'docs: cria documentação técnica do módulo' 
-    (Nota: A tag de identificação da inteligência artificial [🤖 IA] será 
-    injetada automaticamente pelo sistema caso você não a inclua).
+#     Exemplo: 'docs: cria documentação técnica do módulo' 
+#     (Nota: A tag de identificação da inteligência artificial [🤖 IA] será 
+#     injetada automaticamente pelo sistema caso você não a inclua).
 
-    Args:
-        commit_message: Mensagem do commit seguindo Conventional Commits.
-        files_to_commit: Lista de strings com os caminhos relativos dos 
-            arquivos que você editou/criou.
+#     Args:
+#         commit_message: Mensagem do commit seguindo Conventional Commits.
+#         files_to_commit: Lista de strings com os caminhos relativos dos 
+#             arquivos que você editou/criou.
 
-    Returns:
-        Uma mensagem de sucesso com a saída do commit, ou um erro detalhado.
-    """
-    workspace_path = runtime.state.get("workspace_path")
+#     Returns:
+#         Uma mensagem de sucesso com a saída do commit, ou um erro detalhado.
+#     """
+#     workspace_path = runtime.state.get("workspace_path")
 
-    if not workspace_path:
-        return "ERRO: nenhum workspace definido para esta conversa."
+#     if not workspace_path:
+#         return "ERRO: nenhum workspace definido para esta conversa."
 
-    repo = Path(workspace_path).resolve()
+#     repo = Path(workspace_path).resolve()
 
-    if not (repo / ".git").exists():
-        return f"ERRO: '{workspace_path}' não é a raiz de um repositório git."
+#     if not (repo / ".git").exists():
+#         return f"ERRO: '{workspace_path}' não é a raiz de um repositório git."
 
-    if not files_to_commit:
-        return (
-            "ERRO: você deve fornecer a lista de arquivos "
-            "em 'files_to_commit'."
-        )
+#     if not files_to_commit:
+#         return (
+#             "ERRO: você deve fornecer a lista de arquivos "
+#             "em 'files_to_commit'."
+#         )
 
-    try:
-        branch_result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+#     try:
+#         branch_result = subprocess.run(
+#             ["git", "branch", "--show-current"],
+#             cwd=str(repo),
+#             capture_output=True,
+#             text=True,
+#             timeout=10,
+#         )
 
-        if branch_result.returncode != 0:
-            return (
-                "ERRO DE SEGURANÇA: não foi possível verificar "
-                "a branch atual."
-            )
+#         if branch_result.returncode != 0:
+#             return (
+#                 "ERRO DE SEGURANÇA: não foi possível verificar "
+#                 "a branch atual."
+#             )
 
-        current_branch = branch_result.stdout.strip()
+#         current_branch = branch_result.stdout.strip()
 
-        if current_branch in {"main", "master"}:
-            return (
-                f"ERRO DE SEGURANÇA: você não pode commitar diretamente "
-                f"na branch '{current_branch}'. "
-                "Crie uma branch de trabalho primeiro."
-            )
+#         if current_branch in {"main", "master"}:
+#             return (
+#                 f"ERRO DE SEGURANÇA: você não pode commitar diretamente "
+#                 f"na branch '{current_branch}'. "
+#                 "Crie uma branch de trabalho primeiro."
+#             )
 
-        valid_files = []
+#         valid_files = []
 
-        for file_path in files_to_commit:
-            resolved_path = _resolve_path(file_path, workspace_path)
+#         for file_path in files_to_commit:
+#             resolved_path = _resolve_path(file_path, workspace_path)
 
-            if not resolved_path.exists():
-                return (
-                    f"ERRO: o arquivo '{file_path}' não existe "
-                    "no workspace."
-                )
+#             if not resolved_path.exists():
+#                 return (
+#                     f"ERRO: o arquivo '{file_path}' não existe "
+#                     "no workspace."
+#                 )
 
-            try:
-                relative_path = resolved_path.relative_to(repo)
-            except ValueError:
-                return (
-                    f"ERRO DE SEGURANÇA: o arquivo '{file_path}' "
-                    "está fora do workspace."
-                )
+#             try:
+#                 relative_path = resolved_path.relative_to(repo)
+#             except ValueError:
+#                 return (
+#                     f"ERRO DE SEGURANÇA: o arquivo '{file_path}' "
+#                     "está fora do workspace."
+#                 )
 
-            valid_files.append(str(relative_path))
+#             valid_files.append(str(relative_path))
 
-        add_command = ["git", "add", "--"] + valid_files
+#         add_command = ["git", "add", "--"] + valid_files
 
-        add_result = subprocess.run(
-            add_command,
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+#         add_result = subprocess.run(
+#             add_command,
+#             cwd=str(repo),
+#             capture_output=True,
+#             text=True,
+#             timeout=30,
+#         )
 
-        if add_result.returncode != 0:
-            return (
-                "ERRO ao executar git add para os arquivos "
-                f"({valid_files}): {add_result.stderr.strip()}"
-            )
+#         if add_result.returncode != 0:
+#             return (
+#                 "ERRO ao executar git add para os arquivos "
+#                 f"({valid_files}): {add_result.stderr.strip()}"
+#             )
 
-        clean_message = commit_message.strip()
+#         clean_message = commit_message.strip()
 
-        if "[🤖 IA]" not in clean_message:
-            if ":" in clean_message:
-                prefix, description = clean_message.split(":", 1)
-                clean_message = (
-                    f"{prefix.strip()}: [🤖 IA] {description.strip()}"
-                )
-            else:
-                clean_message = f"[🤖 IA] {clean_message}"
+#         if "[🤖 IA]" not in clean_message:
+#             if ":" in clean_message:
+#                 prefix, description = clean_message.split(":", 1)
+#                 clean_message = (
+#                     f"{prefix.strip()}: [🤖 IA] {description.strip()}"
+#                 )
+#             else:
+#                 clean_message = f"[🤖 IA] {clean_message}"
 
-        commit_result = subprocess.run(
-            ["git", "commit", "-m", clean_message],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+#         commit_result = subprocess.run(
+#             ["git", "commit", "-m", clean_message],
+#             cwd=str(repo),
+#             capture_output=True,
+#             text=True,
+#             timeout=30,
+#         )
 
-        if commit_result.returncode != 0:
-            combined_output = (
-                commit_result.stderr + commit_result.stdout
-            ).lower()
+#         if commit_result.returncode != 0:
+#             combined_output = (
+#                 commit_result.stderr + commit_result.stdout
+#             ).lower()
 
-            if "nothing to commit" in combined_output:
-                return (
-                    "AVISO: não havia nenhuma alteração real "
-                    "nos arquivos especificados para commitar."
-                )
+#             if "nothing to commit" in combined_output:
+#                 return (
+#                     "AVISO: não havia nenhuma alteração real "
+#                     "nos arquivos especificados para commitar."
+#                 )
 
-            return (
-                "ERRO ao criar o commit: "
-                f"{commit_result.stderr.strip() or commit_result.stdout.strip()}"
-            )
+#             return (
+#                 "ERRO ao criar o commit: "
+#                 f"{commit_result.stderr.strip() or commit_result.stdout.strip()}"
+#             )
 
-        return (
-            f"Commit criado com sucesso na branch '{current_branch}'.\n"
-            f"Arquivos commitados: {', '.join(valid_files)}\n"
-            f"Mensagem: {clean_message}"
-        )
+#         return (
+#             f"Commit criado com sucesso na branch '{current_branch}'.\n"
+#             f"Arquivos commitados: {', '.join(valid_files)}\n"
+#             f"Mensagem: {clean_message}"
+#         )
 
-    except FileNotFoundError:
-        return (
-            "ERRO: comando 'git' não encontrado. "
-            "Verifique se o Git está instalado e no PATH."
-        )
+#     except FileNotFoundError:
+#         return (
+#             "ERRO: comando 'git' não encontrado. "
+#             "Verifique se o Git está instalado e no PATH."
+#         )
 
-    except subprocess.TimeoutExpired:
-        return (
-            "ERRO: o comando git demorou demais para responder "
-            "(timeout)."
-        )
+#     except subprocess.TimeoutExpired:
+#         return (
+#             "ERRO: o comando git demorou demais para responder "
+#             "(timeout)."
+#         )
 
-    except Exception as error:
-        return (
-            "ERRO inesperado na ferramenta de commit: "
-            f"{str(error)}"
-        )
+#     except Exception as error:
+#         return (
+#             "ERRO inesperado na ferramenta de commit: "
+#             f"{str(error)}"
+#         )
