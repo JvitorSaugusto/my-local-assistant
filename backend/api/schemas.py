@@ -76,6 +76,7 @@ class HeavyAnalysisSchema(BaseModel):
         description=(
             "Sua análise técnica em texto livre (Markdown), destinada ao USUÁRIO. "
             "Explique o diagnóstico, as alternativas consideradas e a decisão tomada. "
+            "No Modo 3 (Auditoria de Segurança), coloque aqui o Relatório Completo. "
             "Se o pedido for apenas uma pergunta ou explicação, coloque aqui a resposta "
             "completa e deixe 'tasks' vazio."
         )
@@ -85,9 +86,9 @@ class HeavyAnalysisSchema(BaseModel):
         description=(
             "Tarefas de implementação para o Agente Executor. "
             "OBRIGATÓRIO: Você DEVE gerar pelo menos uma tarefa aqui SEMPRE que o "
-            "usuário pedir qualquer alteração, edição ou criação de código/arquivos. "
-            "Deixe VAZIO APENAS se for puramente uma pergunta teórica ou dúvida sem intenção "
-            "de mexer no código."
+            "usuário pedir qualquer alteração, edição ou criação de código/arquivos (Modo 2). "
+            "Deixe VAZIO se for puramente uma pergunta/dúvida (Modo 1) OU se "
+            "estiver gerando um Relatório de Auditoria de Segurança (Modo 3)."
         ),
     )
     
