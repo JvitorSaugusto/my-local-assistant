@@ -806,7 +806,7 @@ el.importTasksForm.addEventListener('submit', async (event) => {
     const tasksArray = Array.isArray(parsed) ? parsed : [parsed];
     
     // Pega o thread_id ativo
-    const chat = state.chats.find(c => c.thread_id === state.activeId);
+    const chat = state.chats.find(c => c.id === state.activeId);
     
     if (!chat) {
       alert('Nenhuma conversa ativa encontrada.');
