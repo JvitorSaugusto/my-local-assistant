@@ -70,6 +70,23 @@ class HeavyGeneratedTask(BaseModel):
     priority: str = Field(
         description="Prioridade técnica da tarefa: alta, média ou baixa."
     )
+    
+    
+class SecurityFinding(BaseModel):
+    category: str = Field(description="Uma das 7 categorias (Injeção, Segredos Expostos, etc).")
+    file: str = Field(description="Caminho do arquivo auditado.")
+    evidence: str = Field(description="Trecho LITERAL do código que comprova o achado.")
+    risk: Literal["high", "medium", "low"]
+    technical_analysis: str = Field(description="Explicação técnica curta do risco e impacto.")
+    exploitability_confirmed: bool = Field(
+        description=(
+            "CRÍTICO: True SOMENTE se a evidência mostra um risco REAL e EXPLORÁVEL. "
+            "Marque como False para FALSOS POSITIVOS (ex: variáveis NEXT_PUBLIC_*, "
+            "URL pública de redirecionamento, cookies de sessão sendo apagados no logout, "
+            "ou JSON.stringify() rodando inofensivamente no frontend)."
+        )
+    )
+
 
 class HeavyAnalysisSchema(BaseModel):
     analysis: str = Field(
@@ -90,6 +107,10 @@ class HeavyAnalysisSchema(BaseModel):
             "Deixe VAZIO se for puramente uma pergunta/dúvida (Modo 1) OU se "
             "estiver gerando um Relatório de Auditoria de Segurança (Modo 3)."
         ),
+    )
+    security_findings: list[SecurityFinding] = Field(
+        default_factory=list,
+        description="OBRIGATÓRIO NO MODO 3: Liste aqui todos os achados de segurança encontrados."
     )
     
 class TaskResponseSchema(BaseModel):

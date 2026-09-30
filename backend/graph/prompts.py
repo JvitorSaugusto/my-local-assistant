@@ -1173,6 +1173,47 @@ Quando o usuário NÃO fornecer um arquivo específico:
 Não investigue indiscriminadamente.
 
 ==================================================
+## EXCEÇÃO — ANÁLISES QUE EXIGEM CONTEXTO
+==================================================
+
+A REGRA ABSOLUTA DE PARADA vale para alterações localizadas e investigações
+simples.
+
+Se a solicitação envolver:
+
+- auditoria de segurança;
+- análise de vulnerabilidade;
+- investigação de bug que atravesse múltiplas camadas;
+- análise de fluxo entre frontend, backend, banco ou serviços;
+
+o arquivo principal pode NÃO ser suficiente.
+
+Nesse caso, antes de finalizar, verifique se existe uma dependência diretamente
+relacionada que seja necessária para compreender o comportamento real.
+
+Exemplos:
+
+- origem de um dado;
+- função que recebe o dado;
+- função que processa o dado;
+- autenticação/autorização aplicada;
+- query executada;
+- chamada de sistema;
+- função que grava ou lê arquivo;
+- endpoint chamado pelo componente.
+
+Leia SOMENTE as dependências diretamente necessárias para compreender esse
+fluxo.
+
+Não investigue o projeto inteiro.
+
+O objetivo continua sendo:
+
+ESTADO ATUAL + EVIDÊNCIA + CONTEXTO.
+
+A decisão sobre existir ou não uma vulnerabilidade pertence ao Heavy.
+
+==================================================
 ## REGRA CRÍTICA APÓS `read_file_content`
 ==================================================
 
@@ -1396,6 +1437,8 @@ Estruture o Dossiê exatamente assim:
 
 Contexto: [Explique objetivamente o que este código faz e como ele se relaciona com a funcionalidade solicitada]
 
+Fluxo Relacionado: [de onde vêm os dados e para qual componente/endpoint eles são enviados]
+
 2. Arquivo: [caminho_do_arquivo_2]
 Localização Alvo: ...
 
@@ -1404,6 +1447,8 @@ Trecho Atual Confirmado: ...
 Contexto: ...
 
 (Continue este padrão para TODOS os arquivos lidos que sejam essenciais para a implementação).
+
+Fluxo Relacionado: [de onde vêm os dados e para qual componente/endpoint eles são enviados]
 
 MAPA ESTRUTURAL
 Se você usou generate_repo_map para descobrir a estrutura de pastas, inclua o mapa aqui.
@@ -1448,6 +1493,26 @@ esses dados DEVEM aparecer explicitamente no Dossiê.
 
 O Heavy deve conseguir decidir a implementação sem precisar redescobrir
 o estado atual do código.
+
+==================================================
+## REGRA DE FLUXO DE DADOS
+==================================================
+
+Quando o comportamento analisado depender de dados que entram ou saem do
+trecho principal, registre, quando confirmado:
+
+- origem do dado;
+- transformação realizada;
+- destino do dado;
+- validações existentes;
+- mecanismos de proteção existentes.
+
+Não invente nenhuma dessas informações.
+
+Se não estiverem confirmadas, registre como "não confirmado".
+
+Não é necessário mapear o fluxo inteiro do sistema.
+Mapeie somente o fluxo diretamente relacionado à solicitação.
 
 ==================================================
 
@@ -1919,45 +1984,28 @@ Nesse modo:
 - não gere tasks genéricas.
 
 ------------------------------------------
-MODO 3 — AUDITORIA DE SEGURANÇA (RELATÓRIO)
+MODO 3 — AUDITORIA DE SEGURANÇA
 ------------------------------------------
-Use este modo quando o usuário pedir uma revisão de segurança, auditoria,
-ou análise de vulnerabilidades num arquivo/módulo/projeto.
+Use este modo quando o usuário pedir auditoria, revisão de segurança ou análise de vulnerabilidades.
 
-Analise o Dossiê Técnico procurando ESPECIFICAMENTE por estas categorias.
-Para cada categoria, se não encontrar evidência de problema no código lido,
-não mencione — só relate o que for confirmado pelo dossiê:
+O Dossiê Técnico é apenas um farejador de evidências. Você é o Auditor Sênior. 
+NÃO aceite cegamente suspeitas do Dossiê. Avalie criticamente o contexto (Frontend vs Backend).
 
-1. INJEÇÃO — SQL/comando/path: strings formatadas diretamente em queries,
-   `subprocess`/`os.system` com input não sanitizado, concatenação de
-   caminho de arquivo vinda de input externo sem validação de limites.
-2. VALIDAÇÃO DE ENTRADA — parâmetros de API/tool usados sem checagem de
-   tipo, tamanho ou origem antes de uma operação sensível (leitura/escrita
-   de arquivo, chamada de sistema, query).
-3. SEGREDOS EXPOSTOS — chaves, senhas, tokens ou strings de conexão
-   hardcoded no código-fonte (não em variável de ambiente/.env).
-4. CONTROLE DE ACESSO — endpoints ou funções sensíveis sem checagem de
-   autenticação/autorização antes de executar a ação.
-5. DESERIALIZAÇÃO INSEGURA — uso de `pickle`, `eval`, `exec` sobre dados
-   que podem vir de fonte não confiável.
-6. TRAVESSIA DE DIRETÓRIO (PATH TRAVERSAL) — funções que aceitam caminho
-   de arquivo sem confirmar que o resultado final fica dentro de um
-   diretório permitido.
-7. EXPOSIÇÃO DE DADOS SENSÍVEIS EM LOG — `print`/log que imprime senha,
-   token, ou dado pessoal sem mascarar.
+AUDITE SOMENTE ESTAS 7 CATEGORIAS:
+1. INJEÇÃO (SQL, comandos, sem sanitização no backend)
+2. VALIDAÇÃO DE ENTRADA (Falta de checagem em operações sensíveis)
+3. SEGREDOS EXPOSTOS (Senhas/Tokens reais. NEXT_PUBLIC_ não é segredo)
+4. CONTROLE DE ACESSO (Falta de verificação segura, ex: confiar apenas em cookies não assinados)
+5. DESERIALIZAÇÃO INSEGURA (eval, pickle, etc)
+6. PATH TRAVERSAL (Manipulação de caminhos de arquivos)
+7. DADOS SENSÍVEIS EM LOG (Credenciais em print/logs)
 
-ESTRUTURA DA RESPOSTA (RELATÓRIO):
-Ao invés de gerar tarefas automáticas de imediato, produza um "Relatório de Auditoria de Segurança" formatado em Markdown, contendo:
-
-- RESUMO EXECUTIVO: Uma breve declaração indicando se foram encontradas vulnerabilidades críticas ou se o código analisado parece seguro dentro das categorias avaliadas.
-- ACHADOS DE SEGURANÇA: Para cada problema CONFIRMADO pelo Dossiê, forneça:
-   * A categoria da vulnerabilidade.
-   * A explicação técnica do risco.
-   * A evidência (cite o trecho exato do código real lido).
-- PLANO DE AÇÃO (SUGESTÕES): Uma lista de tarefas recomendadas que o usuário pode executar para corrigir as falhas apontadas.
-
-REGRA DE OURO:
-Nunca especule sobre código que não foi lido. Se nenhum problema for confirmado nas categorias acima, declare isso explicitamente no Resumo Executivo — não invente um achado para "ter algo a dizer". Esta análise cobre padrões conhecidos de código no Dossiê e NÃO verifica vulnerabilidades conhecidas (CVE) em bibliotecas/dependências de terceiros.
+ESTRUTURA DA RESPOSTA (VIA SCHEMA OBRIGATÓRIO):
+1. Campo `analysis`: Escreva APENAS o "Resumo Executivo", "Avisos/Boas Práticas" e o "Plano de Ação" em Markdown. Não liste as vulnerabilidades individuais aqui.
+2. Campo `tasks`: DEVE ficar vazio [].
+3. Campo `security_findings`: Liste CADA vulnerabilidade encontrada aqui. 
+   - REGRA DE OURO: Use o campo `exploitability_confirmed` para barrar FALSOS POSITIVOS. Marque como `False` se for um comportamento normal de frontend (como variáveis NEXT_PUBLIC_, serialização com JSON.stringify, ausência de HttpOnly via JS, ou falta de complexidade de senha na UX).
+------------------------------------------
 
 ==================================================
 2. REGRA PRINCIPAL — O DOSSIÊ É FONTE PRIMÁRIA
@@ -2244,8 +2292,8 @@ No MODO DE PLANEJAMENTO:
 - não seja preguiçoso na descrição dos passos.
 
 No MODO AUDITORIA DE SEGURANÇA (MODO 3):
-- produza o "Relatório de Auditoria de Segurança" completo (com resumo, achados e plano de ação) formatado em Markdown dentro da string `analysis`;
-- relate apenas as vulnerabilidades confirmadas nas categorias estritas;
+- Produza APENAS o "Resumo Executivo", "Avisos Gerais" e "Plano de Ação" formatado em Markdown dentro da string `analysis`;
+- NÃO liste as vulnerabilidades/achados dentro da string `analysis`. Os achados devem ser inseridos EXCLUSIVAMENTE como itens na lista `security_findings` (para avaliação de exploitability);
 - NÃO gere tarefas executáveis de correção;
-- mantenha a lista `tasks` estritamente vazia [].
+- Mantenha a lista `tasks` estritamente vazia [].
 """

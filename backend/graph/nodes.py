@@ -970,6 +970,38 @@ async def heavy_analyzer_node(
         f"TEMPO DE RESPOSTA DO R1: "
         f"{elapsed_time:.2f} segundos"
     )
+    
+    start_time = time.time()
+
+    result = await heavy_llm_structured.ainvoke(context)
+
+    elapsed_time = time.time() - start_time
+
+    print(
+        f"TEMPO DE RESPOSTA DO R1: "
+        f"{elapsed_time:.2f} segundos"
+    )
+
+    final_analysis_content = result.analysis
+
+    if hasattr(result, 'security_findings') and result.security_findings:
+        real_findings = [
+            f for f in result.security_findings 
+            if f.exploitability_confirmed
+        ]
+        
+        security_report = "\n\n## Achados Comprovados\n\n"
+        
+        if not real_findings:
+            security_report += "Nenhuma vulnerabilidade crítica confirmada após o filtro rigoroso de falsos positivos.\n"
+        else:
+            for finding in real_findings:
+                security_report += f"### {finding.category} ({finding.risk.upper()})\n"
+                security_report += f"**Arquivo:** `{finding.file}`\n"
+                security_report += f"**Evidência:**\n```\n{finding.evidence}\n```\n"
+                security_report += f"**Análise:** {finding.technical_analysis}\n\n"
+                
+        final_analysis_content += security_report
 
     response = AIMessage(
         content=result.analysis,
