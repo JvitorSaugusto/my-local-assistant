@@ -944,131 +944,114 @@ async def heavy_analyzer_node(
     if user_request:
         context.append(user_request)
 
-    print(
-        f"\n[⏳ AGUARDE] DeepSeek R1 processando "
-        f"{len(context)} mensagens..."
-    )
-
-    print(
-        f"[📄 HEAVY] Tamanho do dossiê: "
-        f"{len(dossier or '')} caracteres"
-    )
-
-    print(
-        f"[🧰 HEAVY] Tool calls recebidas: "
-        f"{len(gatherer_tool_trace)}"
-    )
+    print(f"\n[⏳ AGUARDE] DeepSeek R1 processando {len(context)} mensagens...")
+    print(f"[📄 HEAVY] Tamanho do dossiê: {len(dossier or '')} caracteres")
+    print(f"[🧰 HEAVY] Tool calls recebidas: {len(gatherer_tool_trace)}")
 
     start_time = time.time()
 
     result = await heavy_llm_structured.ainvoke(context)
 
     elapsed_time = time.time() - start_time
+    print(f"TEMPO DE RESPOSTA DO R1: {elapsed_time:.2f} segundos")
 
-    print(
-        f"TEMPO DE RESPOSTA DO R1: "
-        f"{elapsed_time:.2f} segundos"
-    )
-    
-    start_time = time.time()
-
-    result = await heavy_llm_structured.ainvoke(context)
-
-    elapsed_time = time.time() - start_time
-
-    print(
-        f"TEMPO DE RESPOSTA DO R1: "
-        f"{elapsed_time:.2f} segundos"
-    )
-
-    final_analysis_content = result.analysis
-
-    if hasattr(result, 'security_findings') and result.security_findings:
-        real_findings = [
-            f for f in result.security_findings 
-            if f.exploitability_confirmed
-        ]
-        
-        security_report = "\n\n## Achados Comprovados\n\n"
-        
-        if not real_findings:
-            security_report += "Nenhuma vulnerabilidade crítica confirmada após o filtro rigoroso de falsos positivos.\n"
+    try:
+        if hasattr(result, "model_dump"):
+            data = result.model_dump()
+        elif hasattr(result, "dict"):
+            data = result.dict()
+        elif isinstance(result, dict):
+            data = result
         else:
+            data = {}
+
+        final_analysis_content = data.get('analysis', "") or ""
+        findings = data.get('security_findings', [])
+        
+        real_findings = [f for f in findings if f.get('exploitability_confirmed', False) is True]
+        
+        if real_findings:
+            security_report = "\n\n## 🛡️ Achados de Segurança\n\n"
             for finding in real_findings:
-                security_report += f"### {finding.category} ({finding.risk.upper()})\n"
-                security_report += f"**Arquivo:** `{finding.file}`\n"
-                security_report += f"**Evidência:**\n```\n{finding.evidence}\n```\n"
-                security_report += f"**Análise:** {finding.technical_analysis}\n\n"
+                cat = finding.get('category', 'Desconhecido')
+                risk = str(finding.get('risk', 'Desconhecido')).upper()
+                file_path = finding.get('file', 'Desconhecido')
+                evi = finding.get('evidence', '')
+                tech = finding.get('technical_analysis', '')
                 
-        final_analysis_content += security_report
+                security_report += f"### 🔴 {cat} ({risk})\n"
+                security_report += f"**Arquivo:** `{file_path}`\n"
+                security_report += f"**Evidência (Código):**\n```text\n{evi}\n```\n"
+                security_report += f"**Análise Técnica:** {tech}\n\n"
+                
+            final_analysis_content += security_report
 
-    response = AIMessage(
-        content=result.analysis,
-        name="DeepSeek R1 (32B)",
-        additional_kwargs={'message_tag': 'response_heavy'}
-    )
+        if not final_analysis_content.strip():
+            final_analysis_content = "✅ Análise concluída. Nenhuma tarefa gerada e nenhum resumo criado."
 
-    if result.tasks:
+        print("\n[DEBUG] === TEXTO FINAL QUE SERÁ ENVIADO AO FRONTEND ===")
+        print(final_analysis_content)
+        print("========================================================\n")
+        
+    except Exception as e:
+        print(f"\n[ERRO FATAL NO FILTRO DE SEGURANÇA] {e}")
+        final_analysis_content = f"Erro interno ao processar o relatório de segurança: {str(e)}"
+        data = {}
+
+    tasks_data = data.get('tasks', [])
+    
+    if tasks_data:
         async with async_session_env() as db:
             try:
-                for task in result.tasks:
+                for task in tasks_data:
+                    objective = task.get('objective', '')
+                    target = task.get('target', '')
+                    logic = task.get('logic', '')
+                    constraints = task.get('constraints', '')
+                    
                     description = (
-                        f"**Objetivo:**\n{task.objective}\n\n"
-                        f"**Localização Alvo:**\n{task.target}\n\n"
-                        f"**Lógica da Alteração (Instruções Detalhadas):**\n"
-                        f"{task.logic}\n\n"
-                        f"**Restrições do Usuário:**\n"
-                        f"{task.constraints}"
+                        f"**Objetivo:**\n{objective}\n\n"
+                        f"**Localização Alvo:**\n{target}\n\n"
+                        f"**Lógica da Alteração (Instruções Detalhadas):**\n{logic}\n\n"
+                        f"**Restrições do Usuário:**\n{constraints}"
                     )
 
                     new_task = TaskModel(
                         thread_id=thread_id,
-                        title=task.title,
+                        title=task.get('title', 'Sem Título'),
                         description=description,
-                        files=task.files,
-                        reason=task.reason,
-                        priority=task.priority,
+                        files=task.get('files', []),
+                        reason=task.get('reason', ''),
+                        priority=task.get('priority', 'medium'),
                         status="pending",
                     )
 
                     db.add(new_task)
 
-                    print(
-                        f"\n--- TAREFA GERADA: {task.title} ---"
-                    )
-                    print("files:", task.files)
-                    print("description:")
-                    print(description)
+                    print(f"\n--- TAREFA GERADA: {task.get('title')} ---")
+                    print("files:", task.get('files'))
+                    print("description:\n", description)
                     print("---")
 
                 await db.commit()
 
             except Exception as e:
                 await db.rollback()
-                print(
-                    f"Erro ao salvar as tasks: {e}"
-                )
+                print(f"Erro ao salvar as tasks: {e}")
                 raise
 
-
     print("\n===== HEAVY ANALYZER =====")
-    print(
-        "TASKS GERADAS E SALVAS:",
-        len(result.tasks),
-    )
-    print(
-        "CONTENT LENGTH:",
-        len(result.analysis),
-    )
-    print(
-        "TOOL CALLS RECEBIDAS:",
-        len(gatherer_tool_trace),
-    )
-    print(
-        "DOSSIÊ RECEBIDO:",
-        "SIM" if dossier else "NÃO",
-    )
+    print("TASKS GERADAS E SALVAS:", len(tasks_data))
+    print("CONTENT LENGTH:", len(final_analysis_content))
+    print("TOOL CALLS RECEBIDAS:", len(gatherer_tool_trace))
+    print("DOSSIÊ RECEBIDO:", "SIM" if dossier else "NÃO")
     print("==========================\n")
+
+    response = AIMessage(
+        content=final_analysis_content,
+        name="Qwen 3 Coder 30B",
+        additional_kwargs={'message_tag': 'response_heavy'}
+    )
 
     return {
         "messages": [response],

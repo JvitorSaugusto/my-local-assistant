@@ -71,46 +71,41 @@ class HeavyGeneratedTask(BaseModel):
         description="Prioridade técnica da tarefa: alta, média ou baixa."
     )
     
-    
 class SecurityFinding(BaseModel):
-    category: str = Field(description="Uma das 7 categorias (Injeção, Segredos Expostos, etc).")
+    category: str = Field(description="Uma das 7 categorias: Injeção, Validação de Entrada, Segredos Expostos, Controle de Acesso, Deserialização Insegura, Path Traversal, Dados em Log.")
     file: str = Field(description="Caminho do arquivo auditado.")
-    evidence: str = Field(description="Trecho LITERAL do código que comprova o achado.")
-    risk: Literal["high", "medium", "low"]
-    technical_analysis: str = Field(description="Explicação técnica curta do risco e impacto.")
-    exploitability_confirmed: bool = Field(
+    evidence: str = Field(
         description=(
-            "CRÍTICO: True SOMENTE se a evidência mostra um risco REAL e EXPLORÁVEL. "
-            "Marque como False para FALSOS POSITIVOS (ex: variáveis NEXT_PUBLIC_*, "
-            "URL pública de redirecionamento, cookies de sessão sendo apagados no logout, "
-            "ou JSON.stringify() rodando inofensivamente no frontend)."
+            "COPIE E COLE o trecho de código EXATO do arquivo. "
+            "É estritamente PROIBIDO resumir, explicar ou usar suas próprias palavras neste campo. "
+            "Retorne APENAS o código puro que comprova a falha."
         )
+    )
+    risk: Literal["high", "medium", "low"]
+    technical_analysis: str = Field(description="Vetor de ataque e impacto, em 2-3 frases.")
+    exploitability_confirmed: bool = Field(
+        description="True SOMENTE se há dado externo controlável chegando num sink sensível sem proteção confirmada. NEXT_PUBLIC_*, URL pública, limpeza de cookie no logout = False."
     )
 
 
 class HeavyAnalysisSchema(BaseModel):
-    analysis: str = Field(
+    security_findings: list[SecurityFinding] = Field(
         description=(
-            "Sua análise técnica em texto livre (Markdown), destinada ao USUÁRIO. "
-            "Explique o diagnóstico, as alternativas consideradas e a decisão tomada. "
-            "No Modo 3 (Auditoria de Segurança), coloque aqui o Relatório Completo. "
-            "Se o pedido for apenas uma pergunta ou explicação, coloque aqui a resposta "
-            "completa e deixe 'tasks' vazio."
+            "PREENCHA ESTE CAMPO PRIMEIRO, antes de 'analysis'. No Modo 3: releia "
+            "o dossiê inteiro e crie um item para CADA trecho que se encaixe em "
+            "uma das 7 categorias, mesmo que marque exploitability_confirmed=False "
+            "depois. É PROIBIDO retornar [] sem ter revisado o dossiê linha por "
+            "linha primeiro. Nos Modos 1 e 2, retorne []."
         )
     )
-    tasks: list[HeavyGeneratedTask] = Field(
-        default_factory=list,
+    tasks: list[HeavyGeneratedTask] = Field(default_factory=list, description="...")
+    analysis: str = Field(
         description=(
-            "Tarefas de implementação para o Agente Executor. "
-            "OBRIGATÓRIO: Você DEVE gerar pelo menos uma tarefa aqui SEMPRE que o "
-            "usuário pedir qualquer alteração, edição ou criação de código/arquivos (Modo 2). "
-            "Deixe VAZIO se for puramente uma pergunta/dúvida (Modo 1) OU se "
-            "estiver gerando um Relatório de Auditoria de Segurança (Modo 3)."
-        ),
-    )
-    security_findings: list[SecurityFinding] = Field(
-        default_factory=list,
-        description="OBRIGATÓRIO NO MODO 3: Liste aqui todos os achados de segurança encontrados."
+            "Escreva DEPOIS de preencher security_findings. No Modo 3: resuma "
+            "APENAS os itens com exploitability_confirmed=True já listados acima "
+            "— não repita trecho de código aqui, ele já está estruturado. Nos "
+            "Modos 1/2: resposta normal."
+        )
     )
     
 class TaskResponseSchema(BaseModel):

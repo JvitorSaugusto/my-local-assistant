@@ -10,13 +10,39 @@ from langgraph.prebuilt import ToolRuntime
 MAX_READS_PER_GENERATE_TASK = 50
 
 
+def parse_python_ast(content: str, sub_indent: str) -> list[str]:
+    """
+    Faz o parse do código Python e extrai assinaturas de classes e funções
+    sem precisar de expressões regulares.
+    """
+    signatures = []
+    try:
+        tree = ast.parse(content)
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                signatures.append(f"{sub_indent}    🔹 class {node.name}:")
+                for sub_node in node.body:
+                    if isinstance(sub_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        signatures.append(f"{sub_indent}        🔸 def {sub_node.name}(...):")
+            
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+                signatures.append(f"{sub_indent}    🔹 {prefix} {node.name}(...):")
+                
+    except SyntaxError:
+        signatures.append(f"{sub_indent}    ⚠️ (Erro de sintaxe no arquivo Python)")
+    except Exception as e:
+        signatures.append(f"{sub_indent}    ⚠️ (Erro ao parsear AST: {str(e)})")
+        
+    return signatures
+
 def _count_read_calls(messages) -> int:
     return sum(
         1
         for msg in messages
         if getattr(msg, "tool_calls", None)
         for call in msg.tool_calls
-        if call["name"] in ("read_file_content", "list_directory_files", "read_file_chunk")
+        if call["name"] in ("read_file_content", "list_directory_files", "read_file_chunk","search_in_file", "generate_repo_map",)
     )
 
 def _messages_since_last_human(state: dict) -> list:
@@ -119,6 +145,8 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
         return f"Erro ao ler o arquivo: {str(error)}"
 
     total_lines = content.count("\n") + 1
+    
+    # Trava de segurança mantida antes da formatação
     if total_lines > 400:
         return (
             f"Este arquivo tem {total_lines} linhas — grande demais para ler de uma vez. "
@@ -126,7 +154,10 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
             f"ou `search_in_file(file_path, pattern)` para localizar um trecho específico primeiro."
         )
 
-    return content
+    # Aplica a numeração de linhas solicitada
+    numbered = "\n".join(f"{i}: {line}" for i, line in enumerate(content.splitlines(), start=1))
+    
+    return numbered
 
 @tool
 def read_file_chunk(file_path: str, offset: int, length: int, runtime: ToolRuntime) -> str:
@@ -237,76 +268,123 @@ def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
 @tool
 def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
     """
-    Gera um mapa estrutural do repositório, exibindo a árvore de arquivos e 
+    Gera um mapa estrutural do repositório, exibindo a árvore de arquivos e
     as assinaturas de classes e funções, sem o corpo do código.
-    Use isso para entender a arquitetura completa antes de decidir quais arquivos ler integralmente.
-    
-    Args:
-        dir_path (str): O caminho da pasta que deve ser mapeada.
-        
-    Returns:
-        str: Uma representação em texto da árvore do projeto com as assinaturas de código.
+
+    O caminho recebido é resolvido contra o workspace da conversa.
     """
-    
-    # already_mapped = any(
-    #     call["name"] == "generate_repo_map" and call["args"].get("dir_path") == dir_path
-    #     for msg in _messages_since_last_human(runtime.state)
-    #     if getattr(msg, "tool_calls", None)
-    #     for call in msg.tool_calls
-    # )
-    # if already_mapped:
-    #     return (
-    #         "AVISO: você já gerou o mapa deste diretório nesta mesma execução. "
-    #         "Use o mapa que já obteve — não gere de novo. Se precisar de mais "
-    #         "detalhes, leia um arquivo específico com read_file_content, ou "
-    #         "finalize a investigação se já tem o suficiente."
-    #     )
-        
-    CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.php', '.md'}
-    IGNORED_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', 'env'}
-    
+
+    CODE_EXTENSIONS = {
+        ".py", ".js", ".ts", ".jsx", ".tsx", ".php", ".md"
+    }
+
+    IGNORED_DIRS = {
+        ".git",
+        "__pycache__",
+        "node_modules",
+        "venv",
+        ".venv",
+        "env",
+        ".next",
+        "dist",
+        "build",
+        "out",
+        ".expo",
+    }
+
     REGEX_FALLBACK = re.compile(
         r'^\s*(?:export\s+)?(?:async\s+)?(?:function|class)\s+\w+'
-        r'|^\s*(?:export\s+)?(?:const|let)\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>', 
-        re.MULTILINE
+        r'|^\s*(?:export\s+)?(?:const|let)\s+\w+\s*='
+        r'\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>',
+        re.MULTILINE,
     )
 
     workspace_path = runtime.state.get("workspace_path")
-    resolved_dir = str(_resolve_path(dir_path, workspace_path))
-    print(f"[LEITURA] resolved_dir={resolved_dir}")
 
-    repo_map = [f"Mapa do Repositório: {dir_path}\n"]
+    if not workspace_path:
+        return (
+            "ERRO: nenhum workspace definido para esta conversa."
+        )
+
+    resolved_dir = _resolve_path(dir_path, workspace_path)
+
+    print(f"[REPO MAP] dir_path={dir_path}")
+    print(f"[REPO MAP] workspace={workspace_path}")
+    print(f"[REPO MAP] resolved={resolved_dir}")
+
+    if not resolved_dir.exists():
+        return (
+            f"ERRO: diretório não existe: '{dir_path}'\n"
+            f"Caminho resolvido: '{resolved_dir}'"
+        )
+
+    if not resolved_dir.is_dir():
+        return (
+            f"ERRO: o caminho informado não é um diretório: '{dir_path}'\n"
+            f"Caminho resolvido: '{resolved_dir}'"
+        )
+
+    repo_map = [
+        f"Mapa do Repositório: {dir_path}",
+        f"Caminho Resolvido: {resolved_dir}",
+        "",
+    ]
 
     for root, dirs, files in os.walk(resolved_dir):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+        dirs[:] = [
+            d for d in dirs
+            if d not in IGNORED_DIRS
+        ]
 
-        level = root.replace(resolved_dir, '').count(os.sep)
-        indent = ' ' * 4 * level
+        level = root.replace(str(resolved_dir), "").count(os.sep)
+        indent = " " * 4 * level
         folder_name = os.path.basename(root)
 
         if folder_name:
             repo_map.append(f"{indent}📂 {folder_name}/")
 
-        sub_indent = ' ' * 4 * (level + 1)
+        sub_indent = " " * 4 * (level + 1)
 
-        for file_name in files:
-            ext = Path(file_name).suffix
-            if ext in CODE_EXTENSIONS:
-                file_path = Path(root) / file_name
-                repo_map.append(f"{sub_indent}📄 {file_name}")
+        for file_name in sorted(files):
+            ext = Path(file_name).suffix.lower()
 
-                try:
-                    content = file_path.read_text(encoding='utf-8')
+            if ext not in CODE_EXTENSIONS:
+                continue
 
-                    if ext == '.py':
-                        py_sigs = parse_python_ast(content, sub_indent)
-                        repo_map.extend(py_sigs)
-                    else:
-                        signatures = REGEX_FALLBACK.findall(content)
-                        for sig in signatures:
-                            repo_map.append(f"{sub_indent}    🔹 {sig.strip()}")
-                except Exception:
-                    repo_map.append(f"{sub_indent}    ⚠️ (Erro ao ler arquivo)")
+            file_path = Path(root) / file_name
+
+            repo_map.append(
+                f"{sub_indent}📄 {file_name}"
+            )
+
+            try:
+                content = file_path.read_text(
+                    encoding="utf-8"
+                )
+
+                if ext == ".py":
+                    signatures = parse_python_ast(
+                        content,
+                        sub_indent
+                    )
+
+                    repo_map.extend(signatures)
+
+                else:
+                    signatures = REGEX_FALLBACK.findall(
+                        content
+                    )
+
+                    for sig in signatures:
+                        repo_map.append(
+                            f"{sub_indent}    🔹 {sig.strip()}"
+                        )
+
+            except Exception as error:
+                repo_map.append(
+                    f"{sub_indent}    ⚠️ "
+                    f"(Erro ao ler arquivo: {error})"
+                )
 
     return "\n".join(repo_map)
 
@@ -421,6 +499,13 @@ def create_git_branch(branch_name: str, runtime: ToolRuntime) -> str:
             cwd=str(repo), capture_output=True, text=True, timeout=10,
         )
         current_branch = current_branch_result.stdout.strip()
+        
+        if current_branch and current_branch not in PROTECTED_BRANCHES:  # 👈 restaurar
+            return (
+                "ERRO DE SEGURANÇA: o repositório já está em uma branch não protegida "
+                f"('{current_branch}'). Não crie outra branch nesta execução. "
+                "Prossiga usando a branch atual."
+            )
 
         if current_branch == expected_branch:
             return (
@@ -547,32 +632,32 @@ def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
 
 
 @tool
-def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str, runtime: ToolRuntime) -> str:
-    """Edita um arquivo existente substituindo um trecho exato por outro (search and replace).
+def edit_existing_file(file_path: str, start_line: int, end_line: int, new_content: str, runtime: ToolRuntime) -> str:
+    """Substitui um intervalo de linhas (inclusive) por um novo conteúdo em um arquivo existente.
 
-    Use esta ferramenta em vez de reescrever o arquivo inteiro — isso evita
-    perder partes do arquivo que não deveriam mudar. O 'old_snippet' deve
-    ser copiado EXATAMENTE como aparece no arquivo (mesma indentação, mesmas
-    quebras de linha) — use o conteúdo retornado por 'read_file_content'
-    como referência, nunca digite de memória. O trecho precisa ser único no
-    arquivo: se aparecer mais de uma vez, inclua linhas extras de contexto
-    antes/depois até que ele se torne único.
+        Use esta ferramenta como a PRINCIPAL forma de editar arquivos. Por usar
+        NÚMEROS de linhas em vez de blocos de texto (snippets), ela é extremamente
+        segura contra erros de sintaxe e quebra de parser. Você deve obter os 
+        números exatos das linhas consultando o retorno de 'read_file_content' 
+        ou 'read_file_chunk'.
 
-    IMPORTANTE: esta ferramenta bloqueia automaticamente a edição enquanto a
-    branch atual for 'main' ou 'master'. Use 'create_git_branch' antes.
+        Serve tanto para alterar 1 única linha (passando o mesmo número em 
+        start_line e end_line) quanto para substituir blocos enormes de código.
 
-    Args:
-        file_path: Caminho RELATIVO à raiz do repositório (ex: 'tasks.py'). O
-            sistema já resolve isso automaticamente contra o repositório
-            correto — NÃO inclua o caminho absoluto do disco.
-        old_snippet: O trecho exato de texto já existente no arquivo que
-            deve ser substituído.
-        new_snippet: O novo trecho que deve tomar o lugar de 'old_snippet'.
+        Args:
+            file_path: Caminho relativo à raiz do repositório.
+            start_line: Número da PRIMEIRA linha a substituir (conforme numerado
+                pelas ferramentas de leitura, formato "N: conteúdo").
+            end_line: Número da ÚLTIMA linha a substituir (inclusive). Para
+                substituir só uma linha, use o mesmo valor de start_line.
+            new_content: Novo conteúdo que substituirá as linhas removidas. Pode
+                conter quantas linhas forem necessárias e substituirá todo o 
+                intervalo especificado.
 
-    Returns:
-        Uma mensagem de sucesso, ou um erro claro se o arquivo não existir,
-        se 'old_snippet' não for encontrado, ou se aparecer mais de uma vez.
-    """
+        Returns:
+            Confirmação detalhada com o texto que foi removido e o que foi 
+            inserido, ou mensagem de erro se os números de linha forem inválidos.
+        """
     workspace_path = runtime.state.get("workspace_path")
     resolved_path = _resolve_path(file_path, workspace_path)
 
@@ -581,40 +666,34 @@ def edit_existing_file(file_path: str, old_snippet: str, new_snippet: str, runti
         return security_error
 
     if not resolved_path.exists():
-        return f"ERRO: o arquivo '{file_path}' não existe. Use 'create_new_file' para criá-lo."
-    
+        return f"ERRO: o arquivo '{file_path}' não existe."
+
     try:
-        original_content = resolved_path.read_text(encoding="utf-8")
+        lines = resolved_path.read_text(encoding="utf-8").splitlines(keepends=True)
     except OSError as error:
         return f"ERRO ao ler o arquivo '{file_path}': {error}"
 
-    old_snippet = old_snippet.strip("\n\r")
-    new_snippet = new_snippet.strip("\n\r")
-
-    occurrences = original_content.count(old_snippet)
-
-    if occurrences == 0:
+    total_lines = len(lines)
+    if start_line < 1 or end_line < start_line or end_line > total_lines:
         return (
-            "ERRO: o trecho informado em 'old_snippet' não foi encontrado no "
-            f"arquivo '{file_path}'. Confira se foi copiado exatamente como "
-            "está no arquivo (indentação e quebras de linha incluídas)."
+            f"ERRO: intervalo inválido (start_line={start_line}, end_line={end_line}). "
+            f"O arquivo tem {total_lines} linhas. Releia com 'read_file_content' "
+            "para confirmar os números corretos."
         )
 
-    if occurrences > 1:
-        return (
-            f"ERRO: o trecho informado aparece {occurrences} vezes no arquivo "
-            f"'{file_path}', e a edição precisa ser única. Inclua mais linhas "
-            "de contexto antes ou depois do trecho para torná-lo único."
-        )
-
-    updated_content = original_content.replace(old_snippet, new_snippet)
+    removed = "".join(lines[start_line - 1:end_line])
+    new_block = new_content if new_content.endswith("\n") else new_content + "\n"
+    updated = lines[:start_line - 1] + [new_block] + lines[end_line:]
 
     try:
-        resolved_path.write_text(updated_content, encoding="utf-8")
+        resolved_path.write_text("".join(updated), encoding="utf-8")
     except OSError as error:
-        return f"ERRO ao salvar o arquivo '{file_path}': {error}"
+        return f"ERRO ao salvar '{file_path}': {error}"
 
-    return f"Arquivo '{file_path}' editado com sucesso."
+    return (
+        f"Arquivo '{file_path}' editado (linhas {start_line}-{end_line} substituídas).\n"
+        f"Removido:\n{removed}\nInserido:\n{new_block}"
+    )
 
 @tool
 def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> str:
