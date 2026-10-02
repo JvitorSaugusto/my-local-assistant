@@ -1037,6 +1037,8 @@ button {
   line-height: 1.72;
 
   overflow-wrap: anywhere;
+
+  white-space: pre-wrap;
 }
 
 .msg-content p {
