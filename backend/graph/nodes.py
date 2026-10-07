@@ -1,38 +1,43 @@
-
 import re
-import uuid
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 import time
+import uuid
+
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+)
+from langchain_core.runnables import RunnableConfig
+from sqlalchemy import select, update
+
 from backend.database.config import async_session_env
 from backend.database.models import TaskModel
-from sqlalchemy import select, update
-from langchain_core.runnables import RunnableConfig
-from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage, AIMessage
+
 from .config import (
+    WRITE_AND_GIT_TOOLS,
     State,
-    router_structured,
-    standard_llm,
     code_llm_with_tools,
+    context_gatherer_llm_with_tools,
+    generate_llm_with_tools,
+    heavy_llm_structured,
     note_llm_draft_with_tools,
     note_llm_final,
-    context_gatherer_llm_with_tools,
-    heavy_llm_structured,
-    generate_llm_with_tools,
-    WRITE_AND_GIT_TOOLS,
+    router_structured,
+    standard_llm,
 )
-
 from .prompts import (
+    CODE_NODE_PROMPT,
     CONTEXT_GATHERER_PROMPT,
+    GENERATE_NODE_PROMPT,
+    HEAVY_NODE_PROMPT,
+    NOTE_NODE_PROMPT,
     PROMPT_ENHANCER_NODE_PROMPT,
     ROUTER_NODE_PROMPT,
     STANDARD_NODE_PROMPT,
-    CODE_NODE_PROMPT,
-    NOTE_NODE_PROMPT,
-    HEAVY_NODE_PROMPT,
-    GENERATE_NODE_PROMPT
 )
-
 from .utils import detect_explicit_route, strip_leading_tags
+
 
 def _extract_gatherer_tool_trace(messages, start_idx: int) -> list[dict]:
     """
@@ -47,7 +52,7 @@ def _extract_gatherer_tool_trace(messages, start_idx: int) -> list[dict]:
     """
     trace = []
 
-    for msg in messages[start_idx + 1:]:
+    for msg in messages[start_idx + 1 :]:
         if msg.type != "ai":
             continue
 
@@ -66,12 +71,14 @@ def _extract_gatherer_tool_trace(messages, start_idx: int) -> list[dict]:
 
     return trace
 
+
 WRITE_TOOL_NAMES = {
     "create_new_file",
     "edit_existing_file",
     "batch_edit_file",
     "create_git_branch",
 }
+
 
 def _has_write_call(messages) -> bool:
     return any(
@@ -80,11 +87,9 @@ def _has_write_call(messages) -> bool:
         if getattr(msg, "tool_calls", None)
         for call in msg.tool_calls
     )
-    
-GENERATE_TOOL_NAMES = {
-    tool.name
-    for tool in WRITE_AND_GIT_TOOLS
-}
+
+
+GENERATE_TOOL_NAMES = {tool.name for tool in WRITE_AND_GIT_TOOLS}
 
 
 def _parse_xml_tool_fallback(content: str) -> list[dict]:
@@ -143,11 +148,13 @@ def _parse_xml_tool_fallback(content: str) -> list[dict]:
         )
 
     return recovered_calls
-    
+
+
 def build_system_context(*parts: str | None) -> SystemMessage:
     """Junta múltiplas partes de contexto de sistema em uma única SystemMessage, separadas por um divisor."""
     valid_parts = [p.strip() for p in parts if p and p.strip()]
     return SystemMessage(content="\n\n---\n\n".join(valid_parts))
+
 
 def router_node(state: State):
     if state.get("enhanced_prompt"):
@@ -165,7 +172,7 @@ def router_node(state: State):
             last_msg = str(raw_content)
 
     explicit_route = detect_explicit_route(last_msg)
-    
+
     if explicit_route == "ENHANCER_HEAVY":
         cleaned_msg = strip_leading_tags(last_msg)
 
@@ -177,7 +184,7 @@ def router_node(state: State):
             "actual_route": "ENHANCER",
             "enhance_before_heavy": True,
         }
-        
+
     if explicit_route == "HEAVY":
         cleaned_msg = strip_leading_tags(last_msg)
 
@@ -189,7 +196,7 @@ def router_node(state: State):
             "actual_route": "HEAVY",
             "enhance_before_heavy": False,
         }
-        
+
     if explicit_route == "ENHANCER":
         cleaned_msg = strip_leading_tags(last_msg)
 
@@ -201,7 +208,7 @@ def router_node(state: State):
             "actual_route": "ENHANCER",
             "enhance_before_heavy": False,
         }
-    
+
     if state.get("active_generate_task"):
         print("🔀 [ROUTER] Rota de Execução em Background: 'GENERATE_EXECUTE'")
         return {
@@ -215,85 +222,90 @@ def router_node(state: State):
             "actual_route": "GENERATE_DISPATCH",
             "enhance_before_heavy": False,
         }
-        
+
     if len(last_msg) > 600:
         msg_for_router = (
-            last_msg[:300]
-            + "\n\n... [CONTEÚDO LONGO OCULTO] ...\n\n"
-            + last_msg[-300:]
+            last_msg[:300] + "\n\n... [CONTEÚDO LONGO OCULTO] ...\n\n" + last_msg[-300:]
         )
     else:
         msg_for_router = last_msg
-        
-    recent_messages = state["messages"][-5:-1] 
-    
+
+    recent_messages = state["messages"][-5:-1]
+
     history_str = ""
     for m in recent_messages:
-        if m.type == "system": 
+        if m.type == "system":
             continue
-            
+
         role = "Usuário" if m.type == "human" else "Assistente"
         text = m.content if m.content else "[Ação: Leitura de Arquivo/Pasta]"
-        
+
         content_trunc = text[:250] + "... [cortado]" if len(text) > 250 else text
         history_str += f"{role}: {content_trunc}\n"
 
-    decision = router_structured.invoke([
-        SystemMessage(content=ROUTER_NODE_PROMPT),
-        HumanMessage(
-            content=(
-                "<contexto_da_conversa_recente>\n"
-                f"{history_str}\n"
-                "</contexto_da_conversa_recente>\n\n"
-                "<mensagem_do_usuario>\n"
-                f"{msg_for_router}\n"
-                "</mensagem_do_usuario>\n\n"
-                "Com base no contexto acima, para qual rota esta NOVA mensagem deve ir?"
-            )
-        ),
-    ])
+    decision = router_structured.invoke(
+        [
+            SystemMessage(content=ROUTER_NODE_PROMPT),
+            HumanMessage(
+                content=(
+                    "<contexto_da_conversa_recente>\n"
+                    f"{history_str}\n"
+                    "</contexto_da_conversa_recente>\n\n"
+                    "<mensagem_do_usuario>\n"
+                    f"{msg_for_router}\n"
+                    "</mensagem_do_usuario>\n\n"
+                    "Com base no contexto acima, para qual rota esta NOVA mensagem deve ir?"
+                )
+            ),
+        ]
+    )
 
     route = decision.route
 
-    print(
-        f"🔀 [ROUTER] "
-        f"Rota escolhida pelo LLM: '{route}'"
-    )
+    print(f"🔀 [ROUTER] Rota escolhida pelo LLM: '{route}'")
 
     return {
         "actual_route": route,
         "enhance_before_heavy": False,
     }
 
+
 def enhancer_node(state: State):
     persona = SystemMessage(content=PROMPT_ENHANCER_NODE_PROMPT)
-    
+
     last_message = state["messages"][-1]
-    context= [persona, last_message]
-    
+    context = [persona, last_message]
+
     response = standard_llm.invoke(context)
     response.name = "GPT-OSS (20B) ENHANCER"
-    response.additional_kwargs['message_tag'] = 'internal_thought_enhancer'
-    
+    response.additional_kwargs["message_tag"] = "internal_thought_enhancer"
+
     print("GPT-OSS (20B) ENHANCER")
-    
-    return {"enhanced_prompt": response.content,}
-    
+
+    return {
+        "enhanced_prompt": response.content,
+    }
+
+
 def after_enhancer_route(state: State):
-    if state.get("enhance_before_heavy"): return "context_gatherer_node" # Redireciona pro Coletor
+    if state.get("enhance_before_heavy"):
+        return "context_gatherer_node"  # Redireciona pro Coletor
     return "router_node"
+
 
 def standard_node_20b(state: State):
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-6:]
 
     if state.get("enhanced_prompt"):
-         recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
+        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
 
     context = [
         build_system_context(
             STANDARD_NODE_PROMPT,
-            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}"
+            if actual_summary
+            else None,
         )
     ]
 
@@ -305,14 +317,15 @@ def standard_node_20b(state: State):
     print("metadata:", response.response_metadata)
     print("content:", repr(response.content[-500:]))
     response.name = "GPT-OSS (20B)"
-    response.additional_kwargs['message_tag'] = 'response_standard'
+    response.additional_kwargs["message_tag"] = "response_standard"
 
     return {"messages": [response], "enhanced_prompt": None}
+
 
 def code_node(state: State):
     actual_summary = state.get("summary", "")
     recent_messages = state["messages"][-6:]
-    
+
     workspace_path = state.get("workspace_path", "Diretório não informado")
 
     if state.get("enhanced_prompt"):
@@ -323,7 +336,9 @@ def code_node(state: State):
     context = [
         build_system_context(
             prompt_with_workspace,
-            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}" if actual_summary else None,
+            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}"
+            if actual_summary
+            else None,
         )
     ]
 
@@ -331,23 +346,20 @@ def code_node(state: State):
 
     response = code_llm_with_tools.invoke(context)
     response.name = "GPT-OSS (20B) CODE"
-    response.additional_kwargs['message_tag'] = 'response_code'
+    response.additional_kwargs["message_tag"] = "response_code"
 
-    return {
-        "messages": [response],
-        "active_node": "code_node",
-        "enhanced_prompt": None
-    }
+    return {"messages": [response], "active_node": "code_node", "enhanced_prompt": None}
+
 
 async def generate_dispatch_node(state: State, config: RunnableConfig):
     last_msg = state["messages"][-1].content.lower()
     configurable = config.get("configurable") or {}
     thread_id = configurable.get("thread_id", "thread_ausente")
 
-    match = re.search(r'@generate\s+(.*)', last_msg)
+    match = re.search(r"@generate\s+(.*)", last_msg)
     target_ids = []
     if match:
-        target_ids = [int(x) for x in re.findall(r'\d+', match.group(1))]
+        target_ids = [int(x) for x in re.findall(r"\d+", match.group(1))]
 
     from tasks import run_generate_task
 
@@ -355,8 +367,7 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
 
     async with async_session_env() as db:
         stmt = select(TaskModel).where(
-            TaskModel.thread_id == thread_id,
-            TaskModel.status == "pending"
+            TaskModel.thread_id == thread_id, TaskModel.status == "pending"
         )
 
         if target_ids:
@@ -388,7 +399,6 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
             }
 
         for task in tasks_to_run:
-
             task_dict = {
                 "id": task.id,
                 "title": task.title,
@@ -408,15 +418,20 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
         await db.commit()
 
     msg_retorno = (
-        f"{dispatched_count} tarefa(s) enviada(s) para execução "
-        "em background (Celery)."
+        f"{dispatched_count} tarefa(s) enviada(s) para execução em background (Celery)."
     )
 
     return {
-        "messages": [AIMessage(content=msg_retorno, additional_kwargs={'message_tag': 'response_dispatch'})],
+        "messages": [
+            AIMessage(
+                content=msg_retorno,
+                additional_kwargs={"message_tag": "response_dispatch"},
+            )
+        ],
         "active_node": "generate_dispatch_node",
-    } 
-    
+    }
+
+
 async def generate_node(state: State):
     actual_summary = state.get("summary", "")
 
@@ -470,28 +485,17 @@ async def generate_node(state: State):
     if state.get("enhanced_prompt"):
         for i in range(len(recent_messages) - 1, -1, -1):
             if recent_messages[i].type == "human":
-                recent_messages[i] = HumanMessage(
-                    content=state["enhanced_prompt"]
-                )
+                recent_messages[i] = HumanMessage(content=state["enhanced_prompt"])
                 break
 
     context = [
         build_system_context(
             GENERATE_NODE_PROMPT,
-
-            (
-                f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n"
-                f"{actual_summary}"
-            )
+            (f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}")
             if actual_summary
             else None,
-
             branch_context,
-
-            (
-                "TAREFA DE IMPLEMENTAÇÃO:\n\n"
-                f"{task.model_dump_json(indent=2)}"
-            )
+            (f"TAREFA DE IMPLEMENTAÇÃO:\n\n{task.model_dump_json(indent=2)}")
             if task
             else None,
         )
@@ -507,9 +511,7 @@ async def generate_node(state: State):
     recovered_tool_calls = []
 
     if not response.tool_calls and response.content:
-        recovered_tool_calls = _parse_xml_tool_fallback(
-            str(response.content)
-        )
+        recovered_tool_calls = _parse_xml_tool_fallback(str(response.content))
 
     if recovered_tool_calls:
         print(
@@ -519,10 +521,7 @@ async def generate_node(state: State):
 
         print(
             "🔧 [PARSER FALLBACK] Ferramentas recuperadas:",
-            [
-                call["name"]
-                for call in recovered_tool_calls
-            ],
+            [call["name"] for call in recovered_tool_calls],
         )
 
         response = AIMessage(
@@ -547,29 +546,16 @@ async def generate_node(state: State):
     is_final_response = not bool(response.tool_calls)
 
     if task and is_final_response:
-
         all_messages_this_run = recent_messages + messages_to_return
 
-        wrote_something = _has_write_call(
-            all_messages_this_run
-        )
+        wrote_something = _has_write_call(all_messages_this_run)
 
-        content_str = (
-            str(response.content).strip().upper()
-            if response.content
-            else ""
-        )
+        content_str = str(response.content).strip().upper() if response.content else ""
 
-        reported_ambiguous = content_str.startswith(
-            "TAREFA AMBÍGUA"
-        )
+        reported_ambiguous = content_str.startswith("TAREFA AMBÍGUA")
 
         if not wrote_something and not reported_ambiguous:
-
-            print(
-                "⚠️ [GENERATE] Tentativa de finalizar sem ação. "
-                "Aplicando Nudge..."
-            )
+            print("⚠️ [GENERATE] Tentativa de finalizar sem ação. Aplicando Nudge...")
 
             nudge = HumanMessage(
                 content=(
@@ -600,36 +586,23 @@ async def generate_node(state: State):
             )
 
             response2.name = "Qwen3-Coder (Generate)"
-            response2.additional_kwargs[
-                "message_tag"
-            ] = "internal_system_nudge"
+            response2.additional_kwargs["message_tag"] = "internal_system_nudge"
 
             if not response2.tool_calls and response2.content:
-                recovered_tool_calls = _parse_xml_tool_fallback(
-                    str(response2.content)
-                )
+                recovered_tool_calls = _parse_xml_tool_fallback(str(response2.content))
 
                 if recovered_tool_calls:
-                    print(
-                        "\n⚠️ [PARSER FALLBACK] "
-                        "Nudge também retornou XML."
-                    )
+                    print("\n⚠️ [PARSER FALLBACK] Nudge também retornou XML.")
 
                     print(
-                        "🔧 [PARSER FALLBACK] "
-                        "Ferramentas recuperadas:",
-                        [
-                            call["name"]
-                            for call in recovered_tool_calls
-                        ],
+                        "🔧 [PARSER FALLBACK] Ferramentas recuperadas:",
+                        [call["name"] for call in recovered_tool_calls],
                     )
 
                     response2 = AIMessage(
                         content="",
                         tool_calls=recovered_tool_calls,
-                        additional_kwargs={
-                            "message_tag": "internal_tool_fallback"
-                        },
+                        additional_kwargs={"message_tag": "internal_tool_fallback"},
                         name="Qwen3-Coder (Generate)",
                     )
 
@@ -637,48 +610,27 @@ async def generate_node(state: State):
             print("TOOL_CALLS:", response2.tool_calls)
 
             if response2.content:
-                print(
-                    "CONTENT:\n",
-                    response2.content
-                )
+                print("CONTENT:\n", response2.content)
 
             print("============================\n")
 
-            messages_to_return.extend(
-                [nudge, response2]
-            )
+            messages_to_return.extend([nudge, response2])
 
-            is_final_response = not bool(
-                response2.tool_calls
-            )
+            is_final_response = not bool(response2.tool_calls)
 
-            all_messages_this_run = (
-                recent_messages + messages_to_return
-            )
+            all_messages_this_run = recent_messages + messages_to_return
 
-            wrote_something = _has_write_call(
-                all_messages_this_run
-            )
+            wrote_something = _has_write_call(all_messages_this_run)
 
             content_str2 = (
-                str(response2.content).strip().upper()
-                if response2.content
-                else ""
+                str(response2.content).strip().upper() if response2.content else ""
             )
 
-            reported_ambiguous = content_str2.startswith(
-                "TAREFA AMBÍGUA"
-            )
+            reported_ambiguous = content_str2.startswith("TAREFA AMBÍGUA")
 
         if is_final_response:
-
             final_status = (
-                "completed"
-                if (
-                    wrote_something
-                    or reported_ambiguous
-                )
-                else "failed"
+                "completed" if (wrote_something or reported_ambiguous) else "failed"
             )
 
             if final_status == "failed":
@@ -688,7 +640,6 @@ async def generate_node(state: State):
                 )
 
             async with async_session_env() as db:
-
                 stmt = (
                     update(TaskModel)
                     .where(TaskModel.id == task.id)
@@ -702,13 +653,10 @@ async def generate_node(state: State):
         "messages": messages_to_return,
         "active_node": "generate_node",
         "enhanced_prompt": None,
-        "active_generate_task": (
-            None
-            if is_final_response
-            else task
-        ),
+        "active_generate_task": (None if is_final_response else task),
     }
-    
+
+
 def note_draft_node(state: State) -> State:
     persona = SystemMessage(content=NOTE_NODE_PROMPT)
 
@@ -720,29 +668,33 @@ def note_draft_node(state: State) -> State:
     last_user_message = recent_messages[-1].content if recent_messages else ""
 
     is_update = (
-        "##" in last_user_message or "# " in last_user_message
-        or "atualiz" in last_user_message.lower() or "update" in last_user_message.lower()
+        "##" in last_user_message
+        or "# " in last_user_message
+        or "atualiz" in last_user_message.lower()
+        or "update" in last_user_message.lower()
     )
     mode = "ATUALIZAÇÃO DE NOTA" if is_update else "GERAÇÃO DE NOTA"
 
-    instruction = HumanMessage(content=(
-        f"MODO: {mode}\n\n"
-        "Se a nota mencionar um projeto, diretório ou arquivo real, você DEVE "
-        "chamar `list_directory_files` e/ou `read_file_content` antes de escrever "
-        "qualquer conteúdo técnico sobre ele — mesmo que você acredite já saber "
-        "a estrutura pelo histórico da conversa. Antes de cada chamada, escreva "
-        "uma linha 'Raciocínio: [motivo]'. Nunca escreva nomes de arquivos, "
-        "modelos ou tecnologias que não tenham sido confirmados por uma chamada "
-        "de ferramenta ou pela mensagem do usuário.\n\n"
-        "Transforme o conteúdo acima em uma nota técnica seguindo todas as "
-        "regras do prompt do sistema.\n\nRetorne somente a nota final em Markdown."
-    ))
+    instruction = HumanMessage(
+        content=(
+            f"MODO: {mode}\n\n"
+            "Se a nota mencionar um projeto, diretório ou arquivo real, você DEVE "
+            "chamar `list_directory_files` e/ou `read_file_content` antes de escrever "
+            "qualquer conteúdo técnico sobre ele — mesmo que você acredite já saber "
+            "a estrutura pelo histórico da conversa. Antes de cada chamada, escreva "
+            "uma linha 'Raciocínio: [motivo]'. Nunca escreva nomes de arquivos, "
+            "modelos ou tecnologias que não tenham sido confirmados por uma chamada "
+            "de ferramenta ou pela mensagem do usuário.\n\n"
+            "Transforme o conteúdo acima em uma nota técnica seguindo todas as "
+            "regras do prompt do sistema.\n\nRetorne somente a nota final em Markdown."
+        )
+    )
 
     context = [persona] + recent_messages + [instruction]
 
     draft = note_llm_draft_with_tools.invoke(context)
     draft.name = "Qwen3 Notas Draft"
-    draft.additional_kwargs['message_tag'] = 'internal_thought_draft'
+    draft.additional_kwargs["message_tag"] = "internal_thought_draft"
 
     print("\n=== DRAFT NODE ===")
     print("Possui tool calls?", bool(draft.tool_calls))
@@ -752,9 +704,10 @@ def note_draft_node(state: State) -> State:
     return {
         "messages": [draft],
         "active_node": "note_draft_node",
-        "enhanced_prompt": None
+        "enhanced_prompt": None,
     }
-    
+
+
 def note_refine_node(state: State) -> State:
     draft_msg = state["messages"][-1]
     draft_content = draft_msg.content
@@ -784,17 +737,20 @@ def note_refine_node(state: State) -> State:
         direto com '# '. Não inclua o rascunho nem comentários sobre o processo.
         """
 
-        final_response = note_llm_final.invoke([
-            persona,
-            HumanMessage(content=refinement_prompt),
-        ])
+        final_response = note_llm_final.invoke(
+            [
+                persona,
+                HumanMessage(content=refinement_prompt),
+            ]
+        )
 
         if not final_response.content.strip():
             final_response = draft_msg
 
     final_response.name = "Qwen3 Notas Final (30B)"
-    final_response.additional_kwargs['message_tag'] = 'response_note'
+    final_response.additional_kwargs["message_tag"] = "response_note"
     return {"messages": [final_response]}
+
 
 def context_gatherer_node(state: State):
     actual_summary = state.get("summary", "")
@@ -809,9 +765,7 @@ def context_gatherer_node(state: State):
     recent_messages = state["messages"][last_human_idx:].copy()
 
     if state.get("enhanced_prompt"):
-        enhanced = HumanMessage(
-            content=state["enhanced_prompt"]
-        )
+        enhanced = HumanMessage(content=state["enhanced_prompt"])
 
         for index in range(len(recent_messages) - 1, -1, -1):
             if recent_messages[index].type == "human":
@@ -823,11 +777,7 @@ def context_gatherer_node(state: State):
     context = [
         build_system_context(
             CONTEXT_GATHERER_PROMPT,
-            (
-                f"RESUMO DA CONVERSA:\n{actual_summary}"
-                if actual_summary
-                else None
-            ),
+            (f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None),
             (
                 "Ao usar 'list_directory_files' ou 'read_file_content', envie SEMPRE "
                 "caminhos relativos à raiz do projeto (ex: 'tasks.py', 'backend/main.py'). "
@@ -844,7 +794,7 @@ def context_gatherer_node(state: State):
     response = context_gatherer_llm_with_tools.invoke(context)
 
     response.name = "Qwen3-Coder (Context Gatherer)"
-    response.additional_kwargs['message_tag'] = 'internal_thought_gatherer'
+    response.additional_kwargs["message_tag"] = "internal_thought_gatherer"
 
     print("\n===== CONTEXT GATHERER =====")
     print("TOOL_CALLS:", response.tool_calls)
@@ -870,35 +820,26 @@ def context_gatherer_node(state: State):
 
     messages_to_remove = [
         RemoveMessage(id=msg.id)
-        for msg in state["messages"][last_human_idx + 1:]
+        for msg in state["messages"][last_human_idx + 1 :]
         if getattr(msg, "id", None)
     ]
 
     print("\n===== LIMPEZA DO GATHERER =====")
+    print(f"[🧹] Mensagens internas removidas: {len(messages_to_remove)}")
+    print(f"[🧰] Tool calls preservadas no trace: {len(gatherer_tool_trace)}")
     print(
-        f"[🧹] Mensagens internas removidas: "
-        f"{len(messages_to_remove)}"
-    )
-    print(
-        f"[🧰] Tool calls preservadas no trace: "
-        f"{len(gatherer_tool_trace)}"
-    )
-    print(
-        f"[📄] Dossiê salvo em heavy_context: "
-        f"{len(response.content or '')} caracteres"
+        f"[📄] Dossiê salvo em heavy_context: {len(response.content or '')} caracteres"
     )
     print("===============================\n")
 
     return {
         "messages": messages_to_remove,
-
         "heavy_context": response.content,
-
         "gatherer_tool_trace": gatherer_tool_trace,
-
         "active_node": "context_gatherer_node",
         "enhanced_prompt": None,
     }
+
 
 async def heavy_analyzer_node(
     state: State,
@@ -924,8 +865,7 @@ async def heavy_analyzer_node(
     context = [
         build_system_context(
             HEAVY_NODE_PROMPT,
-            f"RESUMO DA CONVERSA:\n{actual_summary}"
-            if actual_summary else None,
+            f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None,
             (
                 "--- TOOL CALLS REALIZADAS PELO CONTEXT GATHERER ---\n"
                 f"{gatherer_tool_trace}\n"
@@ -965,50 +905,56 @@ async def heavy_analyzer_node(
         else:
             data = {}
 
-        final_analysis_content = data.get('analysis', "") or ""
-        findings = data.get('security_findings', [])
-        
-        real_findings = [f for f in findings if f.get('exploitability_confirmed', False) is True]
-        
+        final_analysis_content = data.get("analysis", "") or ""
+        findings = data.get("security_findings", [])
+
+        real_findings = [
+            f for f in findings if f.get("exploitability_confirmed", False) is True
+        ]
+
         if real_findings:
             security_report = "\n\n## 🛡️ Achados de Segurança\n\n"
             for finding in real_findings:
-                cat = finding.get('category', 'Desconhecido')
-                risk = str(finding.get('risk', 'Desconhecido')).upper()
-                file_path = finding.get('file', 'Desconhecido')
-                evi = finding.get('evidence', '')
-                tech = finding.get('technical_analysis', '')
-                
+                cat = finding.get("category", "Desconhecido")
+                risk = str(finding.get("risk", "Desconhecido")).upper()
+                file_path = finding.get("file", "Desconhecido")
+                evi = finding.get("evidence", "")
+                tech = finding.get("technical_analysis", "")
+
                 security_report += f"### 🔴 {cat} ({risk})\n"
                 security_report += f"**Arquivo:** `{file_path}`\n"
                 security_report += f"**Evidência (Código):**\n```text\n{evi}\n```\n"
                 security_report += f"**Análise Técnica:** {tech}\n\n"
-                
+
             final_analysis_content += security_report
 
         if not final_analysis_content.strip():
-            final_analysis_content = "✅ Análise concluída. Nenhuma tarefa gerada e nenhum resumo criado."
+            final_analysis_content = (
+                "✅ Análise concluída. Nenhuma tarefa gerada e nenhum resumo criado."
+            )
 
         print("\n[DEBUG] === TEXTO FINAL QUE SERÁ ENVIADO AO FRONTEND ===")
         print(final_analysis_content)
         print("========================================================\n")
-        
+
     except Exception as e:
         print(f"\n[ERRO FATAL NO FILTRO DE SEGURANÇA] {e}")
-        final_analysis_content = f"Erro interno ao processar o relatório de segurança: {str(e)}"
+        final_analysis_content = (
+            f"Erro interno ao processar o relatório de segurança: {e!s}"
+        )
         data = {}
 
-    tasks_data = data.get('tasks', [])
-    
+    tasks_data = data.get("tasks", [])
+
     if tasks_data:
         async with async_session_env() as db:
             try:
                 for task in tasks_data:
-                    objective = task.get('objective', '')
-                    target = task.get('target', '')
-                    logic = task.get('logic', '')
-                    constraints = task.get('constraints', '')
-                    
+                    objective = task.get("objective", "")
+                    target = task.get("target", "")
+                    logic = task.get("logic", "")
+                    constraints = task.get("constraints", "")
+
                     description = (
                         f"**Objetivo:**\n{objective}\n\n"
                         f"**Localização Alvo:**\n{target}\n\n"
@@ -1018,18 +964,18 @@ async def heavy_analyzer_node(
 
                     new_task = TaskModel(
                         thread_id=thread_id,
-                        title=task.get('title', 'Sem Título'),
+                        title=task.get("title", "Sem Título"),
                         description=description,
-                        files=task.get('files', []),
-                        reason=task.get('reason', ''),
-                        priority=task.get('priority', 'medium'),
+                        files=task.get("files", []),
+                        reason=task.get("reason", ""),
+                        priority=task.get("priority", "medium"),
                         status="pending",
                     )
 
                     db.add(new_task)
 
                     print(f"\n--- TAREFA GERADA: {task.get('title')} ---")
-                    print("files:", task.get('files'))
+                    print("files:", task.get("files"))
                     print("description:\n", description)
                     print("---")
 
@@ -1050,7 +996,7 @@ async def heavy_analyzer_node(
     response = AIMessage(
         content=final_analysis_content,
         name="Qwen 3 Coder 30B",
-        additional_kwargs={'message_tag': 'response_heavy'}
+        additional_kwargs={"message_tag": "response_heavy"},
     )
 
     return {
@@ -1060,73 +1006,84 @@ async def heavy_analyzer_node(
         "enhanced_prompt": None,
         "active_node": "heavy_analyzer_node",
     }
-    
+
+
 def route_decision(state: State):
     destiny = state.get("actual_route", "NORMAL")
-    if destiny == "CODE": return "code_node"
-    elif destiny == "HEAVY": 
+    if destiny == "CODE":
+        return "code_node"
+    elif destiny == "HEAVY":
         workspace = state.get("workspace_path", "")
-        
+
         if workspace is None:
             workspace = ""
-            
+
         if workspace.strip():
             print("🔀 [EDGE] Rota HEAVY com tools. Indo para: context_gatherer_node")
             return "context_gatherer_node"
-        
+
         else:
             print("🔀 [EDGE] Rota HEAVY sem tools. Indo para: heavy_analyzer_node")
             return "heavy_analyzer_node"
-        
-    elif destiny == "NOTES": return "note_draft_node"
-    elif destiny == "ENHANCER": return "enhancer_node"
-    elif destiny == "GENERATE_DISPATCH": return "generate_dispatch_node" # Disparado pelo seu texto
-    elif destiny == "GENERATE_EXECUTE": return "generate_node" # Disparado pelo Celery
+
+    elif destiny == "NOTES":
+        return "note_draft_node"
+    elif destiny == "ENHANCER":
+        return "enhancer_node"
+    elif destiny == "GENERATE_DISPATCH":
+        return "generate_dispatch_node"  # Disparado pelo seu texto
+    elif destiny == "GENERATE_EXECUTE":
+        return "generate_node"  # Disparado pelo Celery
     return "standard_node_20b"
+
 
 def check_context_limit(state: State):
     meaningful_count = 0
-    
+
     for msg in state["messages"]:
         if msg.type == "tool":
             continue
         if msg.type == "ai" and getattr(msg, "tool_calls", None):
             continue
-            
+
         meaningful_count += 1
 
     if meaningful_count > 10 and (meaningful_count - 1) % 10 == 0:
-        print(f"\n[🔄 RESUMO] Limite de {meaningful_count} mensagens reais atingido. Gerando resumo...")
+        print(
+            f"\n[🔄 RESUMO] Limite de {meaningful_count} mensagens reais atingido. Gerando resumo..."
+        )
         return "go_to_summarize"
-        
+
     return "go_to_router"
+
 
 def summarize_node(state: State):
     actual_summary = state.get("summary", "")
     all_messages = state["messages"]
-    
+
     meaningful_messages = []
-    
+
     for msg in all_messages:
         if msg.type == "tool":
             continue
         if msg.type == "ai" and getattr(msg, "tool_calls", None):
             continue
-            
+
         meaningful_messages.append(msg)
-    
-    recent_messages = meaningful_messages[-10:] 
-    
+
+    recent_messages = meaningful_messages[-10:]
+
     if actual_summary:
         prompt = f"Resumo atual da conversa: {actual_summary}\n\nLeia as novas mensagens acima e atualize o resumo para incluir esses novos assuntos. Mantenha em apenas um parágrafo conciso."
     else:
         prompt = "Resuma o assunto principal desta conversa acima em apenas um parágrafo conciso."
-        
+
     order = HumanMessage(content=prompt)
-    
+
     response = standard_llm.invoke(recent_messages + [order])
-    
+
     return {"summary": response.content, "enhanced_prompt": None}
+
 
 def return_tool_message(state: State):
     return state["active_node"]
