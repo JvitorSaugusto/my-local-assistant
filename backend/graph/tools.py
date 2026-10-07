@@ -1,8 +1,12 @@
+from collections import Counter
 from pathlib import Path
 import os
 import re
 import ast
+import shutil
 import subprocess
+import sys
+import tempfile
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
@@ -584,6 +588,337 @@ def create_git_branch(branch_name: str, runtime: ToolRuntime) -> str:
     )
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# GUARDAS DE EDIÇÃO
+# Objetivo: nunca gravar em disco um .py com sintaxe quebrada, função
+# duplicada no mesmo escopo, função "engolida" por outra (indentação errada)
+# ou edição aplicada em linhas deslocadas (número de linha desatualizado).
+# ──────────────────────────────────────────────────────────────────────────
+
+INDENT_SENSITIVE_SUFFIXES = {".py", ".yml", ".yaml"}
+_SPECIAL_DECORATORS = {"setter", "getter", "deleter", "register", "overload"}
+_LINE_NUMBER_PREFIX = re.compile(r"^\s*\d+: ?")
+
+
+def _read_text_keep_newline(path: Path) -> tuple[str, str]:
+    """Lê o arquivo normalizando para '\\n' e devolve também o estilo
+    de quebra de linha original ('\\r\\n' ou '\\n') para regravar igual."""
+    raw = path.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    return raw.replace("\r\n", "\n"), newline
+
+
+def _write_text_atomic(path: Path, text: str, newline: str = "\n") -> None:
+    """Grava via arquivo temporário + os.replace: nunca deixa o arquivo
+    pela metade se algo falhar no meio da escrita."""
+    data = text.replace("\n", newline) if newline != "\n" else text
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(data.encode("utf-8"))
+        if path.exists():
+            shutil.copymode(path, tmp_name)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _strip_line_number_prefix(text: str) -> str:
+    """Remove o prefixo 'N: ' que as ferramentas de leitura adicionam,
+    caso o modelo o tenha copiado junto com o código."""
+    return _LINE_NUMBER_PREFIX.sub("", text, count=1)
+
+
+def _strip_line_numbers_block(text: str) -> str:
+    """Remove 'N: ' de TODAS as linhas de um bloco, mas só quando o bloco
+    inteiro parece copiado da leitura (>= 2 linhas, números consecutivos).
+    Evita estragar código legítimo como `1: "a",` num dicionário."""
+    lines = text.split("\n")
+    non_blank = [ln for ln in lines if ln.strip()]
+    if len(non_blank) < 2:
+        return text
+
+    numbers = []
+    for ln in non_blank:
+        match = re.match(r"^\s*(\d+):(?: |$)", ln)
+        if not match:
+            return text
+        numbers.append(int(match.group(1)))
+
+    if any(b - a != 1 for a, b in zip(numbers, numbers[1:])):
+        return text
+
+    return "\n".join(_LINE_NUMBER_PREFIX.sub("", ln, count=1) for ln in lines)
+
+
+def _leading_ws(line: str) -> str:
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _reindent_block(new_content: str, base_indent: str) -> tuple[str, str | None]:
+    """Alinha a indentação do bloco novo com a da primeira linha substituída.
+    Retorna (bloco, descrição_do_ajuste | None)."""
+    block_lines = new_content.split("\n")
+    non_blank = [ln for ln in block_lines if ln.strip()]
+    if not non_blank:
+        return new_content, None
+
+    first_indent = _leading_ws(non_blank[0])
+    if first_indent == base_indent:
+        return new_content, None
+
+    if len(first_indent) < len(base_indent) and base_indent.startswith(first_indent):
+        extra = base_indent[len(first_indent):]
+        shifted = [(extra + ln) if ln.strip() else ln for ln in block_lines]
+        note = f"indentação ajustada: +{len(extra)} espaço(s) em todas as linhas do bloco"
+        return "\n".join(shifted), note
+
+    if first_indent.startswith(base_indent):
+        remove = first_indent[len(base_indent):]
+        if all(ln.startswith(remove) for ln in non_blank):
+            shifted = [ln[len(remove):] if ln.strip() else ln for ln in block_lines]
+            note = f"indentação ajustada: -{len(remove)} espaço(s) em todas as linhas do bloco"
+            return "\n".join(shifted), note
+
+    return new_content, None
+
+
+def _has_special_decorator(node: ast.AST) -> bool:
+    for dec in getattr(node, "decorator_list", []):
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        if isinstance(target, ast.Attribute):
+            name = target.attr
+        else:
+            name = getattr(target, "id", "")
+        if name in _SPECIAL_DECORATORS:
+            return True
+    return False
+
+
+def _collect_definitions(tree: ast.AST):
+    """Conta quantas vezes cada def/class é definida DIRETAMENTE em cada escopo
+    (módulo, classe ou função) e quais escopos são funções."""
+    counts: Counter = Counter()
+    function_scopes: set[tuple[str, ...]] = set()
+
+    def visit(body, scope: tuple[str, ...]) -> None:
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if not _has_special_decorator(stmt):
+                    counts[(scope, stmt.name)] += 1
+                child = scope + (stmt.name,)
+                if not isinstance(stmt, ast.ClassDef):
+                    function_scopes.add(child)
+                visit(stmt.body, child)
+
+    visit(tree.body, ())
+    return counts, function_scopes
+
+
+def _scope_label(scope: tuple[str, ...]) -> str:
+    return ".".join(scope) if scope else "<nível do módulo>"
+
+
+def _format_syntax_error(exc: SyntaxError, source: str, context: int = 2) -> str:
+    lineno = exc.lineno or 0
+    message = f"Erro de sintaxe na linha {lineno}: {exc.msg}"
+    lines = source.splitlines()
+    if 1 <= lineno <= len(lines):
+        lo = max(1, lineno - context)
+        hi = min(len(lines), lineno + context)
+        snippet = "\n".join(
+            f"{'>>' if i == lineno else '  '} {i}: {lines[i - 1]}"
+            for i in range(lo, hi + 1)
+        )
+        message += "\n(numeração do arquivo COMO FICARIA; nada foi salvo)\n" + snippet
+    return message
+
+
+def _validate_python_edit(before: str, after: str) -> tuple[str | None, str | None]:
+    """Valida o resultado de uma edição em arquivo Python.
+    Retorna (erro, aviso). Se `erro` vier preenchido, a edição NÃO deve ser salva."""
+    try:
+        tree_after = ast.parse(after)
+    except (SyntaxError, ValueError) as exc:
+        detail = (
+            _format_syntax_error(exc, after)
+            if isinstance(exc, SyntaxError)
+            else f"Erro ao analisar o código: {exc}"
+        )
+        try:
+            ast.parse(before)
+        except (SyntaxError, ValueError):
+            return None, (
+                "AVISO: o arquivo continua com erro de sintaxe (ele já estava "
+                "quebrado ANTES desta edição).\n" + detail
+            )
+        return (
+            "ERRO: edição REJEITADA — o arquivo ficaria com erro de sintaxe. "
+            "NADA foi salvo.\n" + detail + "\n"
+            "Corrija o conteúdo novo (blocos completos, indentação coerente com "
+            "o código ao redor, parênteses/aspas fechados) e tente de novo.",
+            None,
+        )
+
+    try:
+        tree_before = ast.parse(before)
+    except (SyntaxError, ValueError):
+        return None, None
+
+    counts_before, _ = _collect_definitions(tree_before)
+    counts_after, function_scopes_after = _collect_definitions(tree_after)
+
+    problems: list[str] = []
+
+    for key, total in sorted(counts_after.items()):
+        if total > 1 and total > counts_before.get(key, 0):
+            scope, name = key
+            problems.append(
+                f"'{name}' ficaria definido {total}x em '{_scope_label(scope)}' "
+                "(duplicação: o conteúdo novo repete algo que já existe fora do "
+                "intervalo substituído — provavelmente o intervalo de linhas "
+                "estava errado ou curto demais)"
+            )
+
+    for (scope, name) in counts_before:
+        if (scope, name) in counts_after:
+            continue
+        for (scope2, name2) in counts_after:
+            if (
+                name2 == name
+                and len(scope2) > len(scope)
+                and scope2[: len(scope)] == scope
+                and scope2 in function_scopes_after
+            ):
+                problems.append(
+                    f"'{name}' deixaria de existir em '{_scope_label(scope)}' e "
+                    f"passaria a ficar ANINHADA dentro da função "
+                    f"'{_scope_label(scope2)}' (indentação errada ou intervalo de "
+                    "linhas que cortou o bloco no meio)"
+                )
+                break
+
+    if problems:
+        return (
+            "ERRO: edição REJEITADA — a estrutura do arquivo ficaria inconsistente. "
+            "NADA foi salvo.\n" + "\n".join(f"- {p}" for p in problems) + "\n"
+            "Releia o trecho com 'read_file_chunk' (os números de linha mudam "
+            "após cada edição) e refaça a chamada com o intervalo completo "
+            "e correto.",
+            None,
+        )
+
+    nested_new = sorted(
+        (scope, name)
+        for (scope, name) in counts_after
+        if (scope, name) not in counts_before and scope in function_scopes_after
+    )
+    if nested_new:
+        labels = ", ".join(
+            f"'{name}' (dentro de '{_scope_label(scope)}')" for scope, name in nested_new
+        )
+        return None, (
+            f"AVISO: definição(ões) nova(s) ficaram ANINHADAS em função: {labels}. "
+            "Se a intenção era definir no nível do módulo/classe, a indentação "
+            "está errada — corrija com 'edit_existing_file'."
+        )
+
+    return None, None
+
+
+def _numbered_window(text: str, first: int, last: int, max_lines: int = 60) -> str:
+    lines = text.splitlines()
+    first = max(1, first)
+    last = min(len(lines), last)
+    truncated = False
+    if last - first + 1 > max_lines:
+        last = first + max_lines - 1
+        truncated = True
+    body = "\n".join(f"{i}: {lines[i - 1]}" for i in range(first, last + 1))
+    if truncated:
+        body += "\n... (trecho truncado; use 'read_file_chunk' para ver o restante)"
+    return body
+
+
+_TRIVIAL_LINES = {
+    "pass", "else:", "try:", "finally:", "return", "break", "continue", "...",
+    '"""', "'''", "return None", "return True", "return False", "return []",
+    "return {}", "return \"\"", "return 0",
+}
+
+
+def _check_boundary_overlap(
+    lines: list[str], start_line: int, end_line: int, new_block: str
+) -> str | None:
+    """Detecta o sintoma clássico de intervalo curto/longo demais: a primeira
+    (ou última) linha do conteúdo novo é IDÊNTICA à linha vizinha do intervalo,
+    ou seja, sobrou/duplicou um pedaço do bloco antigo."""
+    non_blank = [ln for ln in new_block.split("\n") if ln.strip()]
+    if not non_blank:
+        return None
+
+    def significant(line: str) -> bool:
+        stripped = line.strip()
+        return len(stripped) >= 8 and stripped not in _TRIVIAL_LINES
+
+    prev_line = next(
+        (lines[i] for i in range(start_line - 2, -1, -1) if lines[i].strip()), None
+    )
+    next_line = next(
+        (lines[i] for i in range(end_line, len(lines)) if lines[i].strip()), None
+    )
+
+    first_new, last_new = non_blank[0], non_blank[-1]
+
+    if next_line is not None and significant(last_new) and last_new.rstrip() == next_line.rstrip():
+        return (
+            "ERRO: edição REJEITADA — a ÚLTIMA linha do conteúdo novo é idêntica à "
+            f"linha logo após o intervalo ('{last_new.strip()}'). Isso indica que o "
+            "intervalo ficou curto e SOBRARIA parte do bloco antigo (duplicação). "
+            "Estenda 'end_line' até o fim do bloco ou remova a linha repetida do "
+            "'new_content'. NADA foi salvo."
+        )
+
+    if prev_line is not None and significant(first_new) and first_new.rstrip() == prev_line.rstrip():
+        return (
+            "ERRO: edição REJEITADA — a PRIMEIRA linha do conteúdo novo é idêntica à "
+            f"linha logo antes do intervalo ('{first_new.strip()}'). Isso indica que "
+            "o intervalo começou tarde demais e a linha ficaria duplicada. Ajuste "
+            "'start_line' ou remova a linha repetida do 'new_content'. NADA foi salvo."
+        )
+
+    return None
+
+
+def _lines_match(actual: str, expected: str) -> bool:
+    actual_s = actual.strip()
+    expected_s = expected.strip()
+    if actual_s == expected_s:
+        return True
+    return actual_s == _strip_line_number_prefix(expected_s).strip()
+
+
+def _find_shifted_range(
+    lines: list[str], span: int, first_text: str, last_text: str
+) -> list[tuple[int, int]]:
+    """Procura onde o bloco (mesma quantidade de linhas, mesma 1ª e última
+    linha) está AGORA — caso os números de linha tenham ficado desatualizados."""
+    hits = []
+    for start in range(1, len(lines) - span + 2):
+        end = start + span - 1
+        if _lines_match(lines[start - 1], first_text) and _lines_match(
+            lines[end - 1], last_text
+        ):
+            hits.append((start, end))
+    return hits
+
+
 @tool
 def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
     """Cria um novo arquivo do zero com o conteúdo especificado.
@@ -592,6 +927,9 @@ def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
     arquivo já existir, use 'edit_existing_file' ou 'append_to_file'.
     Os diretórios intermediários do caminho são criados automaticamente
     caso não existam.
+
+    Para arquivos .py o conteúdo é validado antes de gravar: sintaxe inválida
+    ou funções/classes duplicadas no mesmo escopo fazem a criação ser rejeitada.
 
     IMPORTANTE: esta ferramenta bloqueia automaticamente a criação de
     arquivos enquanto a branch atual for 'main' ou 'master'. Use
@@ -622,6 +960,13 @@ def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
             "ou 'append_to_file' para modificar um arquivo existente."
         )
 
+    content = _strip_line_numbers_block(content)
+
+    if resolved_path.suffix == ".py":
+        error, _warning = _validate_python_edit("", content)
+        if error:
+            return error
+
     try:
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         resolved_path.write_text(content, encoding="utf-8")
@@ -632,32 +977,57 @@ def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
 
 
 @tool
-def edit_existing_file(file_path: str, start_line: int, end_line: int, new_content: str, runtime: ToolRuntime) -> str:
+def edit_existing_file(
+    file_path: str,
+    start_line: int,
+    end_line: int,
+    first_line_text: str,
+    last_line_text: str,
+    new_content: str,
+    runtime: ToolRuntime,
+) -> str:
     """Substitui um intervalo de linhas (inclusive) por um novo conteúdo em um arquivo existente.
 
-        Use esta ferramenta como a PRINCIPAL forma de editar arquivos. Por usar
-        NÚMEROS de linhas em vez de blocos de texto (snippets), ela é extremamente
-        segura contra erros de sintaxe e quebra de parser. Você deve obter os 
-        números exatos das linhas consultando o retorno de 'read_file_content' 
-        ou 'read_file_chunk'.
+    Ferramenta PRINCIPAL de edição. Para evitar editar o lugar errado quando os
+    números de linha ficam desatualizados (cada edição desloca as linhas
+    seguintes), você DEVE informar o texto atual da primeira e da última linha
+    do intervalo. A ferramenta confere esses textos antes de gravar:
+      - se baterem, a edição é aplicada;
+      - se as linhas tiverem se deslocado mas o bloco ainda existir em UM único
+        lugar, a edição é aplicada no lugar certo e isso é informado;
+      - caso contrário, NADA é alterado e o trecho atual é devolvido.
 
-        Serve tanto para alterar 1 única linha (passando o mesmo número em 
-        start_line e end_line) quanto para substituir blocos enormes de código.
+    Para arquivos .py o resultado é validado ANTES de gravar: sintaxe inválida,
+    função/classe duplicada no mesmo escopo ou função que ficaria aninhada
+    dentro de outra fazem a edição ser REJEITADA (nada é salvo).
 
-        Args:
-            file_path: Caminho relativo à raiz do repositório.
-            start_line: Número da PRIMEIRA linha a substituir (conforme numerado
-                pelas ferramentas de leitura, formato "N: conteúdo").
-            end_line: Número da ÚLTIMA linha a substituir (inclusive). Para
-                substituir só uma linha, use o mesmo valor de start_line.
-            new_content: Novo conteúdo que substituirá as linhas removidas. Pode
-                conter quantas linhas forem necessárias e substituirá todo o 
-                intervalo especificado.
+    Regras para um bom resultado:
+      - Para substituir uma função/método/classe, o intervalo deve cobrir o
+        bloco INTEIRO (da linha 'def'/decorator até a última linha do corpo),
+        e 'new_content' deve conter o bloco inteiro novo. Nunca deixe sobrar
+        metade do bloco antigo.
+      - 'new_content' deve vir com a indentação REAL que ficará no arquivo.
+        Se a indentação da primeira linha divergir da linha substituída, a
+        ferramenta realinha o bloco inteiro e avisa.
+      - Não inclua o prefixo 'N: ' das ferramentas de leitura.
+      - 'new_content' vazio REMOVE as linhas do intervalo.
 
-        Returns:
-            Confirmação detalhada com o texto que foi removido e o que foi 
-            inserido, ou mensagem de erro se os números de linha forem inválidos.
-        """
+    Args:
+        file_path: Caminho relativo à raiz do repositório.
+        start_line: Número da PRIMEIRA linha a substituir (formato "N: conteúdo"
+            retornado pelas ferramentas de leitura).
+        end_line: Número da ÚLTIMA linha a substituir (inclusive). Para
+            substituir só uma linha, use o mesmo valor de start_line.
+        first_line_text: Texto EXATO atual da linha start_line, copiado da
+            leitura (sem o prefixo 'N: ').
+        last_line_text: Texto EXATO atual da linha end_line, copiado da leitura
+            (sem o prefixo 'N: '). Para uma única linha, repita first_line_text.
+        new_content: Novo conteúdo que substituirá TODO o intervalo.
+
+    Returns:
+        Confirmação com o trecho resultante já com os NOVOS números de linha,
+        ou mensagem de erro explicando por que nada foi alterado.
+    """
     workspace_path = runtime.state.get("workspace_path")
     resolved_path = _resolve_path(file_path, workspace_path)
 
@@ -669,31 +1039,137 @@ def edit_existing_file(file_path: str, start_line: int, end_line: int, new_conte
         return f"ERRO: o arquivo '{file_path}' não existe."
 
     try:
-        lines = resolved_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    except OSError as error:
+        text, newline = _read_text_keep_newline(resolved_path)
+    except (OSError, UnicodeDecodeError) as error:
         return f"ERRO ao ler o arquivo '{file_path}': {error}"
 
+    lines = text.splitlines(keepends=True)
     total_lines = len(lines)
+
     if start_line < 1 or end_line < start_line or end_line > total_lines:
         return (
             f"ERRO: intervalo inválido (start_line={start_line}, end_line={end_line}). "
-            f"O arquivo tem {total_lines} linhas. Releia com 'read_file_content' "
+            f"O arquivo tem {total_lines} linhas. Releia com 'read_file_chunk' "
             "para confirmar os números corretos."
         )
 
-    removed = "".join(lines[start_line - 1:end_line])
-    new_block = new_content if new_content.endswith("\n") else new_content + "\n"
-    updated = lines[:start_line - 1] + [new_block] + lines[end_line:]
+    notes: list[str] = []
 
+    # ── 1. Confere se o intervalo ainda é o que o modelo acha que é ──────────
+    ends_match = _lines_match(lines[start_line - 1], first_line_text) and _lines_match(
+        lines[end_line - 1], last_line_text
+    )
+
+    if not ends_match:
+        span = end_line - start_line + 1
+        hits = _find_shifted_range(lines, span, first_line_text, last_line_text)
+
+        if len(hits) == 1:
+            new_start, new_end = hits[0]
+            notes.append(
+                f"Linhas DESLOCADAS: o bloco informado não estava mais em "
+                f"{start_line}-{end_line}; foi localizado e editado em "
+                f"{new_start}-{new_end}."
+            )
+            start_line, end_line = new_start, new_end
+        else:
+            hint = ""
+            if len(hits) > 1:
+                hint = (
+                    f"\nO mesmo par de linhas aparece em {len(hits)} lugares: "
+                    + ", ".join(f"{a}-{b}" for a, b in hits[:5])
+                    + ". Informe o intervalo correto."
+                )
+            return (
+                "ERRO: o conteúdo atual do intervalo NÃO bate com "
+                "'first_line_text'/'last_line_text'. NADA foi alterado.\n"
+                f"Linha {start_line} (atual): {lines[start_line - 1].rstrip()}\n"
+                f"Linha {end_line} (atual): {lines[end_line - 1].rstrip()}\n"
+                "Os números de linha mudam após cada edição. Releia a região "
+                "com 'read_file_chunk' / 'search_in_file' e refaça a chamada."
+                + hint
+            )
+
+    # ── 2. Monta o bloco novo ───────────────────────────────────────────────
+    new_content = _strip_line_numbers_block(new_content).replace("\r\n", "\n")
+    removed_block = "".join(lines[start_line - 1 : end_line])
+
+    candidates: list[tuple[str, str | None]] = []
+
+    if resolved_path.suffix in INDENT_SENSITIVE_SUFFIXES and new_content.strip():
+        base_indent = _leading_ws(lines[start_line - 1])
+        reindented, reindent_note = _reindent_block(new_content, base_indent)
+        if reindent_note:
+            candidates.append((reindented, reindent_note))
+
+    candidates.append((new_content, None))
+
+    final_error: str | None = None
+    chosen_after: str | None = None
+    chosen_block: str | None = None
+    chosen_warning: str | None = None
+
+    for block_text, block_note in candidates:
+        if block_text.strip():
+            new_block = block_text if block_text.endswith("\n") else block_text + "\n"
+        else:
+            new_block = ""
+
+        updated_lines = lines[: start_line - 1] + ([new_block] if new_block else []) + lines[end_line:]
+        after = "".join(updated_lines)
+
+        warning = None
+        error = _check_boundary_overlap(lines, start_line, end_line, new_block)
+        if error is None and resolved_path.suffix == ".py":
+            error, warning = _validate_python_edit(text, after)
+
+        if error is None:
+            chosen_after, chosen_block, chosen_warning = after, new_block, warning
+            if block_note:
+                notes.append(block_note)
+            break
+
+        if final_error is None or block_note is None:
+            final_error = error
+
+    if chosen_after is None or chosen_block is None:
+        return final_error or "ERRO: edição rejeitada. NADA foi salvo."
+
+    # ── 3. Grava ────────────────────────────────────────────────────────────
     try:
-        resolved_path.write_text("".join(updated), encoding="utf-8")
+        _write_text_atomic(resolved_path, chosen_after, newline)
     except OSError as error:
         return f"ERRO ao salvar '{file_path}': {error}"
 
-    return (
-        f"Arquivo '{file_path}' editado (linhas {start_line}-{end_line} substituídas).\n"
-        f"Removido:\n{removed}\nInserido:\n{new_block}"
+    new_count = len(chosen_block.splitlines())
+    old_count = end_line - start_line + 1
+    delta = new_count - old_count
+
+    if chosen_warning:
+        notes.append(chosen_warning)
+    if not chosen_block:
+        notes.append("Intervalo REMOVIDO (new_content vazio).")
+
+    window = _numbered_window(
+        chosen_after, start_line - 2, start_line + max(new_count, 1) + 1
     )
+
+    shift_info = (
+        f"As linhas APÓS esta edição foram deslocadas em {delta:+d}. "
+        "Releia antes de usar números de linha posteriores a "
+        f"{end_line}." if delta else "Nenhum deslocamento nas linhas seguintes."
+    )
+
+    return (
+        f"Arquivo '{file_path}' editado: {old_count} linha(s) "
+        f"({start_line}-{end_line}) substituída(s) por {new_count}.\n"
+        + ("\n".join(notes) + "\n" if notes else "")
+        + shift_info
+        + "\n\nTrecho resultante (números JÁ ATUALIZADOS):\n"
+        + window
+        + ("\n\n(Removido:\n" + removed_block.rstrip("\n") + "\n)" if len(removed_block) < 600 else "")
+    )
+
 
 @tool
 def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> str:
@@ -707,7 +1183,7 @@ def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> 
     limite em refatorações grandes.
 
     Use 'edit_existing_file' (não esta) quando precisar editar apenas um ou dois
-    trechos no arquivo.
+    trechos no arquivo, ou substituir funções/blocos inteiros.
 
     As edições são aplicadas NA ORDEM em que aparecem na lista, uma após a outra,
     sobre o conteúdo já parcialmente editado pelas edições anteriores. Cada
@@ -715,6 +1191,9 @@ def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> 
     'read_file_content' (mesma indentação, mesmas quebras de linha) e deve ser
     único no momento em que for aplicado — se uma edição anterior já mudou o
     trecho, a próxima 'old_snippet' precisa refletir o texto já atualizado.
+
+    Para arquivos .py o resultado FINAL é validado antes de gravar (sintaxe,
+    definições duplicadas, função aninhada por engano). Se algo falhar, nada é salvo.
 
     IMPORTANTE: esta ferramenta bloqueia automaticamente a edição enquanto a
     branch atual for 'main' ou 'master'. Use 'create_git_branch' antes.
@@ -744,14 +1223,15 @@ def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> 
         return "ERRO: a lista 'edits' está vazia. Forneça ao menos uma edição."
 
     try:
-        working_content = resolved_path.read_text(encoding="utf-8")
-    except OSError as error:
+        original_content, newline = _read_text_keep_newline(resolved_path)
+    except (OSError, UnicodeDecodeError) as error:
         return f"ERRO ao ler o arquivo '{file_path}': {error}"
 
+    working_content = original_content
     report_lines = []
     for index, edit in enumerate(edits, start=1):
-        old_snippet = (edit.get("old_snippet") or "").strip("\n\r")
-        new_snippet = (edit.get("new_snippet") or "").strip("\n\r")
+        old_snippet = (edit.get("old_snippet") or "").replace("\r\n", "\n").strip("\n")
+        new_snippet = (edit.get("new_snippet") or "").replace("\r\n", "\n").strip("\n")
 
         if not old_snippet:
             report_lines.append(f"[{index}] ERRO: 'old_snippet' vazio.")
@@ -773,11 +1253,18 @@ def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> 
             )
             return "FALHA — nenhuma edição foi salva.\n" + "\n".join(report_lines)
 
-        working_content = working_content.replace(old_snippet, new_snippet)
+        working_content = working_content.replace(old_snippet, new_snippet, 1)
         report_lines.append(f"[{index}] OK")
 
+    if resolved_path.suffix == ".py":
+        error, warning = _validate_python_edit(original_content, working_content)
+        if error:
+            return "FALHA — nenhuma edição foi salva.\n" + "\n".join(report_lines) + "\n" + error
+        if warning:
+            report_lines.append(warning)
+
     try:
-        resolved_path.write_text(working_content, encoding="utf-8")
+        _write_text_atomic(resolved_path, working_content, newline)
     except OSError as error:
         return f"ERRO ao salvar o arquivo '{file_path}' após aplicar as edições: {error}"
 
@@ -794,6 +1281,11 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
     nova linha de log/configuração. Se o conteúdo precisar ser inserido no
     meio do arquivo, use 'edit_existing_file'.
 
+    A ferramenta garante uma quebra de linha entre o que já existe e o que
+    você adiciona. Em arquivos .py o resultado é validado (sintaxe e
+    definições duplicadas): se a função/classe que você está adicionando JÁ
+    EXISTE no arquivo, a operação é rejeitada — use 'edit_existing_file'.
+
     IMPORTANTE: esta ferramenta bloqueia automaticamente a edição enquanto a
     branch atual for 'main' ou 'master'. Use 'create_git_branch' antes.
 
@@ -801,9 +1293,8 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
         file_path: Caminho RELATIVO à raiz do repositório. O sistema já
             resolve isso automaticamente contra o repositório correto — NÃO
             inclua o caminho absoluto do disco.
-        content: O texto a ser adicionado ao final do arquivo. Inclua uma
-            quebra de linha no início se o conteúdo precisar começar numa
-            linha separada do que já existe.
+        content: O texto a ser adicionado ao final do arquivo, com a
+            indentação real que deve ficar gravada.
 
     Returns:
         Uma mensagem de sucesso, ou um erro se o arquivo não existir.
@@ -819,12 +1310,100 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
         return f"ERRO: o arquivo '{file_path}' não existe. Use 'create_new_file' para criá-lo."
 
     try:
-        with resolved_path.open("a", encoding="utf-8") as file:
-            file.write(content)
+        original_content, newline = _read_text_keep_newline(resolved_path)
+    except (OSError, UnicodeDecodeError) as error:
+        return f"ERRO ao ler o arquivo '{file_path}': {error}"
+
+    addition = _strip_line_numbers_block(content).replace("\r\n", "\n")
+
+    if original_content and not original_content.endswith("\n") and not addition.startswith("\n"):
+        addition = "\n" + addition
+
+    new_content = original_content + addition
+    if not new_content.endswith("\n"):
+        new_content += "\n"
+
+    if resolved_path.suffix == ".py":
+        error, _warning = _validate_python_edit(original_content, new_content)
+        if error:
+            return error
+
+    try:
+        _write_text_atomic(resolved_path, new_content, newline)
     except OSError as error:
         return f"ERRO ao adicionar conteúdo ao arquivo '{file_path}': {error}"
 
-    return f"Conteúdo adicionado ao final de '{file_path}' com sucesso."
+    total = len(new_content.splitlines())
+    return (
+        f"Conteúdo adicionado ao final de '{file_path}' com sucesso. "
+        f"O arquivo agora tem {total} linhas."
+    )
+
+
+@tool
+def validate_python_syntax(file_path: str, runtime: ToolRuntime) -> str:
+    """Verifica um arquivo Python: sintaxe, funções/classes duplicadas e avisos do pyflakes.
+
+    Use depois de editar um .py, para confirmar que o arquivo não ficou quebrado.
+
+    Args:
+        file_path: Caminho relativo ao workspace do arquivo .py a ser verificado.
+
+    Returns:
+        Uma string com os problemas encontrados, ou uma confirmação de que está tudo certo.
+    """
+    workspace_path = runtime.state.get("workspace_path")
+
+    if not workspace_path:
+        return "ERRO: nenhum workspace definido para esta conversa."
+
+    resolved_path = _resolve_path(file_path, workspace_path)
+
+    if not resolved_path.exists():
+        return f"ERRO: o arquivo '{file_path}' não existe no workspace."
+
+    if resolved_path.suffix != ".py":
+        return "ERRO: apenas arquivos Python (.py) podem ser verificados."
+
+    try:
+        content, _newline = _read_text_keep_newline(resolved_path)
+    except (OSError, UnicodeDecodeError) as error:
+        return f"Erro ao ler o arquivo: {error}"
+
+    try:
+        tree = ast.parse(content)
+    except SyntaxError as exc:
+        return _format_syntax_error(exc, content).replace(
+            "(numeração do arquivo COMO FICARIA; nada foi salvo)\n", ""
+        )
+
+    issues: list[str] = []
+
+    counts, _ = _collect_definitions(tree)
+    for (scope, name), total in sorted(counts.items()):
+        if total > 1:
+            issues.append(
+                f"DUPLICADO: '{name}' está definido {total}x em '{_scope_label(scope)}'."
+            )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pyflakes", str(resolved_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if "No module named pyflakes" not in (result.stderr or ""):
+            flakes = (result.stdout or "").strip()
+            if flakes:
+                issues.append("Avisos do pyflakes:\n" + flakes)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    if not issues:
+        return "Nenhum erro de sintaxe, definição duplicada ou aviso encontrado."
+
+    return "Problemas encontrados:\n" + "\n".join(issues)
 
 
 # @tool

@@ -1,6 +1,9 @@
+import ast
 import re
+import subprocess
 import time
 import uuid
+from pathlib import Path
 
 from langchain_core.messages import (
     AIMessage,
@@ -76,8 +79,13 @@ WRITE_TOOL_NAMES = {
     "create_new_file",
     "edit_existing_file",
     "batch_edit_file",
+    "append_to_file",
     "create_git_branch",
 }
+
+# Subconjunto de WRITE_TOOL_NAMES que de fato modifica conteúdo de arquivo
+# (create_git_branch não altera nenhum arquivo).
+FILE_WRITE_TOOL_NAMES = WRITE_TOOL_NAMES - {"create_git_branch"}
 
 
 def _has_write_call(messages) -> bool:
@@ -148,6 +156,56 @@ def _parse_xml_tool_fallback(content: str) -> list[dict]:
         )
 
     return recovered_calls
+
+
+def _extract_edited_python_files(messages) -> list[str]:
+    """
+    Extrai (sem duplicar, preservando a ordem) os caminhos dos arquivos
+    .py tocados por tool calls de escrita nas mensagens informadas.
+    """
+    edited_files: list[str] = []
+
+    for msg in messages:
+        for call in getattr(msg, "tool_calls", None) or []:
+            if call.get("name") not in FILE_WRITE_TOOL_NAMES:
+                continue
+
+            file_path = (call.get("args") or {}).get("file_path")
+
+            if (
+                isinstance(file_path, str)
+                and file_path.endswith(".py")
+                and file_path not in edited_files
+            ):
+                edited_files.append(file_path)
+
+    return edited_files
+
+
+def _check_python_syntax(file_paths: list[str], workspace: str | None) -> list[str]:
+    """
+    Faz ast.parse nos arquivos Python informados (resolvidos contra o
+    workspace quando o caminho é relativo) e devolve a lista de erros.
+    Lista vazia = tudo certo.
+    """
+    errors: list[str] = []
+
+    for file_path in file_paths:
+        path = Path(file_path)
+
+        if not path.is_absolute() and workspace:
+            path = Path(workspace) / path
+
+        try:
+            ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as e:
+            errors.append(
+                f"{file_path}: linha {e.lineno}, coluna {e.offset} - {e.msg}"
+            )
+        except OSError as e:
+            errors.append(f"{file_path}: não foi possível ler ({e})")
+
+    return errors
 
 
 def build_system_context(*parts: str | None) -> SystemMessage:
@@ -455,11 +513,9 @@ async def generate_node(state: State):
     branch_context = None
 
     if workspace:
-        repo = __import__("pathlib").Path(workspace).resolve()
+        repo = Path(workspace).resolve()
 
         try:
-            import subprocess
-
             branch_result = subprocess.run(
                 ["git", "branch", "--show-current"],
                 cwd=str(repo),
@@ -637,6 +693,28 @@ async def generate_node(state: State):
                 print(
                     "❌ [GENERATE] Falhou em executar ações "
                     "mesmo após o nudge. Marcando como failed."
+                )
+
+            edited_py_files = _extract_edited_python_files(all_messages_this_run)
+            syntax_errors = _check_python_syntax(edited_py_files, workspace)
+
+            if syntax_errors:
+                final_status = "failed"
+                error_report = "\n".join(f"- {err}" for err in syntax_errors)
+
+                print(f"❌ [GENERATE] Sintaxe inválida após as edições:\n{error_report}")
+
+                messages_to_return.append(
+                    AIMessage(
+                        content=(
+                            "⚠️ A tarefa foi marcada como FALHA: os arquivos abaixo "
+                            "ficaram com erro de sintaxe após as edições e precisam "
+                            "de revisão (ex.: `git diff` / `git checkout -- <arquivo>`):\n"
+                            f"{error_report}"
+                        ),
+                        name="Qwen3-Coder (Generate)",
+                        additional_kwargs={"message_tag": "internal_syntax_gate"},
+                    )
                 )
 
             async with async_session_env() as db:

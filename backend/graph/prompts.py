@@ -1576,8 +1576,10 @@ generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `ed
 
 4. **REGRA CRÍTICA DE EDIÇÃO E NÚMEROS DE LINHA**
 
-   Sua ferramenta principal e mais segura para editar arquivos é a `edit_existing_file`. Ela usa OBRIGATORIAMENTE os parâmetros `start_line` e `end_line` (números inteiros). 
+   Sua ferramenta principal para editar arquivos é a `edit_existing_file`. Ela usa `start_line`, `end_line`
+   e, para conferência, `first_line_text` e `last_line_text` (o texto ATUAL e EXATO dessas duas linhas, sem o prefixo "N: ").
    NUNCA tente adivinhar o número das linhas. Use `read_file_content`, `read_file_chunk` ou `search_in_file` para visualizar o arquivo numerado (formato "N: conteúdo") e descobrir as linhas exatas antes de editar.
+   Depois de QUALQUER edição, os números abaixo dela mudam: use os números do "Trecho resultante" devolvido pela ferramenta ou releia o trecho. Nunca reutilize números de uma leitura antiga.
 
 4.1. **QUANDO USAR `batch_edit_file` (A Exceção do Snippet)**
 
@@ -1587,29 +1589,27 @@ generate_repo_map) e de escrita/git (`create_git_branch`, `create_new_file`, `ed
     
 5. **ESCOLHA DO TRECHO**
 
-   Prefira o menor trecho que identifique inequivocamente a alteração.
-
-   O objetivo não é usar obrigatoriamente 1-3 linhas.
-   O objetivo é usar o menor trecho REAL que seja:
-   - literal;
-   - suficiente;
-   - único no arquivo.
-
-   Evite copiar funções inteiras, classes inteiras ou grandes blocos
-   quando poucas linhas forem suficientes.
-
-   Se um trecho curto aparecer mais de uma vez, adicione apenas o contexto
-   necessário para torná-lo único.
+   - Para `batch_edit_file`: use o menor trecho literal, suficiente e único no arquivo.
+   - Para `edit_existing_file`: o intervalo deve cobrir uma UNIDADE COMPLETA de código.
+     Se a alteração for dentro de uma função, substitua somente as linhas realmente
+     afetadas (mantendo a indentação); se for trocar a função, cubra o bloco INTEIRO
+     (do `def`/decorator até a última linha do corpo) e envie a função inteira no `new_content`.
+   - Nunca deixe sobrar metade de um bloco antigo, e nunca crie uma segunda
+     definição de uma função/classe que já existe no mesmo escopo.
+   - Funções de nível de módulo ficam na coluna 0, nunca dentro de outra função.
+   - Para `.py`, a ferramenta rejeita edições que quebrem a sintaxe, dupliquem
+     definições ou aninhem funções por engano: nesse caso nada é salvo; leia a
+     mensagem, releia o trecho e corrija.
 
 6. **FALHA DE `edit_existing_file`**
 
    Se `edit_existing_file` retornar erro:
 
    - NÃO repita imediatamente a mesma chamada;
-   - NÃO reutilize o mesmo `old_snippet`;
-   - releia o arquivo com `read_file_content`;
+   - NÃO reutilize os mesmos números de linha nem o mesmo `old_snippet`;
+   - releia a região com `read_file_chunk`/`read_file_content`;
    - use o conteúdo recém-retornado como fonte de verdade;
-   - construa um novo `old_snippet` literalmente a partir desse conteúdo;
+   - refaça a chamada com os números atuais e os textos exatos de `first_line_text`/`last_line_text` (ou um novo `old_snippet` literal);
    - tente novamente somente se houver evidência suficiente.
 
    A releitura após uma falha É PERMITIDA mesmo que o arquivo já tenha sido
@@ -1785,10 +1785,35 @@ sendo representada em formato XML pelo runtime.
 
 6. Aguarde e analise o resultado da edição antes de prosseguir.
 
-## REGRA ESPECIAL PARA EDIÇÃO DE CÓDIGO E SNIPPETS
+## REGRA ESPECIAL PARA EDIÇÃO DE CÓDIGO
 
 Para `edit_existing_file` (Sua Ferramenta Principal):
-Você DEVE usar exclusivamente NÚMEROS de linha (`start_line` e `end_line`). Nunca forneça snippets do código antigo. Confie estritamente na numeração ("N: ") retornada pelas ferramentas de leitura.
+Informe SEMPRE `start_line`, `end_line`, `first_line_text` e `last_line_text`.
+- `first_line_text` e `last_line_text` são o texto ATUAL e EXATO das linhas
+  `start_line` e `end_line`, copiado da leitura (sem o prefixo "N: ").
+- A ferramenta confere esses textos antes de gravar. Se não baterem, NADA é
+  alterado e você recebe o trecho atual: releia e refaça a chamada.
+- Os números de linha MUDAM depois de cada edição. Nunca reutilize números de
+  uma leitura anterior à última edição naquele arquivo: use os números do
+  "Trecho resultante" devolvido pela própria ferramenta ou releia o trecho.
+
+Para trocar uma função, método ou classe:
+- o intervalo deve cobrir o bloco INTEIRO (da linha `def`/decorator até a
+  última linha do corpo) e `new_content` deve trazer o bloco inteiro novo;
+- nunca deixe sobrar metade do bloco antigo, e nunca repita no `new_content`
+  uma linha que já existe logo antes ou logo depois do intervalo;
+- NUNCA reescreva uma função em outro ponto do arquivo sem remover a antiga:
+  cada função/classe deve existir UMA única vez no mesmo escopo.
+
+Indentação (Python):
+- `new_content` deve vir com a indentação REAL que ficará no arquivo
+  (métodos de classe começam com 4 espaços; corpo de método com 8; etc.);
+- funções de nível de módulo começam na coluna 0 — nunca dentro de outra função.
+
+Para arquivos `.py`, o sistema valida o resultado antes de gravar. Se a
+ferramenta responder "edição REJEITADA", nada foi salvo: leia a mensagem,
+corrija o intervalo ou a indentação e tente de novo. Não insista com a mesma
+chamada.
 
 Para `batch_edit_file` (A Regra do Snippet Exato):
 Nunca use como `old_snippet` um trecho reconstruído de memória. Ele deve vir LITERALMENTE do código retornado por `read_file_content` ou `read_file_chunk` (removendo a numeração "N: " gerada pela leitura).
@@ -1808,16 +1833,16 @@ Não altere no old_snippet:
 
 ## RECUPERAÇÃO APÓS ERRO DE EDIÇÃO
 
-Se `edit_existing_file` falhar (ex: intervalo de linhas inválido):
+Se `edit_existing_file` falhar (intervalo inválido, texto das âncoras não bate, edição rejeitada):
 1. Não repita a mesma chamada com os mesmos números cegamente.
 2. Releia a região do arquivo usando `search_in_file` ou `read_file_chunk`.
-3. Lembre-se que edições anteriores podem ter deslocado as linhas originais para cima ou para baixo. Obtenha os NÚMEROS DE LINHA ATUALIZADOS.
-4. Faça a nova chamada com o `start_line` e `end_line` corretos.
+3. Lembre-se que edições anteriores deslocaram as linhas. Obtenha os NÚMEROS DE LINHA ATUALIZADOS.
+4. Faça a nova chamada com `start_line`, `end_line`, `first_line_text` e `last_line_text` corretos.
 
 Se `batch_edit_file` falhar (ex: erro de XML ou snippet não encontrado):
 1. Não repita o mesmo `old_snippet` e evite blocos com mais de 2-3 linhas.
 2. Releia o arquivo e verifique o conteúdo real.
-3. Se a edição era grande e quebrou, ABANDONE o `batch_edit_file` e passe a usar o `edit_existing_file` (passando os números das linhas), que é imune a quebras de XML.
+3. Se a edição era grande e quebrou, ABANDONE o `batch_edit_file` e passe a usar o `edit_existing_file` (com as âncoras `first_line_text`/`last_line_text`).
 
 A regra que proíbe repetir os mesmos parâmetros NÃO impede essa releitura
 de recuperação.
@@ -1860,6 +1885,8 @@ Se o arquivo real não corresponder ao comportamento descrito pelo Heavy:
 Antes de considerar a tarefa concluída:
 
 1. releia os arquivos que você alterou;
+1.1. para cada arquivo `.py` alterado, chame `validate_python_syntax` e corrija
+     qualquer erro de sintaxe ou definição DUPLICADA antes de finalizar;
 2. confirme que a alteração realmente foi aplicada;
 3. confirme que o código continua coerente com a tarefa;
 4. verifique se não alterou nada fora do escopo;

@@ -6,7 +6,7 @@ from langchain_core.messages import BaseMessage
 from typing import Annotated, Literal, NotRequired, TypedDict, cast
 from pydantic import Field
 from backend.api.schemas import GenerateTaskSchema, HeavyAnalysisSchema
-from backend.graph.tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, search_in_file, list_directory_files, read_file_content
+from backend.graph.tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, search_in_file, list_directory_files, read_file_content, validate_python_syntax
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -52,6 +52,7 @@ WRITE_AND_GIT_TOOLS = [
     list_directory_files,
     read_file_chunk,
     search_in_file,
+    validate_python_syntax,
 ]
 
 def load_llm() -> BaseChatModel:
@@ -76,7 +77,7 @@ router_structured = load_llm().with_structured_output(RouteDecision).with_config
 standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=131072)
 
 code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=131072)
-generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=4096, num_ctx=131072)
+generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=131072)
 
 note_llm_draft = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=8192, num_ctx=65536, think=True)
 note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=24576, num_ctx=65536, think=True)
