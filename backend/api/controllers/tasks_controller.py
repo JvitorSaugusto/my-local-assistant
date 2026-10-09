@@ -23,7 +23,7 @@ async def list_tasks(service: TaskServiceDep):
     return await service.get_all()
 
 
-@task_router.put("/{task_id}")
+@task_router.put("/{task_id}", response_model=TaskResponseSchema)
 async def update_task(task_id: int, updates: dict, service: TaskServiceDep):
     task = await service.update(task_id, updates)
     if not task:
