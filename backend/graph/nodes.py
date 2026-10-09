@@ -39,179 +39,22 @@ from .prompts import (
     ROUTER_NODE_PROMPT,
     STANDARD_NODE_PROMPT,
 )
+from .node_helpers import (
+    FILE_WRITE_TOOL_NAMES,
+    GENERATE_TOOL_NAMES,
+    WRITE_TOOL_NAMES,
+    _check_python_syntax,
+    _extract_edited_python_files,
+    _extract_gatherer_tool_trace,
+    _has_write_call,
+    _parse_xml_tool_fallback,
+    build_security_report,
+    build_system_context,
+    format_task_description,
+    now_iso,
+    stamp_message,
+)
 from .utils import detect_explicit_route, strip_leading_tags
-
-
-def _extract_gatherer_tool_trace(messages, start_idx: int) -> list[dict]:
-    """
-    Extrai somente o nome e os argumentos das tools utilizadas
-    durante a execução atual do Context Gatherer.
-
-    Não preserva:
-    - conteúdo de ToolMessage;
-    - pensamentos do modelo;
-    - IDs das tool calls;
-    - respostas completas das ferramentas.
-    """
-    trace = []
-
-    for msg in messages[start_idx + 1 :]:
-        if msg.type != "ai":
-            continue
-
-        tool_calls = getattr(msg, "tool_calls", None)
-
-        if not tool_calls:
-            continue
-
-        for tool_call in tool_calls:
-            trace.append(
-                {
-                    "name": tool_call.get("name"),
-                    "args": tool_call.get("args", {}),
-                }
-            )
-
-    return trace
-
-
-WRITE_TOOL_NAMES = {
-    "create_new_file",
-    "edit_existing_file",
-    "batch_edit_file",
-    "append_to_file",
-    "create_git_branch",
-}
-
-# Subconjunto de WRITE_TOOL_NAMES que de fato modifica conteúdo de arquivo
-# (create_git_branch não altera nenhum arquivo).
-FILE_WRITE_TOOL_NAMES = WRITE_TOOL_NAMES - {"create_git_branch"}
-
-
-def _has_write_call(messages) -> bool:
-    return any(
-        call["name"] in WRITE_TOOL_NAMES
-        for msg in messages
-        if getattr(msg, "tool_calls", None)
-        for call in msg.tool_calls
-    )
-
-
-GENERATE_TOOL_NAMES = {tool.name for tool in WRITE_AND_GIT_TOOLS}
-
-
-def _parse_xml_tool_fallback(content: str) -> list[dict]:
-    """
-    Recupera tool calls que o Qwen escreveu em formato XML no conteúdo
-    da resposta quando o Ollama não conseguiu convertê-las para
-    response.tool_calls.
-    """
-
-    if not content or "<function=" not in content:
-        return []
-
-    recovered_calls = []
-
-    function_matches = re.finditer(
-        r"<function=([^>\s]+)>(.*?)</function>",
-        content,
-        re.DOTALL,
-    )
-
-    for function_match in function_matches:
-        tool_name = function_match.group(1).strip()
-
-        # Segurança: só aceita ferramentas realmente registradas
-        # no Generate.
-        if tool_name not in GENERATE_TOOL_NAMES:
-            print(
-                f"⚠️ [PARSER FALLBACK] Tool '{tool_name}' "
-                "não está registrada no Generate. Ignorando."
-            )
-            continue
-
-        function_body = function_match.group(2)
-
-        args = {}
-
-        parameter_matches = re.finditer(
-            r"<parameter=([^>\s]+)>(.*?)</parameter>",
-            function_body,
-            re.DOTALL,
-        )
-
-        for parameter_match in parameter_matches:
-            parameter_name = parameter_match.group(1).strip()
-            parameter_value = parameter_match.group(2).strip()
-
-            args[parameter_name] = parameter_value
-
-        recovered_calls.append(
-            {
-                "name": tool_name,
-                "args": args,
-                "id": f"fallback-{uuid.uuid4().hex}",
-                "type": "tool_call",
-            }
-        )
-
-    return recovered_calls
-
-
-def _extract_edited_python_files(messages) -> list[str]:
-    """
-    Extrai (sem duplicar, preservando a ordem) os caminhos dos arquivos
-    .py tocados por tool calls de escrita nas mensagens informadas.
-    """
-    edited_files: list[str] = []
-
-    for msg in messages:
-        for call in getattr(msg, "tool_calls", None) or []:
-            if call.get("name") not in FILE_WRITE_TOOL_NAMES:
-                continue
-
-            file_path = (call.get("args") or {}).get("file_path")
-
-            if (
-                isinstance(file_path, str)
-                and file_path.endswith(".py")
-                and file_path not in edited_files
-            ):
-                edited_files.append(file_path)
-
-    return edited_files
-
-
-def _check_python_syntax(file_paths: list[str], workspace: str | None) -> list[str]:
-    """
-    Faz ast.parse nos arquivos Python informados (resolvidos contra o
-    workspace quando o caminho é relativo) e devolve a lista de erros.
-    Lista vazia = tudo certo.
-    """
-    errors: list[str] = []
-
-    for file_path in file_paths:
-        path = Path(file_path)
-
-        if not path.is_absolute() and workspace:
-            path = Path(workspace) / path
-
-        try:
-            ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError as e:
-            errors.append(
-                f"{file_path}: linha {e.lineno}, coluna {e.offset} - {e.msg}"
-            )
-        except OSError as e:
-            errors.append(f"{file_path}: não foi possível ler ({e})")
-
-    return errors
-
-
-def build_system_context(*parts: str | None) -> SystemMessage:
-    """Junta múltiplas partes de contexto de sistema em uma única SystemMessage, separadas por um divisor."""
-    valid_parts = [p.strip() for p in parts if p and p.strip()]
-    return SystemMessage(content="\n\n---\n\n".join(valid_parts))
 
 
 def router_node(state: State):
@@ -337,6 +180,7 @@ def enhancer_node(state: State):
     response = standard_llm.invoke(context)
     response.name = "GPT-OSS (20B) ENHANCER"
     response.additional_kwargs["message_tag"] = "internal_thought_enhancer"
+    stamp_message(response)
 
     print("GPT-OSS (20B) ENHANCER")
 
@@ -376,6 +220,7 @@ def standard_node_20b(state: State):
     print("content:", repr(response.content[-500:]))
     response.name = "GPT-OSS (20B)"
     response.additional_kwargs["message_tag"] = "response_standard"
+    stamp_message(response)
 
     return {"messages": [response], "enhanced_prompt": None}
 
@@ -405,6 +250,7 @@ def code_node(state: State):
     response = code_llm_with_tools.invoke(context)
     response.name = "GPT-OSS (20B) CODE"
     response.additional_kwargs["message_tag"] = "response_code"
+    stamp_message(response)
 
     return {"messages": [response], "active_node": "code_node", "enhanced_prompt": None}
 
@@ -464,6 +310,7 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                 "files": task.files,
                 "reason": task.reason,
                 "priority": task.priority,
+                "code_snippet": task.code_snippet,
                 "status": "queued",
                 "repo_path": workspace_path,
             }
@@ -483,14 +330,17 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
         "messages": [
             AIMessage(
                 content=msg_retorno,
-                additional_kwargs={"message_tag": "response_dispatch"},
+                additional_kwargs={
+                    "message_tag": "response_dispatch",
+                    "created_at": now_iso(),
+                },
             )
         ],
         "active_node": "generate_dispatch_node",
     }
 
 
-async def generate_node(state: State):
+async def _generate_node_impl(state: State):
     actual_summary = state.get("summary", "")
 
     generate_start_idx = state.get("generate_start_idx")
@@ -563,6 +413,7 @@ async def generate_node(state: State):
 
     response.name = "Qwen3-Coder (Generate)"
     response.additional_kwargs["message_tag"] = "internal_thought_generate"
+    stamp_message(response)
 
     recovered_tool_calls = []
 
@@ -614,6 +465,7 @@ async def generate_node(state: State):
             print("⚠️ [GENERATE] Tentativa de finalizar sem ação. Aplicando Nudge...")
 
             nudge = HumanMessage(
+                name="hidden_task_prompt",
                 content=(
                     "Sua última resposta não executou nenhuma ferramenta "
                     "de forma válida.\n\n"
@@ -643,6 +495,7 @@ async def generate_node(state: State):
 
             response2.name = "Qwen3-Coder (Generate)"
             response2.additional_kwargs["message_tag"] = "internal_system_nudge"
+            stamp_message(response2)
 
             if not response2.tool_calls and response2.content:
                 recovered_tool_calls = _parse_xml_tool_fallback(str(response2.content))
@@ -685,35 +538,42 @@ async def generate_node(state: State):
             reported_ambiguous = content_str2.startswith("TAREFA AMBÍGUA")
 
         if is_final_response:
-            final_status = (
-                "completed" if (wrote_something or reported_ambiguous) else "failed"
-            )
+            final_status = "completed"
+            last_error = None
 
-            if final_status == "failed":
-                print(
-                    "❌ [GENERATE] Falhou em executar ações "
-                    "mesmo após o nudge. Marcando como failed."
+            if not wrote_something:
+                final_status = "pending"
+                last_error = (
+                    str(response_text_for_error(messages_to_return))
+                    if reported_ambiguous
+                    else "A IA terminou sem executar nenhuma alteração."
                 )
+                print("⚠️ [GENERATE] Nenhuma alteração feita. Tarefa continua pendente.")
 
             edited_py_files = _extract_edited_python_files(all_messages_this_run)
             syntax_errors = _check_python_syntax(edited_py_files, workspace)
 
             if syntax_errors:
-                final_status = "failed"
+                final_status = "pending"
                 error_report = "\n".join(f"- {err}" for err in syntax_errors)
+                last_error = f"Erro de sintaxe após as edições:\n{error_report}"
 
                 print(f"❌ [GENERATE] Sintaxe inválida após as edições:\n{error_report}")
 
                 messages_to_return.append(
                     AIMessage(
                         content=(
-                            "⚠️ A tarefa foi marcada como FALHA: os arquivos abaixo "
+                            "⚠️ A tarefa continua PENDENTE: os arquivos abaixo "
                             "ficaram com erro de sintaxe após as edições e precisam "
-                            "de revisão (ex.: `git diff` / `git checkout -- <arquivo>`):\n"
+                            "de revisão (ex.: `git diff` / `git checkout -- <arquivo>`). "
+                            "Você pode executá-la novamente depois:\n"
                             f"{error_report}"
                         ),
                         name="Qwen3-Coder (Generate)",
-                        additional_kwargs={"message_tag": "internal_syntax_gate"},
+                        additional_kwargs={
+                            "message_tag": "internal_syntax_gate",
+                            "created_at": now_iso(),
+                        },
                     )
                 )
 
@@ -721,7 +581,7 @@ async def generate_node(state: State):
                 stmt = (
                     update(TaskModel)
                     .where(TaskModel.id == task.id)
-                    .values(status=final_status)
+                    .values(status=final_status, last_error=last_error)
                 )
 
                 await db.execute(stmt)
@@ -733,6 +593,37 @@ async def generate_node(state: State):
         "enhanced_prompt": None,
         "active_generate_task": (None if is_final_response else task),
     }
+
+
+def response_text_for_error(messages) -> str:
+    for msg in reversed(messages):
+        if getattr(msg, "type", "") == "ai" and msg.content:
+            return str(msg.content).strip()[:1500]
+    return "A IA reportou que a tarefa é ambígua."
+
+
+async def _reset_task_to_pending(task_id: int, error: str) -> None:
+    try:
+        async with async_session_env() as db:
+            await db.execute(
+                update(TaskModel)
+                .where(TaskModel.id == task_id, TaskModel.status != "completed")
+                .values(status="pending", last_error=error[:2000])
+            )
+            await db.commit()
+    except Exception as db_error:  # nunca esconder o erro original
+        print(f"[GENERATE] Falha ao devolver tarefa {task_id} para pending: {db_error}")
+
+
+async def generate_node(state: State):
+    """Executa a tarefa; se der erro no meio, ela volta para 'pending'."""
+    try:
+        return await _generate_node_impl(state)
+    except Exception as exc:
+        task = state.get("active_generate_task")
+        if task:
+            await _reset_task_to_pending(task.id, f"Erro durante a execução: {exc}")
+        raise
 
 
 def note_draft_node(state: State) -> State:
@@ -773,6 +664,7 @@ def note_draft_node(state: State) -> State:
     draft = note_llm_draft_with_tools.invoke(context)
     draft.name = "Qwen3 Notas Draft"
     draft.additional_kwargs["message_tag"] = "internal_thought_draft"
+    stamp_message(draft)
 
     print("\n=== DRAFT NODE ===")
     print("Possui tool calls?", bool(draft.tool_calls))
@@ -827,6 +719,7 @@ def note_refine_node(state: State) -> State:
 
     final_response.name = "Qwen3 Notas Final (30B)"
     final_response.additional_kwargs["message_tag"] = "response_note"
+    stamp_message(final_response)
     return {"messages": [final_response]}
 
 
@@ -991,20 +884,7 @@ async def heavy_analyzer_node(
         ]
 
         if real_findings:
-            security_report = "\n\n## 🛡️ Achados de Segurança\n\n"
-            for finding in real_findings:
-                cat = finding.get("category", "Desconhecido")
-                risk = str(finding.get("risk", "Desconhecido")).upper()
-                file_path = finding.get("file", "Desconhecido")
-                evi = finding.get("evidence", "")
-                tech = finding.get("technical_analysis", "")
-
-                security_report += f"### 🔴 {cat} ({risk})\n"
-                security_report += f"**Arquivo:** `{file_path}`\n"
-                security_report += f"**Evidência (Código):**\n```text\n{evi}\n```\n"
-                security_report += f"**Análise Técnica:** {tech}\n\n"
-
-            final_analysis_content += security_report
+            final_analysis_content += build_security_report(real_findings)
 
         if not final_analysis_content.strip():
             final_analysis_content = (
@@ -1028,17 +908,7 @@ async def heavy_analyzer_node(
         async with async_session_env() as db:
             try:
                 for task in tasks_data:
-                    objective = task.get("objective", "")
-                    target = task.get("target", "")
-                    logic = task.get("logic", "")
-                    constraints = task.get("constraints", "")
-
-                    description = (
-                        f"**Objetivo:**\n{objective}\n\n"
-                        f"**Localização Alvo:**\n{target}\n\n"
-                        f"**Lógica da Alteração (Instruções Detalhadas):**\n{logic}\n\n"
-                        f"**Restrições do Usuário:**\n{constraints}"
-                    )
+                    description = format_task_description(task)
 
                     new_task = TaskModel(
                         thread_id=thread_id,
@@ -1047,6 +917,7 @@ async def heavy_analyzer_node(
                         files=task.get("files", []),
                         reason=task.get("reason", ""),
                         priority=task.get("priority", "medium"),
+                        code_snippet=(task.get("code_snippet") or "").strip() or None,
                         status="pending",
                     )
 
@@ -1074,7 +945,10 @@ async def heavy_analyzer_node(
     response = AIMessage(
         content=final_analysis_content,
         name="Qwen 3 Coder 30B",
-        additional_kwargs={"message_tag": "response_heavy"},
+        additional_kwargs={
+            "message_tag": "response_heavy",
+            "created_at": now_iso(),
+        },
     )
 
     return {
