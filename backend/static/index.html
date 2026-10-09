@@ -6,6 +6,12 @@
   <meta name="theme-color" content="#0e0f13">
   <title>Assistente IA Local</title>
 
+  <script>
+    try {
+      var t = localStorage.getItem("assistant_theme");
+      document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+    } catch (e) { document.documentElement.setAttribute("data-theme", "dark"); }
+  </script>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,7 +23,7 @@
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 
   <!-- Syntax highlight -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <link id="hljs-theme" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
   <!-- Seu app, sempre por último e com defer para rodar depois das libs acima -->
@@ -41,6 +47,7 @@
           <h1>Assistente Local</h1>
           <p class="brand-sub">seu cérebro digital e autônomo</p>
         </div>
+        <button id="btn-theme" class="theme-toggle" type="button" title="Alternar tema claro/escuro" aria-label="Alternar tema"></button>
       </div>
 
       <button id="btn-new-chat" class="btn btn-primary btn-block">
@@ -227,6 +234,10 @@
       <div class="form-group">
         <label for="task_files">Arquivos (separados por vírgula)</label>
         <input type="text" id="task_files" name="files" placeholder="ex: main.py, app/services.py" />
+      </div>
+      <div class="form-group">
+        <label for="task_snippet">Código de referência (opcional)</label>
+        <textarea id="task_snippet" name="code_snippet" style="font-family: var(--font-mono); font-size: 12.5px;" placeholder="Trecho de exemplo que o executor deve usar como guia"></textarea>
       </div>
       <div class="modal-actions">
         <button type="button" id="btn-cancel-modal" class="btn btn-ghost">Cancelar</button>

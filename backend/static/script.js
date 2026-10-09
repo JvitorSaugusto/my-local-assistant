@@ -13,6 +13,8 @@ const API = {
   deleteTask: (taskId) => `/api/tasks/${taskId}`,
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
   send: "/api/ai/",
+  stop: (threadId) => `/api/ai/${threadId}/stop`,
+  rewind: (threadId) => `/api/ai/${threadId}/rewind`,
   batch: "/api/ai/batch/",
 };
 
@@ -33,6 +35,9 @@ const el = {
   chatForm: document.getElementById("chat-form"),
   chatInput: document.getElementById("chat-input"),
   btnHeavy: document.getElementById("btn-heavy"),
+  btnSend: document.getElementById("btn-send"),
+  btnTheme: document.getElementById("btn-theme"),
+  inputSnippet: document.getElementById("task_snippet"),
   btnEnhance: document.getElementById("btn-enhance"),
   btnToggleBatch: document.getElementById("btn-toggle-batch"),
   batchPanel: document.getElementById("batch-panel"),
@@ -76,6 +81,11 @@ const ICON = {
   user: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
   bot: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4"/><path d="M8 2h8"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/></svg>`,
   copy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
+  send: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>`,
+  stop: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`,
+  sun: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`,
+  moon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>`,
+  brain: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 0 0-3 3 2.5 2.5 0 0 0-1.5 4.5A2.5 2.5 0 0 0 9 17a3 3 0 0 0 3 2"/><path d="M12 5a3 3 0 0 1 3 3 2.5 2.5 0 0 1 1.5 4.5A2.5 2.5 0 0 1 15 17a3 3 0 0 1-3 2"/><path d="M12 5v14"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
 };
 
@@ -93,7 +103,59 @@ const state = {
   workspacePath: "",
   workspaces: [],
   currentTasks: [], // Guarda as tarefas exibidas em tela para edição rápida
+  tasksSig: null,
+  stopRequested: false,
 };
+
+// ============================================================
+// TEMA CLARO / ESCURO
+// ============================================================
+
+const HLJS_THEMES = {
+  dark: "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css",
+  light: "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-light.min.css",
+};
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const link = document.getElementById("hljs-theme");
+  if (link) link.href = HLJS_THEMES[theme];
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === "light" ? "#f6f7f9" : "#0e0f13";
+  if (el.btnTheme) {
+    el.btnTheme.innerHTML = theme === "light" ? ICON.moon : ICON.sun;
+    el.btnTheme.title = theme === "light" ? "Mudar para tema escuro" : "Mudar para tema claro";
+  }
+  try { localStorage.setItem("assistant_theme", theme); } catch {}
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+  applyTheme(current === "light" ? "dark" : "light");
+}
+
+// ============================================================
+// HORÁRIO / TEMPO DE RESPOSTA
+// ============================================================
+
+function formatTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatElapsed(sec) {
+  if (sec == null || isNaN(sec)) return "";
+  if (sec < 60) return `${sec.toFixed(1).replace(".", ",")} s`;
+  return `${Math.floor(sec / 60)} min ${Math.round(sec % 60)} s`;
+}
+
+setInterval(() => {
+  document.querySelectorAll('[data-typing="1"]').forEach((w) => {
+    const t = w.querySelector(".typing-timer");
+    if (t) t.textContent = `${Math.floor((Date.now() - Number(w.dataset.start)) / 1000)} s`;
+  });
+}, 1000);
 
 // ============================================================
 // MARKDOWN
@@ -258,6 +320,7 @@ function toggleSidebar() { if (el.sidebar.classList.contains("open")) closeSideb
 
 window.addEventListener("resize", () => { if (!isMobile()) closeSidebar(); });
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.sending && !event.defaultPrevented) stopGeneration();
   if (event.key === "Escape" && isMobile() && el.sidebar.classList.contains("open")) closeSidebar();
 });
 
@@ -355,13 +418,23 @@ async function loadTasks(threadId = null) {
   }
   try {
     const tasks = await api(API.tasks(thread));
-    state.currentTasks = Array.isArray(tasks) ? tasks : [];
-    renderTasks(state.currentTasks);
+    const list = Array.isArray(tasks) ? tasks : [];
+    const sig = JSON.stringify(list);
+    state.currentTasks = list;
+    if (sig === state.tasksSig) return; // evita fechar <details> a cada polling
+    state.tasksSig = sig;
+    renderTasks(list);
   } catch (err) {
+    state.tasksSig = null;
     state.currentTasks = [];
     renderTasks([]);
     el.tasksCount.textContent = "Não foi possível carregar as tarefas.";
   }
+}
+
+function normalizeTaskDescription(desc) {
+  // "**Objetivo:**" sozinho na linha vira um subtítulo
+  return String(desc || "").trim().replace(/^\*\*(.+?):\*\*[ \t]*$/gm, "#### $1");
 }
 
 function renderTasks(tasks) {
@@ -370,7 +443,7 @@ function renderTasks(tasks) {
   el.tasksCount.textContent = pendingTasks.length
     ? `${pendingTasks.length} tarefa(s) pendente(s)`
     : "Nenhuma tarefa pendente.";
-  
+
   el.btnExecuteTasks.disabled = !pendingTasks.length;
 
   if (!tasks.length) {
@@ -382,16 +455,25 @@ function renderTasks(tasks) {
     const card = document.createElement("article");
     card.className = "task-card";
     const files = Array.isArray(task.files) ? task.files : [];
+    const desc = normalizeTaskDescription(task.description);
+    const snippet = String(task.code_snippet || "").trim();
+    const long = desc.length > 320;
 
     card.innerHTML = `
       <div class="task-card-head">
-        <h4 class="task-card-title">${escapeHtml(task.title || "Tarefa sem título")}</h4>
+        <div class="task-card-titlewrap">
+          <span class="task-card-id">#${task.id}</span>
+          <h4 class="task-card-title">${escapeHtml(task.title || "Tarefa sem título")}</h4>
+        </div>
         <div class="task-card-actions">
           <button class="btn-icon-task btn-edit-task" data-task-id="${task.id}" title="Editar">${ICON.pencil}</button>
           <button class="btn-icon-task btn-delete-task" data-task-id="${task.id}" title="Excluir">${ICON.trash}</button>
         </div>
       </div>
-      <p class="task-card-description">${escapeHtml(task.description || "")}</p>
+      ${desc ? `<div class="task-card-description md${long ? " clamped" : ""}">${renderContent(desc)}</div>` : ""}
+      ${long ? `<button type="button" class="task-expand">Ver mais</button>` : ""}
+      ${snippet ? `<details class="task-snippet"><summary>Código de referência</summary><pre><code>${escapeHtml(snippet)}</code></pre></details>` : ""}
+      ${task.last_error ? `<div class="task-error"><strong>Última tentativa não terminou</strong><pre>${escapeHtml(task.last_error)}</pre></div>` : ""}
       ${files.length ? `
         <div class="task-files">
           ${files.map((file) => `<span class="task-file" title="${escapeHtml(file)}">${escapeHtml(file)}</span>`).join("")}
@@ -402,6 +484,15 @@ function renderTasks(tasks) {
         <span class="task-status ${escapeHtml(task.status || "pending")}">${escapeHtml(task.status || "pending")}</span>
       </div>
     `;
+
+    const expand = card.querySelector(".task-expand");
+    if (expand) {
+      expand.addEventListener("click", () => {
+        const collapsed = card.querySelector(".task-card-description").classList.toggle("clamped");
+        expand.textContent = collapsed ? "Ver mais" : "Ver menos";
+      });
+    }
+    enhanceCodeBlocks(card);
     el.tasksList.appendChild(card);
   });
 }
@@ -413,12 +504,14 @@ function openTaskModal(task = null) {
     el.inputTitle.value = task.title || "";
     el.inputDesc.value = task.description || "";
     el.inputFiles.value = Array.isArray(task.files) ? task.files.join(", ") : "";
+    el.inputSnippet.value = task.code_snippet || "";
   } else {
     el.modalTitle.textContent = "Nova Tarefa";
     el.inputId.value = "";
     el.inputTitle.value = "";
     el.inputDesc.value = "";
     el.inputFiles.value = "";
+    el.inputSnippet.value = "";
   }
   el.taskModal.showModal();
 }
@@ -472,13 +565,14 @@ async function openChat(id) {
     return;
   }
   const requestChatId = id;
+  state.tasksSig = null;
   await loadTasks(chat.thread_id);
 
   try {
     const data = await api(API.messages(chat.thread_id));
     if (state.activeId !== requestChatId) return;
     const messages = data?.messages ?? [];
-    messages.forEach((message) => appendMessage(message.role, message.content, message.model));
+    renderHistory(messages);
     
     const aiCount = messages.filter(m => m.role === "assistant").length;
     if (state.expectedAiCount[requestChatId] && aiCount >= state.expectedAiCount[requestChatId]) {
@@ -497,22 +591,54 @@ function showWelcome() {
   el.welcome.classList.remove("hidden");
 }
 
-function appendMessage(role, content, modelName = null) {
+function renderHistory(messages) {
+  el.messages.innerHTML = "";
+  messages.forEach((m) => appendMessage(m.role, m.content, m.model, m));
+}
+
+async function refreshMessages(chat) {
+  try {
+    const data = await api(API.messages(chat.thread_id));
+    if (state.activeId === chat.id) renderHistory(data?.messages ?? []);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function appendMessage(role, content, modelName = null, meta = {}) {
   const isUser = role === "user";
   const wrap = document.createElement("div");
   wrap.className = `msg ${isUser ? "user" : "assistant"}`;
-  let roleName = isUser ? "Você" : (modelName ? `Assistente (${modelName})` : "Assistente");
+  if (meta.id) wrap.dataset.messageId = meta.id;
+
+  const roleName = isUser ? "Você" : (modelName ? `Assistente (${modelName})` : "Assistente");
   const renderedContent = isUser ? escapeHtml(content) : renderContent(content);
+  const elapsed = isUser ? "" : formatElapsed(meta.elapsed_seconds);
+  const metaText = [formatTime(meta.created_at), elapsed && `⏱ ${elapsed}`].filter(Boolean).join(" · ");
+
+  const thoughts = !isUser && meta.thoughts
+    ? `<details class="msg-thoughts"><summary>${ICON.brain}<span>Raciocínio</span></summary><div class="msg-thoughts-body">${renderContent(meta.thoughts)}</div></details>`
+    : "";
+
+  const footer = isUser
+    ? (meta.id ? `<div class="msg-actions"><button class="msg-action btn-edit-msg" type="button" title="Editar mensagem">${ICON.pencil}</button></div>` : "")
+    : `<button class="msg-raw-toggle" type="button">Ver formato puro</button><pre class="msg-raw hidden">${escapeHtml(content)}</pre>`;
 
   wrap.innerHTML = `
     <div class="msg-avatar">${isUser ? ICON.user : ICON.bot}</div>
     <div class="msg-body">
-      <div class="msg-role">${escapeHtml(roleName)}</div>
+      <div class="msg-role">${escapeHtml(roleName)}${metaText ? `<span class="msg-meta">${escapeHtml(metaText)}</span>` : ""}</div>
+      ${thoughts}
       <div class="msg-content">${renderedContent}</div>
-      ${!isUser ? `<button class="msg-raw-toggle" type="button">Ver formato puro</button><pre class="msg-raw hidden">${escapeHtml(content)}</pre>` : ""}
+      ${footer}
     </div>
   `;
-  if (!isUser) {
+
+  if (isUser) {
+    const edit = wrap.querySelector(".btn-edit-msg");
+    if (edit) edit.addEventListener("click", () => startEditMessage(wrap, meta.id, content));
+  } else {
     const toggle = wrap.querySelector(".msg-raw-toggle");
     toggle.addEventListener("click", () => {
       const hidden = wrap.querySelector(".msg-raw").classList.toggle("hidden");
@@ -524,11 +650,20 @@ function appendMessage(role, content, modelName = null) {
   return wrap;
 }
 
+function appendNotice(text) {
+  const n = document.createElement("div");
+  n.className = "msg-notice";
+  n.textContent = text;
+  el.messages.appendChild(n);
+  scrollToBottom();
+}
+
 function appendTyping() {
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
   wrap.dataset.typing = "1";
-  wrap.innerHTML = `<div class="msg-avatar">${ICON.bot}</div><div class="msg-body"><div class="msg-role">Assistente</div><div class="typing"><span></span><span></span><span></span></div></div>`;
+  wrap.dataset.start = String(Date.now());
+  wrap.innerHTML = `<div class="msg-avatar">${ICON.bot}</div><div class="msg-body"><div class="msg-role">Assistente</div><div class="typing-row"><div class="typing"><span></span><span></span><span></span></div><span class="typing-timer">0 s</span></div></div>`;
   el.messages.appendChild(wrap);
   scrollToBottom();
   return wrap;
@@ -536,6 +671,70 @@ function appendTyping() {
 
 function scrollToBottom() {
   requestAnimationFrame(() => { el.messages.scrollTop = el.messages.scrollHeight; });
+}
+
+function setSendButtonMode(isStop) {
+  el.btnSend.innerHTML = isStop ? ICON.stop : ICON.send;
+  el.btnSend.title = isStop ? "Interromper resposta" : "Enviar";
+  el.btnSend.setAttribute("aria-label", isStop ? "Interromper resposta" : "Enviar");
+  el.btnSend.classList.toggle("is-stop", isStop);
+}
+
+async function stopGeneration() {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  if (!state.sending || !chat) return;
+  state.stopRequested = true;
+  try { await api(API.stop(chat.thread_id), { method: "POST" }); } catch (err) {}
+}
+
+function startEditMessage(wrap, messageId, original) {
+  if (wrap.classList.contains("editing")) return;
+  wrap.classList.add("editing");
+  const contentEl = wrap.querySelector(".msg-content");
+  const actions = wrap.querySelector(".msg-actions");
+  const editor = document.createElement("div");
+  editor.className = "msg-editor";
+  editor.innerHTML = `<textarea rows="3"></textarea><div class="msg-editor-actions"><button type="button" class="btn btn-ghost btn-sm" data-act="cancel">Cancelar</button><button type="button" class="btn btn-primary btn-sm" data-act="save">Salvar e reenviar</button></div>`;
+  const ta = editor.querySelector("textarea");
+  ta.value = original;
+  contentEl.classList.add("hidden");
+  if (actions) actions.classList.add("hidden");
+  contentEl.after(editor);
+  ta.focus();
+
+  const close = () => {
+    editor.remove();
+    contentEl.classList.remove("hidden");
+    if (actions) actions.classList.remove("hidden");
+    wrap.classList.remove("editing");
+  };
+  const save = () => {
+    const text = ta.value.trim();
+    if (text) resendEdited(messageId, text);
+  };
+  editor.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  editor.querySelector('[data-act="save"]').addEventListener("click", save);
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+  });
+}
+
+async function resendEdited(messageId, text) {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  if (!chat) return;
+  if (state.sending) {
+    await stopGeneration();
+    for (let i = 0; i < 60 && state.sending; i++) await new Promise((r) => setTimeout(r, 50));
+  }
+  try {
+    await api(API.rewind(chat.thread_id), { method: "POST", body: JSON.stringify({ message_id: messageId }) });
+  } catch (err) {
+    alert("Não foi possível editar a mensagem: " + err.message);
+    return;
+  }
+  await refreshMessages(chat);
+  await sendMessage(text);
 }
 
 async function sendMessage(text) {
@@ -548,8 +747,10 @@ async function sendMessage(text) {
   if (!chat) return;
 
   state.sending = true;
+  state.stopRequested = false;
+  setSendButtonMode(true);
   state.pendingChats.add(chat.id);
-  appendMessage("user", text);
+  appendMessage("user", text, null, { created_at: new Date().toISOString() });
   scrollToBottom();
   const typing = appendTyping();
 
@@ -557,14 +758,26 @@ async function sendMessage(text) {
     const data = await api(API.send, { method: "POST", body: JSON.stringify({ thread_id: chat.thread_id, message: text, workspace_path: state.workspacePath }) });
     if (state.activeId !== chat.id) return;
     typing.remove();
-    appendMessage("assistant", data?.content ?? data?.message, data?.name ?? data?.model);
+    if (data?.cancelled) {
+      await refreshMessages(chat);
+      appendNotice("Resposta interrompida. Você pode editar sua mensagem e enviar de novo.");
+    } else if (!(await refreshMessages(chat))) {
+      appendMessage("assistant", data?.content ?? data?.message ?? "", data?.name ?? data?.model, data || {});
+    }
   } catch (err) {
     if (state.activeId === chat.id) {
       typing.remove();
-      appendMessage("assistant", "Erro ao contatar o servidor.");
+      if (state.stopRequested) {
+        await refreshMessages(chat);
+        appendNotice("Resposta interrompida.");
+      } else {
+        appendMessage("assistant", "Erro ao contatar o servidor.");
+      }
     }
   } finally {
     state.sending = false;
+    state.stopRequested = false;
+    setSendButtonMode(false);
     state.pendingChats.delete(chat.id);
     if (state.activeId === chat.id) {
       scrollToBottom();
@@ -623,8 +836,7 @@ function startPolling() {
         state.expectedAiCount[chat.id] = 0;
       }
       if (msgs.length > visibleMsgs.length) {
-        el.messages.innerHTML = "";
-        msgs.forEach(m => appendMessage(m.role, m.content, m.model));
+        renderHistory(msgs);
         if (state.pendingChats.has(chat.id)) appendTyping();
         scrollToBottom();
       } else if (!state.pendingChats.has(chat.id)) {
@@ -691,12 +903,14 @@ el.chatInput.addEventListener("input", () => {
 el.chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
+    if (state.sending) return; // Enter não interrompe; use o botão ou Esc
     el.chatForm.requestSubmit();
   }
 });
 
 el.chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
+  if (state.sending) { stopGeneration(); return; }
   const text = el.chatInput.value;
   el.chatInput.value = "";
   autoResize();
@@ -735,7 +949,8 @@ if (el.taskForm) {
     const filesStr = el.inputFiles.value.trim();
     const files = filesStr ? filesStr.split(",").map(f => f.trim()).filter(Boolean) : [];
     
-    const payload = { title, description, files, priority: "medium", status: "pending" };
+    const code_snippet = el.inputSnippet.value.trim() || null;
+    const payload = { title, description, files, code_snippet, priority: "medium", status: "pending" };
     
     const chat = state.chats.find(c => c.id === state.activeId);
     if (!chat || !chat.thread_id) return;
@@ -773,6 +988,9 @@ document.addEventListener('click', (event) => {
 });
 
 // Iniciar app
+el.btnTheme.addEventListener("click", toggleTheme);
+applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark");
+setSendButtonMode(false);
 loadChats();
 loadWorkspaces();
 autoResize();
