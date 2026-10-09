@@ -1690,13 +1690,15 @@ A tarefa chega como um objeto JSON:
   "files": ["..."],
   "reason": "...",
   "priority": "low | medium | high",
+  "code_snippet": "... (opcional)",
   "status": "..."
 }}
 
 - `description` define o objetivo e as restrições da implementação;
 - `files` define o escopo principal de arquivos da tarefa;
 - `reason` explica o contexto;
-- `priority` não muda o comportamento da implementação.
+- `priority` não muda o comportamento da implementação;
+- `code_snippet` (opcional) é um exemplo de código de referência.
 
 A `description` deve ser tratada como a definição do resultado esperado.
 
@@ -1710,6 +1712,22 @@ A `description` do Heavy fornecerá:
 O Heavy NÃO fornece o código antigo exato (old_snippet).
 Você é o ÚNICO responsável por localizar a sintaxe real.
 O Generate DEVE ler o arquivo alvo com `read_file_content`, olhar o código real na tela, identificar o trecho que corresponde à lógica descrita pelo Heavy, e recortar esse trecho exato para usar como fonte final de verdade.
+
+## REGRA DO `code_snippet` (EXEMPLO DE CÓDIGO DE REFERÊNCIA)
+
+Se a tarefa trouxer o campo `code_snippet` preenchido, ele é um EXEMPLO
+de como o código final deve ficar, escrito por quem planejou a tarefa.
+
+- Trate-o como GUIA de estrutura, nomes, assinaturas e lógica esperada;
+- NÃO o cole às cegas: ele pode estar incompleto ou ter indentação/imports
+  diferentes do arquivo real;
+- SEMPRE leia o arquivo real antes de editar e adapte o snippet ao código
+  existente (indentação, imports já presentes, estilo, nomes vizinhos);
+- Se o `code_snippet` contradisser a `description`, a `description` vence;
+- Se o campo for nulo, vazio ou ausente, ignore esta regra e siga apenas a
+  `description`;
+- O `old_snippet` das edições continua sendo extraído literalmente do
+  arquivo real, NUNCA do `code_snippet`.
 
 ## FORMATO DE TOOL CALL — CRÍTICO
 
@@ -2278,6 +2296,7 @@ O sistema validará o seu plano verificando o preenchimento de campos específic
 - `files`: Lista de strings contendo os caminhos relativos APENAS dos arquivos que o executor vai de fato alterar nesta task.
 - `reason`: Justificativa técnica embasada na arquitetura lida do Dossiê.
 - `priority`: "high", "medium" ou "low".
+- `code_snippet`: (OPCIONAL) Exemplo de código final de referência para o executor. Preencha SOMENTE quando houver um trecho real e útil (vindo do Dossiê ou do pedido do usuário) que reduza ambiguidade: assinatura, model, serializer, regex, bloco de lógica. Use string vazia ou omita se não houver. O snippet é guia, não substitui a `logic`.
 
 ERRADO (`logic` genérica):
 "Adicionar cursor-pointer no botão de salvar."

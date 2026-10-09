@@ -32,3 +32,6 @@ class TaskModel(Base):
     reason: Mapped[str] = mapped_column(Text, default="")
     priority: Mapped[str] = mapped_column(String(50), default="medium")
     status: Mapped[str] = mapped_column(String(50), default="pending")
+
+    code_snippet: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)

@@ -776,6 +776,21 @@ def _validate_python_edit(before: str, after: str) -> tuple[str | None, str | No
 
     problems: list[str] = []
 
+    late_imports = _late_new_imports(tree_before, tree_after)
+    if late_imports:
+        listing = "\n".join(
+            f"  linha {n.lineno}: {ast.unparse(n)}" for n in late_imports[:5]
+        )
+        return (
+            "ERRO: edição REJEITADA — import(s) novo(s) ficariam DEPOIS de "
+            "funções/classes, no meio ou no fim do arquivo:\n" + listing + "\n"
+            "Imports ficam no TOPO do arquivo. Para só adicionar imports use "
+            "'append_to_file' com SOMENTE as linhas de import (a ferramenta os "
+            "coloca junto aos imports do topo), ou edite o bloco de imports do "
+            "topo com 'edit_existing_file'. NADA foi salvo.",
+            None,
+        )
+
     for key, total in sorted(counts_after.items()):
         if total > 1 and total > counts_before.get(key, 0):
             scope, name = key
@@ -832,6 +847,80 @@ def _validate_python_edit(before: str, after: str) -> tuple[str | None, str | No
     return None, None
 
 
+_IMPORT_NODES = (ast.Import, ast.ImportFrom)
+_DEF_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _first_def_line(tree: ast.Module) -> int | None:
+    lines = [
+        min([node.lineno] + [d.lineno for d in node.decorator_list])
+        for node in tree.body
+        if isinstance(node, _DEF_NODES)
+    ]
+    return min(lines) if lines else None
+
+
+def _late_new_imports(tree_before: ast.Module, tree_after: ast.Module) -> list[ast.stmt]:
+    """Imports de módulo NOVOS que ficariam depois da 1ª função/classe."""
+    first_def = _first_def_line(tree_after)
+    if first_def is None:
+        return []
+    known = {ast.dump(n) for n in tree_before.body if isinstance(n, _IMPORT_NODES)}
+    return [
+        n for n in tree_after.body
+        if isinstance(n, _IMPORT_NODES) and n.lineno > first_def and ast.dump(n) not in known
+    ]
+
+
+def _insert_imports_at_top(original: str, addition: str) -> tuple[str, int, int] | None:
+    """Se `addition` for SÓ imports, devolve (novo_texto, linha_inserida, qtd)
+    colocando-os junto aos imports do topo (e ignorando os que já existem).
+    Retorna None se `addition` tiver qualquer outra coisa além de imports."""
+    try:
+        tree_add = ast.parse(addition)
+        tree_orig = ast.parse(original)
+    except (SyntaxError, ValueError):
+        return None
+
+    if not tree_add.body or not all(isinstance(n, _IMPORT_NODES) for n in tree_add.body):
+        return None
+
+    existing = {ast.dump(n) for n in tree_orig.body if isinstance(n, _IMPORT_NODES)}
+    add_lines = addition.splitlines()
+    chunks = [
+        "\n".join(add_lines[n.lineno - 1 : n.end_lineno])
+        for n in tree_add.body
+        if ast.dump(n) not in existing
+    ]
+    if not chunks:
+        return original, 0, 0
+
+    first_def = _first_def_line(tree_orig)
+    top_imports = [
+        n for n in tree_orig.body
+        if isinstance(n, _IMPORT_NODES) and (first_def is None or n.lineno < first_def)
+    ]
+
+    lines = original.splitlines(keepends=True)
+    if top_imports:
+        index = top_imports[-1].end_lineno
+    else:
+        index = 0
+        body = tree_orig.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(getattr(body[0], "value", None), ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            index = body[0].end_lineno
+
+    if index and not lines[index - 1].endswith("\n"):
+        lines[index - 1] += "\n"
+    lines.insert(index, "\n".join(chunks) + "\n")
+    return "".join(lines), index + 1, len(chunks)
+
+
 def _numbered_window(text: str, first: int, last: int, max_lines: int = 60) -> str:
     lines = text.splitlines()
     first = max(1, first)
@@ -853,70 +942,145 @@ _TRIVIAL_LINES = {
 }
 
 
+def _is_significant(line: str) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= 8 and stripped not in _TRIVIAL_LINES
+
+
+def _non_blank_before(lines: list[str], start_line: int, limit: int) -> list[str]:
+    """Até `limit` linhas não vazias imediatamente ANTES do intervalo (em ordem)."""
+    found: list[str] = []
+    for i in range(start_line - 2, -1, -1):
+        if lines[i].strip():
+            found.append(lines[i].rstrip())
+            if len(found) == limit:
+                break
+    return list(reversed(found))
+
+
+def _non_blank_after(lines: list[str], end_line: int, limit: int) -> list[str]:
+    """Até `limit` linhas não vazias imediatamente DEPOIS do intervalo."""
+    found: list[str] = []
+    for i in range(end_line, len(lines)):
+        if lines[i].strip():
+            found.append(lines[i].rstrip())
+            if len(found) == limit:
+                break
+    return found
+
+
 def _check_boundary_overlap(
     lines: list[str], start_line: int, end_line: int, new_block: str
 ) -> str | None:
-    """Detecta o sintoma clássico de intervalo curto/longo demais: a primeira
-    (ou última) linha do conteúdo novo é IDÊNTICA à linha vizinha do intervalo,
-    ou seja, sobrou/duplicou um pedaço do bloco antigo."""
-    non_blank = [ln for ln in new_block.split("\n") if ln.strip()]
-    if not non_blank:
+    """Detecta o sintoma clássico de intervalo curto/longo demais: o INÍCIO ou o
+    FIM do conteúdo novo repete as linhas vizinhas do intervalo (uma ou várias,
+    com a mesma indentação), ou seja, sobrou/duplicou um pedaço do bloco antigo."""
+    new_lines = [ln.rstrip() for ln in new_block.split("\n") if ln.strip()]
+    if not new_lines:
         return None
 
-    def significant(line: str) -> bool:
-        stripped = line.strip()
-        return len(stripped) >= 8 and stripped not in _TRIVIAL_LINES
+    max_k = 6
 
-    prev_line = next(
-        (lines[i] for i in range(start_line - 2, -1, -1) if lines[i].strip()), None
-    )
-    next_line = next(
-        (lines[i] for i in range(end_line, len(lines)) if lines[i].strip()), None
-    )
+    def meaningful(chunk: list[str]) -> bool:
+        # 1 linha: precisa ser significativa. 2+ linhas: basta uma significativa.
+        return any(_is_significant(ln) for ln in chunk)
 
-    first_new, last_new = non_blank[0], non_blank[-1]
+    following = _non_blank_after(lines, end_line, max_k)
+    tail_k = 0
+    for k in range(1, min(max_k, len(new_lines), len(following)) + 1):
+        if new_lines[-k:] == following[:k] and meaningful(following[:k]):
+            tail_k = k
 
-    if next_line is not None and significant(last_new) and last_new.rstrip() == next_line.rstrip():
+    if tail_k:
+        dup = "\n".join(new_lines[-tail_k:])
         return (
-            "ERRO: edição REJEITADA — a ÚLTIMA linha do conteúdo novo é idêntica à "
-            f"linha logo após o intervalo ('{last_new.strip()}'). Isso indica que o "
-            "intervalo ficou curto e SOBRARIA parte do bloco antigo (duplicação). "
-            "Estenda 'end_line' até o fim do bloco ou remova a linha repetida do "
-            "'new_content'. NADA foi salvo."
+            "ERRO: edição REJEITADA — o FIM do conteúdo novo repete "
+            f"{tail_k} linha(s) que já existem logo APÓS o intervalo:\n{dup}\n"
+            "Isso indica que o intervalo ficou curto e SOBRARIA parte do bloco "
+            "antigo (duplicação). Estenda 'end_line' até o fim do bloco ou "
+            "remova as linhas repetidas do 'new_content'. NADA foi salvo."
         )
 
-    if prev_line is not None and significant(first_new) and first_new.rstrip() == prev_line.rstrip():
+    preceding = _non_blank_before(lines, start_line, max_k)
+    head_k = 0
+    for k in range(1, min(max_k, len(new_lines), len(preceding)) + 1):
+        if new_lines[:k] == preceding[-k:] and meaningful(preceding[-k:]):
+            head_k = k
+
+    if head_k:
+        dup = "\n".join(new_lines[:head_k])
         return (
-            "ERRO: edição REJEITADA — a PRIMEIRA linha do conteúdo novo é idêntica à "
-            f"linha logo antes do intervalo ('{first_new.strip()}'). Isso indica que "
-            "o intervalo começou tarde demais e a linha ficaria duplicada. Ajuste "
-            "'start_line' ou remova a linha repetida do 'new_content'. NADA foi salvo."
+            "ERRO: edição REJEITADA — o INÍCIO do conteúdo novo repete "
+            f"{head_k} linha(s) que já existem logo ANTES do intervalo:\n{dup}\n"
+            "Isso indica que o intervalo começou tarde demais e essas linhas "
+            "ficariam duplicadas. Ajuste 'start_line' ou remova as linhas "
+            "repetidas do 'new_content'. NADA foi salvo."
         )
 
     return None
 
 
-def _lines_match(actual: str, expected: str) -> bool:
-    actual_s = actual.strip()
-    expected_s = expected.strip()
-    if actual_s == expected_s:
-        return True
-    return actual_s == _strip_line_number_prefix(expected_s).strip()
+def _normalize_expected(expected: str, line_no: int | None) -> str:
+    """Remove o prefixo 'N: ' copiado da leitura — mas SÓ se o número for o da
+    linha esperada, para não estragar código legítimo como `1: "a",`."""
+    text = expected.rstrip("\r\n")
+    match = _LINE_NUMBER_PREFIX.match(text)
+    if match:
+        number = int(re.match(r"\s*(\d+)", text).group(1))
+        if line_no is None or number == line_no:
+            text = text[match.end():]
+    return text
+
+
+def _lines_match(
+    actual: str, expected: str, line_no: int | None = None, strict: bool = False
+) -> bool:
+    """Compara a linha real com o texto informado pelo modelo.
+
+    strict=True  -> exige indentação idêntica (só ignora espaços no fim).
+    strict=False -> aceita indentação diferente (o modelo costuma perdê-la),
+                    mas nunca casa linhas vazias."""
+    actual_text = actual.rstrip("\r\n").rstrip()
+    expected_text = _normalize_expected(expected, line_no).rstrip()
+    if actual_text == expected_text:
+        return bool(actual_text.strip())
+    if strict:
+        return False
+    return bool(actual_text.strip()) and actual_text.strip() == expected_text.strip()
 
 
 def _find_shifted_range(
-    lines: list[str], span: int, first_text: str, last_text: str
+    lines: list[str],
+    span: int,
+    first_text: str,
+    last_text: str,
+    orig_start: int | None = None,
+    orig_end: int | None = None,
 ) -> list[tuple[int, int]]:
     """Procura onde o bloco (mesma quantidade de linhas, mesma 1ª e última
-    linha) está AGORA — caso os números de linha tenham ficado desatualizados."""
-    hits = []
-    for start in range(1, len(lines) - span + 2):
-        end = start + span - 1
-        if _lines_match(lines[start - 1], first_text) and _lines_match(
-            lines[end - 1], last_text
-        ):
-            hits.append((start, end))
-    return hits
+    linha) está AGORA — caso os números de linha tenham ficado desatualizados.
+
+    Só aceita busca "frouxa" (sem indentação) quando as duas pontas são linhas
+    significativas; linhas triviais ('pass', 'return', '}') casariam em
+    qualquer lugar e levariam a edição para o ponto errado."""
+
+    def search(strict: bool) -> list[tuple[int, int]]:
+        hits = []
+        for start in range(1, len(lines) - span + 2):
+            end = start + span - 1
+            if _lines_match(lines[start - 1], first_text, orig_start, strict) and \
+                    _lines_match(lines[end - 1], last_text, orig_end, strict):
+                hits.append((start, end))
+        return hits
+
+    hits = search(strict=True)
+    if hits:
+        return hits
+
+    if _is_significant(_normalize_expected(first_text, orig_start)) and \
+            _is_significant(_normalize_expected(last_text, orig_end)):
+        return search(strict=False)
+    return []
 
 
 @tool
@@ -1011,6 +1175,11 @@ def edit_existing_file(
         ferramenta realinha o bloco inteiro e avisa.
       - Não inclua o prefixo 'N: ' das ferramentas de leitura.
       - 'new_content' vazio REMOVE as linhas do intervalo.
+      - 'first_line_text'/'last_line_text' são conferidos com a indentação; se
+        a linha for genérica ('pass', 'return', '}'), informe o número de linha
+        correto e releia antes de editar. NÃO repita no 'new_content' linhas que
+        já existem logo antes/depois do intervalo.
+      - Imports novos em .py vão para o TOPO do arquivo (edite o bloco de imports).
 
     Args:
         file_path: Caminho relativo à raiz do repositório.
@@ -1056,13 +1225,15 @@ def edit_existing_file(
     notes: list[str] = []
 
     # ── 1. Confere se o intervalo ainda é o que o modelo acha que é ──────────
-    ends_match = _lines_match(lines[start_line - 1], first_line_text) and _lines_match(
-        lines[end_line - 1], last_line_text
-    )
+    ends_match = _lines_match(
+        lines[start_line - 1], first_line_text, start_line
+    ) and _lines_match(lines[end_line - 1], last_line_text, end_line)
 
     if not ends_match:
         span = end_line - start_line + 1
-        hits = _find_shifted_range(lines, span, first_line_text, last_line_text)
+        hits = _find_shifted_range(
+            lines, span, first_line_text, last_line_text, start_line, end_line
+        )
 
         if len(hits) == 1:
             new_start, new_end = hits[0]
@@ -1282,7 +1453,8 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
     meio do arquivo, use 'edit_existing_file'.
 
     A ferramenta garante uma quebra de linha entre o que já existe e o que
-    você adiciona. Em arquivos .py o resultado é validado (sintaxe e
+    você adiciona. Se o conteúdo for SOMENTE imports (.py), eles são inseridos
+    automaticamente junto aos imports do topo do arquivo, nunca no final. Em arquivos .py o resultado é validado (sintaxe e
     definições duplicadas): se a função/classe que você está adicionando JÁ
     EXISTE no arquivo, a operação é rejeitada — use 'edit_existing_file'.
 
@@ -1315,6 +1487,29 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
         return f"ERRO ao ler o arquivo '{file_path}': {error}"
 
     addition = _strip_line_numbers_block(content).replace("\r\n", "\n")
+
+    if resolved_path.suffix == ".py":
+        inserted = _insert_imports_at_top(original_content, addition)
+        if inserted is not None:
+            merged, at_line, count = inserted
+            if count == 0:
+                return (
+                    f"Nada a fazer: esses imports já existem em '{file_path}'. "
+                    "O arquivo não foi alterado."
+                )
+            error, _warning = _validate_python_edit(original_content, merged)
+            if error:
+                return error
+            try:
+                _write_text_atomic(resolved_path, merged, newline)
+            except OSError as exc:
+                return f"ERRO ao adicionar imports em '{file_path}': {exc}"
+            return (
+                f"{count} import(s) adicionado(s) em '{file_path}' na linha {at_line}, "
+                "junto aos imports do topo (imports nunca vão para o fim do arquivo). "
+                "As linhas seguintes foram deslocadas; releia antes de usar números "
+                "de linha posteriores."
+            )
 
     if original_content and not original_content.endswith("\n") and not addition.startswith("\n"):
         addition = "\n" + addition

@@ -35,6 +35,7 @@ class GenerateTaskSchema(BaseModel):
     reason: str = ""
     repo_path: str
     priority: Literal["low", "medium", "high"] = "medium"
+    code_snippet: str | None = None
     status: Literal["pending", "queued", "running", "completed", "failed"] = "pending"
     
 
@@ -69,6 +70,15 @@ class HeavyGeneratedTask(BaseModel):
 
     priority: str = Field(
         description="Prioridade técnica da tarefa: alta, média ou baixa."
+    )
+
+    code_snippet: str = Field(
+        default="",
+        description=(
+            "OPCIONAL. Exemplo de código final de referência (assinatura, model, "
+            "regex, bloco de lógica) vindo do dossiê ou do pedido do usuário. "
+            "Use string vazia se não houver."
+        ),
     )
     
 class SecurityFinding(BaseModel):
@@ -114,7 +124,10 @@ class TaskResponseSchema(BaseModel):
     description: str
     files: list[str]
     reason: str
+    priority: str = "medium"
     status: str
+    code_snippet: str | None = None
+    last_error: str | None = None
 
     class Config:
         from_attributes = True
@@ -122,8 +135,9 @@ class TaskResponseSchema(BaseModel):
         
 class TaskCreateSchema(BaseModel):
     title: str
-    description: str
-    files: list[str]
-    reason: str
-    priority: str
+    description: str = ""
+    files: list[str] = Field(default_factory=list)
+    reason: str = ""
+    priority: str = "medium"
     status: str = "pending"
+    code_snippet: str | None = None

@@ -57,6 +57,11 @@ class ChatService:
         return True
     
 class TaskService:
+
+    UPDATABLE_FIELDS = {
+        "title", "description", "files", "reason", "priority",
+        "status", "code_snippet", "last_error",
+    }
     
     def __init__(self, db: AsyncSession):
             self.db = db
@@ -95,7 +100,7 @@ class TaskService:
             return None
             
         for key, value in updates.items():
-            if hasattr(task, key):
+            if key in self.UPDATABLE_FIELDS:
                 setattr(task, key, value)
                 
         await self.db.commit()
