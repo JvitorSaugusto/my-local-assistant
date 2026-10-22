@@ -1,9 +1,7 @@
-import ast
 import asyncio
 import re
 import subprocess
 import time
-import uuid
 from pathlib import Path
 
 from langchain_core.messages import (
@@ -19,7 +17,6 @@ from backend.database.config import async_session_env
 from backend.database.models import TaskModel
 
 from .config import (
-    WRITE_AND_GIT_TOOLS,
     State,
     code_llm_with_tools,
     context_gatherer_llm_with_tools,
@@ -41,9 +38,6 @@ from .prompts import (
     STANDARD_NODE_PROMPT,
 )
 from .node_helpers import (
-    FILE_WRITE_TOOL_NAMES,
-    GENERATE_TOOL_NAMES,
-    WRITE_TOOL_NAMES,
     _check_python_syntax,
     _extract_edited_python_files,
     _extract_gatherer_tool_trace,
@@ -55,7 +49,7 @@ from .node_helpers import (
     now_iso,
     stamp_message,
 )
-from .executor import execute_task, run_checks
+from .executor import execute_task, missing_listed_files, run_checks, workspace_summary
 from .utils import ATTACHMENT_MARKER, detect_explicit_route, strip_leading_tags
 
 
@@ -315,6 +309,7 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
         # depender das anteriores. Se uma tarefa determinística falhar, as
         # seguintes NÃO rodam (ficam 'pending') para não empilhar erro.
         blocked_by: int | None = None
+        ran_inline = False
 
         for task in tasks_to_run:
             if blocked_by is not None:
@@ -326,13 +321,16 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
 
             if task.steps:
                 # Microtask com passos exatos: executa na hora, sem LLM.
+                ran_inline = True
                 task.status = "running"
                 task.attempts = (task.attempts or 0) + 1
                 task.last_error = None
                 await db.commit()
 
                 run = await execute_task(
-                    {"steps": task.steps, "verify": task.verify or []}, workspace_path
+                    {"steps": task.steps, "verify": task.verify or []},
+                    workspace_path,
+                    thread_id,
                 )
 
                 if run.ok:
@@ -344,6 +342,12 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                     report_lines.append(
                         f"✅ #{task.id} {task.title} — {applied} passo(s) aplicado(s){extra}."
                     )
+                    absent = missing_listed_files(task.files, workspace_path)
+                    if absent:
+                        report_lines.append(
+                            f"⚠️ #{task.id}: estes arquivos de 'files' NÃO existem no workspace "
+                            f"(nenhum passo os cria): {', '.join(absent)}"
+                        )
                 else:
                     task.status = "failed"
                     task.last_error = (run.error or "Falha desconhecida.")[:4000]
@@ -395,6 +399,9 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
         report_lines.append(
             f"📤 {dispatched_count} tarefa(s) enviada(s) para execução em background (Celery)."
         )
+
+    if ran_inline:
+        report_lines.append(workspace_summary(workspace_path))
 
     msg_retorno = "\n".join(report_lines)
 
@@ -723,7 +730,59 @@ async def generate_node(state: State):
         raise
 
 
+ATTACHMENT_QA_PROMPT = (
+    "Você é um assistente que responde perguntas sobre arquivos anexados pelo usuário. "
+    "Leia o arquivo com as ferramentas e responda DIRETAMENTE ao que foi perguntado, em "
+    "português, com as suas próprias palavras. Nunca copie nem reproduza o conteúdo do "
+    "arquivo, não reescreva o documento e não transforme a resposta em nota técnica."
+)
+_NOTE_REQUEST_WORDS = ("nota", "anotaç", "anotac", "documenta", "markdown", "guia")
+
+
+def _last_human_text(state: State) -> str:
+    for message in reversed(state["messages"]):
+        if message.type == "human":
+            return message.content if isinstance(message.content, str) else str(message.content)
+    return ""
+
+
+def _is_attachment_question(state: State) -> bool:
+    """True se o usuário anexou arquivo e está PERGUNTANDO sobre ele (não pedindo uma nota)."""
+    text = _last_human_text(state)
+    if ATTACHMENT_MARKER not in text:
+        return False
+    question = text.split(ATTACHMENT_MARKER, 1)[0].lower()
+    return not any(word in question for word in _NOTE_REQUEST_WORDS)
+
+
 def note_draft_node(state: State) -> State:
+    if _is_attachment_question(state):
+        qa_instruction = HumanMessage(
+            content=(
+                "MODO: RESPONDER PERGUNTA SOBRE ARQUIVO ANEXO\n\n"
+                "1) Leia o(s) arquivo(s) listado(s) em '[Arquivos anexados]' com "
+                "`read_file_content` (ou `read_file_chunk` se for grande). Antes de cada "
+                "chamada, escreva uma linha 'Raciocínio: [motivo]'.\n"
+                "2) Depois de ler, responda DIRETAMENTE à pergunta do usuário, com as suas "
+                "palavras. NÃO copie trechos longos, NÃO reproduza a estrutura do arquivo, "
+                "NÃO gere nota técnica nem título com '# '.\n"
+                "3) Se a pergunta for algo como 'do que se trata?', entregue um resumo curto "
+                "(3 a 6 frases): assunto, objetivo e os pontos principais; no máximo uma "
+                "lista curta. Se o usuário perguntou algo específico, responda só isso.\n"
+                "4) Se o arquivo não tiver a informação pedida, diga isso claramente."
+            )
+        )
+        qa_context = [SystemMessage(content=ATTACHMENT_QA_PROMPT)] + state["messages"][-6:] + [qa_instruction]
+        qa_draft = note_llm_draft_with_tools.invoke(qa_context)
+        qa_draft.name = "Qwen3 Notas Draft"
+        qa_draft.additional_kwargs["message_tag"] = "internal_thought_draft"
+        stamp_message(qa_draft)
+        return {
+            "messages": [qa_draft],
+            "active_node": "note_draft_node",
+            "enhanced_prompt": None,
+        }
+
     persona = SystemMessage(content=NOTE_NODE_PROMPT)
 
     recent_messages = state["messages"][-6:]
@@ -780,6 +839,14 @@ def note_refine_node(state: State) -> State:
     draft_content = draft_msg.content
 
     print("\n=== REFINE NODE ===")
+
+    # Pergunta sobre anexo: o rascunho já é a resposta. Reescrevê-lo como nota
+    # técnica foi o que fazia o assistente repetir o arquivo em vez de responder.
+    if _is_attachment_question(state) and draft_content and draft_content.strip():
+        draft_msg.name = "Qwen3 Notas Final (30B)"
+        draft_msg.additional_kwargs["message_tag"] = "response_note"
+        stamp_message(draft_msg)
+        return {"messages": [draft_msg]}
 
     persona = SystemMessage(content=NOTE_NODE_PROMPT)
 
