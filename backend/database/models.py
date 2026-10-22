@@ -35,3 +35,7 @@ class TaskModel(Base):
 
     code_snippet: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+
+    steps: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True, default=None)
+    verify: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True, default=None)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

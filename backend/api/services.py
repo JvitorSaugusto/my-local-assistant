@@ -60,8 +60,9 @@ class TaskService:
 
     UPDATABLE_FIELDS = {
         "title", "description", "files", "reason", "priority",
-        "status", "code_snippet", "last_error",
+        "status", "code_snippet", "last_error", "steps", "verify", "attempts",
     }
+    VALID_STATUSES = {"pending", "queued", "running", "completed", "failed"}
     
     def __init__(self, db: AsyncSession):
             self.db = db
@@ -89,6 +90,41 @@ class TaskService:
         result = await self.db.execute(stmt)
         return result.scalars().all()
     
+    async def get_by_thread(
+        self, thread_id: str, status: str | None = None
+    ) -> Sequence[TaskModel]:
+        """Todas as tarefas da conversa (inclui failed/completed para o painel exibir)."""
+        stmt = select(TaskModel).where(TaskModel.thread_id == thread_id)
+        if status:
+            stmt = stmt.where(TaskModel.status == status)
+        stmt = stmt.order_by(TaskModel.id)
+
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
+
+    async def retry(self, task_id: int) -> TaskModel | None:
+        """Devolve uma tarefa 'failed' para 'pending' (o erro anterior é limpo).
+
+        Retorna None se a tarefa não existir; levanta ValueError se não estiver
+        em um estado que permita reiniciar.
+        """
+        task = await self.db.get(TaskModel, task_id)
+        if not task:
+            return None
+
+        if task.status not in {"failed", "queued", "running"}:
+            raise ValueError(
+                f"Só é possível reiniciar tarefas com falha (status atual: {task.status})."
+            )
+
+        task.status = "pending"
+        task.last_error = None
+
+        await self.db.commit()
+        await self.db.refresh(task)
+
+        return task
+
     async def get_all(self) -> Sequence[TaskModel]:
         stmt = select(TaskModel).order_by(TaskModel.id)
         result = await self.db.execute(stmt)
@@ -99,6 +135,9 @@ class TaskService:
         if not task:
             return None
             
+        if "status" in updates and updates["status"] not in self.VALID_STATUSES:
+            raise ValueError(f"Status inválido: {updates['status']!r}.")
+
         for key, value in updates.items():
             if key in self.UPDATABLE_FIELDS:
                 setattr(task, key, value)
@@ -116,4 +155,4 @@ class TaskService:
         await self.db.delete(task)
         await self.db.commit()
         
-        return True
+        return True

@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import re
 import subprocess
 import time
@@ -54,7 +55,11 @@ from .node_helpers import (
     now_iso,
     stamp_message,
 )
-from .utils import detect_explicit_route, strip_leading_tags
+from .executor import execute_task, run_checks
+from .utils import ATTACHMENT_MARKER, detect_explicit_route, strip_leading_tags
+
+
+ATTACHMENT_FALLBACK_ROUTE = "NOTES"
 
 
 def router_node(state: State):
@@ -165,6 +170,11 @@ def router_node(state: State):
 
     print(f"🔀 [ROUTER] Rota escolhida pelo LLM: '{route}'")
 
+    # Anexos só podem ser lidos por rotas com tools de leitura; NORMAL não tem.
+    if route == "NORMAL" and ATTACHMENT_MARKER in last_msg and state.get("workspace_path"):
+        route = ATTACHMENT_FALLBACK_ROUTE
+        print(f"🔀 [ROUTER] Mensagem com anexos: rota ajustada para '{route}'")
+
     return {
         "actual_route": route,
         "enhance_before_heavy": False,
@@ -265,9 +275,8 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
     if match:
         target_ids = [int(x) for x in re.findall(r"\d+", match.group(1))]
 
-    from tasks import run_generate_task
-
     dispatched_count = 0
+    report_lines: list[str] = []
 
     async with async_session_env() as db:
         stmt = select(TaskModel).where(
@@ -277,7 +286,7 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
         if target_ids:
             stmt = stmt.where(TaskModel.id.in_(target_ids))
 
-        result = await db.execute(stmt)
+        result = await db.execute(stmt.order_by(TaskModel.id))
         tasks_to_run = result.scalars().all()
 
         if not tasks_to_run:
@@ -302,7 +311,52 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                 "active_node": "generate_dispatch_node",
             }
 
+        # Tarefas são processadas em ordem de id: as microtasks costumam
+        # depender das anteriores. Se uma tarefa determinística falhar, as
+        # seguintes NÃO rodam (ficam 'pending') para não empilhar erro.
+        blocked_by: int | None = None
+
         for task in tasks_to_run:
+            if blocked_by is not None:
+                report_lines.append(
+                    f"⏸️ #{task.id} {task.title} — não executada: a tarefa #{blocked_by} "
+                    "falhou antes. Corrija/reinicie a #" f"{blocked_by} e execute de novo."
+                )
+                continue
+
+            if task.steps:
+                # Microtask com passos exatos: executa na hora, sem LLM.
+                task.status = "running"
+                task.attempts = (task.attempts or 0) + 1
+                task.last_error = None
+                await db.commit()
+
+                run = await execute_task(
+                    {"steps": task.steps, "verify": task.verify or []}, workspace_path
+                )
+
+                if run.ok:
+                    applied = sum(1 for item in run.log if item["status"] == "ok")
+                    skipped = sum(1 for item in run.log if item["status"] == "skipped")
+                    task.status = "completed"
+                    task.last_error = None
+                    extra = f", {skipped} já estava(m) aplicado(s)" if skipped else ""
+                    report_lines.append(
+                        f"✅ #{task.id} {task.title} — {applied} passo(s) aplicado(s){extra}."
+                    )
+                else:
+                    task.status = "failed"
+                    task.last_error = (run.error or "Falha desconhecida.")[:4000]
+                    blocked_by = task.id
+                    first_line = (run.error or "").split("\n", 1)[0]
+                    report_lines.append(f"❌ #{task.id} {task.title} — FALHOU. {first_line}")
+
+                await db.commit()
+                continue
+
+            # Tarefa descrita em texto: continua indo para o agente (Celery).
+            from tasks import run_generate_task
+
             task_dict = {
                 "id": task.id,
                 "title": task.title,
@@ -311,20 +365,38 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                 "reason": task.reason,
                 "priority": task.priority,
                 "code_snippet": task.code_snippet,
+                "verify": task.verify or [],
                 "status": "queued",
                 "repo_path": workspace_path,
             }
 
-            run_generate_task.delay(thread_id, task_dict)
-
+            # Grava 'queued' ANTES de enviar: se o worker terminar rápido, o status
+            # final dele (completed/failed) não pode ser sobrescrito por este commit.
             task.status = "queued"
+            task.attempts = (task.attempts or 0) + 1
+            task.last_error = None
+            await db.commit()
+
+            try:
+                run_generate_task.delay(thread_id, task_dict)
+            except Exception as exc:
+                task.status = "failed"
+                task.last_error = f"Não foi possível enviar a tarefa ao Celery/Redis: {exc}"[:4000]
+                blocked_by = task.id
+                await db.commit()
+                report_lines.append(
+                    f"❌ #{task.id} {task.title} — FALHOU ao enviar para o Celery: {exc}"
+                )
+                continue
+
             dispatched_count += 1
 
-        await db.commit()
+    if dispatched_count:
+        report_lines.append(
+            f"📤 {dispatched_count} tarefa(s) enviada(s) para execução em background (Celery)."
+        )
 
-    msg_retorno = (
-        f"{dispatched_count} tarefa(s) enviada(s) para execução em background (Celery)."
-    )
+    msg_retorno = "\n".join(report_lines)
 
     return {
         "messages": [
@@ -542,19 +614,19 @@ async def _generate_node_impl(state: State):
             last_error = None
 
             if not wrote_something:
-                final_status = "pending"
+                final_status = "failed"
                 last_error = (
                     str(response_text_for_error(messages_to_return))
                     if reported_ambiguous
                     else "A IA terminou sem executar nenhuma alteração."
                 )
-                print("⚠️ [GENERATE] Nenhuma alteração feita. Tarefa continua pendente.")
+                print("⚠️ [GENERATE] Nenhuma alteração feita. Tarefa marcada como falha.")
 
             edited_py_files = _extract_edited_python_files(all_messages_this_run)
             syntax_errors = _check_python_syntax(edited_py_files, workspace)
 
             if syntax_errors:
-                final_status = "pending"
+                final_status = "failed"
                 error_report = "\n".join(f"- {err}" for err in syntax_errors)
                 last_error = f"Erro de sintaxe após as edições:\n{error_report}"
 
@@ -563,10 +635,10 @@ async def _generate_node_impl(state: State):
                 messages_to_return.append(
                     AIMessage(
                         content=(
-                            "⚠️ A tarefa continua PENDENTE: os arquivos abaixo "
+                            "❌ A tarefa FALHOU: os arquivos abaixo "
                             "ficaram com erro de sintaxe após as edições e precisam "
                             "de revisão (ex.: `git diff` / `git checkout -- <arquivo>`). "
-                            "Você pode executá-la novamente depois:\n"
+                            "Depois use 'Reiniciar' no painel de tarefas:\n"
                             f"{error_report}"
                         ),
                         name="Qwen3-Coder (Generate)",
@@ -576,6 +648,31 @@ async def _generate_node_impl(state: State):
                         },
                     )
                 )
+
+            if final_status == "completed" and task.verify:
+                check_failures = await asyncio.to_thread(run_checks, task.verify, workspace or "")
+
+                if check_failures:
+                    final_status = "failed"
+                    check_report = "\n".join(f"- {item}" for item in check_failures)
+                    last_error = f"Verificação final falhou:\n{check_report}"
+
+                    print(f"❌ [GENERATE] Verificação final falhou:\n{check_report}")
+
+                    messages_to_return.append(
+                        AIMessage(
+                            content=(
+                                "❌ A tarefa FALHOU na verificação final:\n"
+                                f"{check_report}\n"
+                                "Use 'Reiniciar' no painel de tarefas para tentar de novo."
+                            ),
+                            name="Qwen3-Coder (Generate)",
+                            additional_kwargs={
+                                "message_tag": "internal_verify_gate",
+                                "created_at": now_iso(),
+                            },
+                        )
+                    )
 
             async with async_session_env() as db:
                 stmt = (
@@ -602,27 +699,27 @@ def response_text_for_error(messages) -> str:
     return "A IA reportou que a tarefa é ambígua."
 
 
-async def _reset_task_to_pending(task_id: int, error: str) -> None:
+async def _mark_task_failed(task_id: int, error: str) -> None:
     try:
         async with async_session_env() as db:
             await db.execute(
                 update(TaskModel)
                 .where(TaskModel.id == task_id, TaskModel.status != "completed")
-                .values(status="pending", last_error=error[:2000])
+                .values(status="failed", last_error=error[:2000])
             )
             await db.commit()
     except Exception as db_error:  # nunca esconder o erro original
-        print(f"[GENERATE] Falha ao devolver tarefa {task_id} para pending: {db_error}")
+        print(f"[GENERATE] Falha ao marcar tarefa {task_id} como failed: {db_error}")
 
 
 async def generate_node(state: State):
-    """Executa a tarefa; se der erro no meio, ela volta para 'pending'."""
+    """Executa a tarefa; se der erro no meio, ela fica 'failed' (com o erro) e pode ser reiniciada."""
     try:
         return await _generate_node_impl(state)
     except Exception as exc:
         task = state.get("active_generate_task")
         if task:
-            await _reset_task_to_pending(task.id, f"Erro durante a execução: {exc}")
+            await _mark_task_failed(task.id, f"Erro durante a execução: {exc}")
         raise
 
 

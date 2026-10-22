@@ -19,7 +19,7 @@ from .nodes import (
     generate_node,
 )
 
-from .tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, batch_edit_file, generate_repo_map, list_directory_files, read_file_content, search_in_file, read_file_chunk, validate_python_syntax
+from .tools import append_to_file, create_git_branch, create_new_file, create_pdf_file, edit_existing_file, batch_edit_file, generate_repo_map, list_directory_files, read_file_content, replace_in_file, search_in_file, read_file_chunk, validate_python_syntax, write_markdown_file
 
 
 def build_graph():
@@ -36,6 +36,9 @@ def build_graph():
         edit_existing_file,
         batch_edit_file,
         append_to_file,
+        replace_in_file,
+        write_markdown_file,
+        create_pdf_file,
         validate_python_syntax,
     ]
 
@@ -157,4 +160,4 @@ def build_graph():
 
 def compile_graph():
     return build_graph().compile()
-    
+    

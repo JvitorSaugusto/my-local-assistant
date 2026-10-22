@@ -13,6 +13,8 @@ ENHANCER_TAG_PATTERN = re.compile(
 
 TAG_LOOKAHEAD_CHARS = 50
 
+ATTACHMENT_MARKER = "[Arquivos anexados]"
+
 
 def detect_explicit_route(text: str) -> str | None:
     lookahead_zone = text[:TAG_LOOKAHEAD_CHARS]

@@ -72,6 +72,9 @@ WRITE_TOOL_NAMES = {
     "edit_existing_file",
     "batch_edit_file",
     "append_to_file",
+    "replace_in_file",
+    "write_markdown_file",
+    "create_pdf_file",
     "create_git_branch",
 }
 

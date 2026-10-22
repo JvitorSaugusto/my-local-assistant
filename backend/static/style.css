@@ -2524,3 +2524,58 @@ button {
 .task-error pre { margin: 4px 0 0; font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .modal { max-width: 640px; }
+
+.task-card-failed { border-color: rgba(239, 117, 108, 0.45); }
+.task-footer-right { display: inline-flex; align-items: center; gap: 8px; }
+.task-error pre { max-height: 220px; overflow: auto; }
+
+/* Anexos do chat */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.attachment-chip .attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.attachment-chip .attachment-size {
+  color: var(--faint);
+}
+
+.attachment-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.attachment-chip button:hover {
+  color: var(--danger);
+}
+
+.attachments.uploading {
+  opacity: 0.6;
+  pointer-events: none;
+}

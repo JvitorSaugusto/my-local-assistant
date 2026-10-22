@@ -6,7 +6,7 @@ from langchain_core.messages import BaseMessage
 from typing import Annotated, Literal, NotRequired, TypedDict, cast
 from pydantic import Field
 from backend.api.schemas import GenerateTaskSchema, HeavyAnalysisSchema
-from backend.graph.tools import append_to_file, create_git_branch, create_new_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, search_in_file, list_directory_files, read_file_content, validate_python_syntax
+from backend.graph.tools import append_to_file, create_git_branch, create_new_file, create_pdf_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, replace_in_file, search_in_file, list_directory_files, read_file_content, validate_python_syntax, write_markdown_file
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -47,6 +47,9 @@ WRITE_AND_GIT_TOOLS = [
     edit_existing_file,
     batch_edit_file,
     append_to_file,
+    replace_in_file,
+    write_markdown_file,
+    create_pdf_file,
     read_file_content,
     generate_repo_map,
     list_directory_files,
@@ -91,4 +94,4 @@ heavy_llm_structured = heavy_llm.with_structured_output(HeavyAnalysisSchema)
 code_llm_with_tools = code_llm.bind_tools(FILE_TOOLS_SURGICAL)
 note_llm_draft_with_tools = note_llm_draft.bind_tools(FILE_TOOLS_SURGICAL)
 context_gatherer_llm_with_tools = context_gatherer_llm.bind_tools(FILE_TOOLS_FULL)
-generate_llm_with_tools = generate_llm.bind_tools(WRITE_AND_GIT_TOOLS)
+generate_llm_with_tools = generate_llm.bind_tools(WRITE_AND_GIT_TOOLS)

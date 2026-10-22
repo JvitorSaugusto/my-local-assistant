@@ -10,6 +10,8 @@ import tempfile
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
+from .file_readers import read_text_for_tools
+
 
 MAX_READS_PER_GENERATE_TASK = 50
 
@@ -103,7 +105,9 @@ def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
         )
 
     workspace_path = runtime.state.get("workspace_path")
-    resolved_dir = _resolve_path(dir_path, workspace_path)
+    resolved_dir, path_error = _confined_path(dir_path, workspace_path)
+    if path_error:
+        return path_error
     
     print(f"[LEITURA] resolved_dir={resolved_dir}")
 
@@ -114,6 +118,8 @@ def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
         for file_name in files:
             if Path(file_name).suffix in CODE_EXTENSIONS:
                 file_path = Path(root) / file_name
+                if not _is_inside(file_path, resolved_dir):
+                    continue
                 file_paths.append(str(file_path))
     
     read_count = _count_read_calls(_messages_since_last_human(runtime.state))
@@ -141,10 +147,12 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
         )
 
     workspace_path = runtime.state.get("workspace_path")
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     try:
-        content = resolved_path.read_text(encoding='utf-8')
+        content = read_text_for_tools(resolved_path)
     except Exception as error:
         return f"Erro ao ler o arquivo: {str(error)}"
 
@@ -187,10 +195,12 @@ def read_file_chunk(file_path: str, offset: int, length: int, runtime: ToolRunti
         )
 
     workspace_path = runtime.state.get("workspace_path")
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     try:
-        lines = resolved_path.read_text(encoding='utf-8').splitlines()
+        lines = read_text_for_tools(resolved_path).splitlines()
     except Exception as error:
         return f"Erro ao ler o arquivo: {str(error)}"
 
@@ -241,12 +251,14 @@ def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
         )
 
     workspace_path = runtime.state.get("workspace_path")
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     print(f"[BUSCA] arquivo={resolved_path} pattern={pattern!r}")
 
     try:
-        lines = resolved_path.read_text(encoding='utf-8').splitlines()
+        lines = read_text_for_tools(resolved_path).splitlines()
     except Exception as error:
         print(f"[BUSCA] FALHOU: {error}")
         return f"Erro ao ler o arquivo: {str(error)}"
@@ -310,7 +322,9 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
             "ERRO: nenhum workspace definido para esta conversa."
         )
 
-    resolved_dir = _resolve_path(dir_path, workspace_path)
+    resolved_dir, path_error = _confined_path(dir_path, workspace_path)
+    if path_error:
+        return path_error
 
     print(f"[REPO MAP] dir_path={dir_path}")
     print(f"[REPO MAP] workspace={workspace_path}")
@@ -356,6 +370,9 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
                 continue
 
             file_path = Path(root) / file_name
+
+            if not _is_inside(file_path, resolved_dir):
+                continue
 
             repo_map.append(
                 f"{sub_indent}📄 {file_name}"
@@ -464,6 +481,17 @@ def _check_not_on_protected_branch(file_path: str) -> str | None:
 GENERATE_BRANCHES: dict[str, str] = {}
 GENERATE_BRANCH_CALLS: dict[str, int] = {}
 MAX_BRANCH_CALLS_PER_TASK = 3
+
+
+def reset_branch_call_counter(workspace_path: str | None) -> None:
+    """Zera o contador de chamadas de `create_git_branch` do repositório.
+
+    Deve ser chamado no início de cada execução de tarefa: o worker do Celery é um
+    processo longo e o dict é global, então sem isso o limite vale para o processo
+    inteiro e não para a tarefa."""
+    if not workspace_path:
+        return
+    GENERATE_BRANCH_CALLS.pop(str(Path(workspace_path).resolve()), None)
 
 @tool
 def create_git_branch(branch_name: str, runtime: ToolRuntime) -> str:
@@ -1112,7 +1140,9 @@ def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
         mensagem de erro explicando o motivo da falha.
     """
     workspace_path = runtime.state.get("workspace_path")
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     security_error = _check_not_on_protected_branch(str(resolved_path))
     if security_error:
@@ -1198,7 +1228,9 @@ def edit_existing_file(
         ou mensagem de erro explicando por que nada foi alterado.
     """
     workspace_path = runtime.state.get("workspace_path")
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     security_error = _check_not_on_protected_branch(str(resolved_path))
     if security_error:
@@ -1381,7 +1413,9 @@ def batch_edit_file(file_path: str, edits: list[dict], runtime: ToolRuntime) -> 
         arquivo num estado parcialmente editado e inconsistente.
     """
     workspace_path = runtime.state.get("workspace_path")
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     security_error = _check_not_on_protected_branch(str(resolved_path))
     if security_error:
@@ -1472,7 +1506,9 @@ def append_to_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
         Uma mensagem de sucesso, ou um erro se o arquivo não existir.
     """
     workspace_path = runtime.state.get("workspace_path")
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     security_error = _check_not_on_protected_branch(str(resolved_path))
     if security_error:
@@ -1552,7 +1588,9 @@ def validate_python_syntax(file_path: str, runtime: ToolRuntime) -> str:
     if not workspace_path:
         return "ERRO: nenhum workspace definido para esta conversa."
 
-    resolved_path = _resolve_path(file_path, workspace_path)
+    resolved_path, path_error = _confined_path(file_path, workspace_path)
+    if path_error:
+        return path_error
 
     if not resolved_path.exists():
         return f"ERRO: o arquivo '{file_path}' não existe no workspace."
@@ -1767,3 +1805,335 @@ def validate_python_syntax(file_path: str, runtime: ToolRuntime) -> str:
 #             "ERRO inesperado na ferramenta de commit: "
 #             f"{str(error)}"
 #         )
+
+# ──────────────────────────────────────────────────────────────────────────
+# FERRAMENTAS DE DOCUMENTOS E EDIÇÃO POR TEXTO EXATO
+# Todas confinadas ao workspace: caminho absoluto/`..` fora dele é recusado,
+# e áreas sensíveis (.git, .env, venv, node_modules...) são intocáveis.
+# As funções `apply_*` são reaproveitadas pelo executor determinístico.
+# ──────────────────────────────────────────────────────────────────────────
+
+BLOCKED_PATH_PARTS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+ALLOWED_ENV_NAMES = {".env.example", ".env.sample", ".env.template"}
+DOC_TEXT_SUFFIXES = {".md", ".markdown", ".txt"}
+
+
+def _confined_path(file_path: str, workspace_path: str | None) -> tuple[Path | None, str | None]:
+    """Resolve `file_path` dentro do workspace. Retorna (caminho, None) ou (None, erro)."""
+    if not workspace_path:
+        return None, "ERRO: nenhum workspace definido para esta conversa."
+    if not file_path or not file_path.strip():
+        return None, "ERRO: o caminho do arquivo está vazio."
+
+    root = Path(workspace_path).resolve()
+    candidate = Path(file_path.strip())
+    resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError:
+        return None, (
+            f"ERRO DE SEGURANÇA: '{file_path}' está fora do workspace. "
+            "Use um caminho relativo à raiz do repositório."
+        )
+
+    for part in relative.parts:
+        # Normaliza como o Windows faz: sem ':stream', sem pontos/espaços finais, sem caixa.
+        name = part.split(":", 1)[0].rstrip(" .").lower()
+        if name in BLOCKED_PATH_PARTS:
+            return None, f"ERRO DE SEGURANÇA: '{part}' é uma área protegida e não pode ser acessada."
+        if (name == ".env" or name.startswith(".env.")) and name not in ALLOWED_ENV_NAMES:
+            return None, "ERRO DE SEGURANÇA: arquivos .env não podem ser acessados."
+
+    return resolved, None
+
+
+def _is_inside(path: Path, root: Path) -> bool:
+    """True se `path` (com symlinks resolvidos) continua dentro de `root`."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _find_loose_block(original: str, old: str) -> tuple[int, int] | None:
+    """Procura `old` ignorando diferenças de indentação/espaços nas pontas das linhas.
+    Devolve (linha_inicial, linha_final) 1-indexadas, ou None."""
+    needle = [ln.strip() for ln in old.split("\n")]
+    while needle and not needle[0]:
+        needle.pop(0)
+    while needle and not needle[-1]:
+        needle.pop()
+    if not needle:
+        return None
+
+    hay = [ln.strip() for ln in original.split("\n")]
+    for start in range(len(hay) - len(needle) + 1):
+        if hay[start : start + len(needle)] == needle:
+            return start + 1, start + len(needle)
+    return None
+
+
+def apply_replace_text(
+    workspace_path: str | None,
+    file_path: str,
+    old_text: str,
+    new_text: str,
+    replace_all: bool = False,
+    strip_numbers: bool = True,
+) -> str:
+    """Substitui `old_text` (texto EXATO) por `new_text`. Retorna 'ERRO...' em caso de falha.
+
+    - 0 ocorrências: erro (com dica se o trecho existir com outra indentação);
+      se `new_text` já está no arquivo, devolve 'Nada a fazer' (idempotente).
+    - >1 ocorrência sem `replace_all`: erro listando as linhas.
+    - Em .py a validação de sintaxe/duplicação roda ANTES de gravar.
+    """
+    resolved, error = _confined_path(file_path, workspace_path)
+    if error:
+        return error
+    assert resolved is not None
+
+    security_error = _check_not_on_protected_branch(str(resolved))
+    if security_error:
+        return security_error
+
+    if not resolved.is_file():
+        return f"ERRO: o arquivo '{file_path}' não existe. Use 'create_new_file' para criá-lo."
+
+    try:
+        original, newline = _read_text_keep_newline(resolved)
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"ERRO ao ler '{file_path}': {exc}"
+
+    old = old_text.replace("\r\n", "\n")
+    new = new_text.replace("\r\n", "\n")
+    if strip_numbers:
+        old, new = _strip_line_numbers_block(old), _strip_line_numbers_block(new)
+
+    if not old.strip():
+        return "ERRO: 'old_text' está vazio. Informe o trecho EXATO que deve ser substituído."
+    if old == new:
+        return "Nada a fazer: 'old_text' e 'new_text' são idênticos."
+
+    count = original.count(old)
+
+    if count == 0:
+        if new.strip() and new in original:
+            return f"Nada a fazer: o conteúdo novo já está presente em '{file_path}' (alteração já aplicada)."
+        hint = ""
+        loose = _find_loose_block(original, old)
+        if loose:
+            hint = (
+                "\nO trecho EXISTE, mas com indentação/espaços diferentes. Trecho real "
+                f"(linhas {loose[0]}-{loose[1]}):\n{_numbered_window(original, loose[0], loose[1])}\n"
+                "Copie o texto exatamente como está no arquivo."
+            )
+        return (
+            f"ERRO: 'old_text' não foi encontrado em '{file_path}'. NADA foi alterado.{hint}"
+        )
+
+    if count > 1 and not replace_all:
+        positions = []
+        start = 0
+        while len(positions) < 5:
+            idx = original.find(old, start)
+            if idx == -1:
+                break
+            positions.append(original.count("\n", 0, idx) + 1)
+            start = idx + 1
+        return (
+            f"ERRO: 'old_text' aparece {count}x em '{file_path}' (linhas {positions}"
+            f"{'...' if count > len(positions) else ''}). Inclua mais linhas de contexto "
+            "para torná-lo único, ou use replace_all=true se quiser trocar todas. NADA foi alterado."
+        )
+
+    updated = original.replace(old, new) if replace_all else original.replace(old, new, 1)
+
+    if resolved.suffix == ".py":
+        py_error, _warning = _validate_python_edit(original, updated)
+        if py_error:
+            return py_error
+
+    try:
+        _write_text_atomic(resolved, updated, newline)
+    except OSError as exc:
+        return f"ERRO ao gravar '{file_path}': {exc}"
+
+    line_no = original.count("\n", 0, original.find(old)) + 1
+    replaced = count if replace_all else 1
+    return f"Substituição aplicada em '{file_path}' ({replaced} ocorrência(s), a partir da linha {line_no})."
+
+
+def apply_write_markdown(
+    workspace_path: str | None, file_path: str, content: str, overwrite: bool = False
+) -> str:
+    resolved, error = _confined_path(file_path, workspace_path)
+    if error:
+        return error
+    assert resolved is not None
+
+    if resolved.suffix.lower() not in DOC_TEXT_SUFFIXES:
+        return "ERRO: esta ferramenta só grava .md, .markdown ou .txt. Para PDF use 'create_pdf_file'."
+
+    security_error = _check_not_on_protected_branch(str(resolved))
+    if security_error:
+        return security_error
+
+    text = content.replace("\r\n", "\n")
+    if not text.endswith("\n"):
+        text += "\n"
+
+    newline = "\n"
+    if resolved.exists():
+        if not overwrite:
+            return (
+                f"ERRO: '{file_path}' já existe. Use overwrite=true para sobrescrever "
+                "ou 'replace_in_file'/'append_to_file' para alterar parte dele."
+            )
+        try:
+            _, newline = _read_text_keep_newline(resolved)
+        except (OSError, UnicodeDecodeError):
+            newline = "\n"
+
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        _write_text_atomic(resolved, text, newline)
+    except OSError as exc:
+        return f"ERRO ao gravar '{file_path}': {exc}"
+
+    return f"Arquivo '{file_path}' gravado com sucesso ({len(text)} caracteres)."
+
+
+def apply_create_pdf(
+    workspace_path: str | None,
+    file_path: str,
+    content: str,
+    title: str = "",
+    overwrite: bool = False,
+) -> str:
+    resolved, error = _confined_path(file_path, workspace_path)
+    if error:
+        return error
+    assert resolved is not None
+
+    if resolved.suffix.lower() != ".pdf":
+        return "ERRO: o arquivo de saída precisa terminar em .pdf."
+
+    security_error = _check_not_on_protected_branch(str(resolved))
+    if security_error:
+        return security_error
+
+    if resolved.exists() and not overwrite:
+        return f"ERRO: '{file_path}' já existe. Use overwrite=true para substituir."
+
+    try:
+        from .documents import PdfDependencyError, markdown_to_pdf_bytes
+    except ImportError:  # execução fora do pacote
+        from documents import PdfDependencyError, markdown_to_pdf_bytes  # type: ignore
+
+    try:
+        data = markdown_to_pdf_bytes(content, title)
+    except PdfDependencyError as exc:
+        return f"ERRO: {exc}"
+    except Exception as exc:  # reportlab pode falhar com marcação inválida
+        return f"ERRO ao gerar o PDF: {exc}"
+
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(resolved.parent), prefix=f".{resolved.name}.", suffix=".tmp")
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(data)
+        os.replace(tmp_name, resolved)
+    except OSError as exc:
+        return f"ERRO ao gravar '{file_path}': {exc}"
+
+    return f"PDF '{file_path}' criado com sucesso ({len(data)} bytes)."
+
+
+@tool
+def replace_in_file(
+    file_path: str,
+    old_text: str,
+    new_text: str,
+    runtime: ToolRuntime,
+    replace_all: bool = False,
+) -> str:
+    """Troca um trecho de texto EXATO de um arquivo existente por outro texto.
+
+    É a forma mais simples e segura de editar: você NÃO precisa informar
+    números de linha. Copie `old_text` literalmente do que você leu no arquivo
+    (mesma indentação, mesmos espaços, SEM o prefixo "N: " das linhas) e
+    informe o `new_text` completo que deve ficar no lugar.
+
+    Regras:
+      - `old_text` deve existir no arquivo e ser ÚNICO. Se aparecer mais de
+        uma vez, inclua linhas vizinhas até ficar único (ou use replace_all).
+      - Para substituir uma função inteira, `old_text` deve conter a função
+        inteira e `new_text` a função inteira nova.
+      - Em .py o resultado é validado (sintaxe, duplicações) antes de gravar;
+        se for rejeitado, NADA é salvo.
+      - Bloqueada nas branches main/master e fora do workspace.
+
+    Args:
+        file_path: Caminho RELATIVO à raiz do repositório.
+        old_text: Trecho exato atual (pode ter várias linhas).
+        new_text: Trecho novo que o substitui (string vazia remove o trecho).
+        replace_all: True para trocar TODAS as ocorrências (padrão: False).
+
+    Returns:
+        Mensagem de sucesso ou 'ERRO: ...' explicando o que ajustar.
+    """
+    return apply_replace_text(
+        runtime.state.get("workspace_path"), file_path, old_text, new_text, replace_all
+    )
+
+
+@tool
+def write_markdown_file(
+    file_path: str, content: str, runtime: ToolRuntime, overwrite: bool = False
+) -> str:
+    """Cria (ou sobrescreve) um documento de texto: .md, .markdown ou .txt.
+
+    Use para documentação, relatórios, READMEs, changelogs e notas. Os
+    diretórios intermediários são criados automaticamente. Se o arquivo já
+    existir, só é sobrescrito com overwrite=true — para mudar apenas uma parte
+    use 'replace_in_file' ou 'append_to_file'.
+
+    Args:
+        file_path: Caminho RELATIVO à raiz do repositório (ex.: 'docs/api.md').
+        content: Conteúdo completo do documento em Markdown/texto.
+        overwrite: True para substituir um arquivo existente (padrão: False).
+
+    Returns:
+        Mensagem de sucesso ou 'ERRO: ...'.
+    """
+    return apply_write_markdown(runtime.state.get("workspace_path"), file_path, content, overwrite)
+
+
+@tool
+def create_pdf_file(
+    file_path: str,
+    content: str,
+    runtime: ToolRuntime,
+    title: str = "",
+    overwrite: bool = False,
+) -> str:
+    """Cria um arquivo PDF a partir de texto em Markdown.
+
+    Suporta títulos (#), parágrafos, listas (- e 1.), citações (>), blocos de
+    código (```), tabelas com pipe (| a | b |) e **negrito**/*itálico*/`código`.
+    Não suporta imagens. Se o arquivo já existir, só é substituído com
+    overwrite=true.
+
+    Args:
+        file_path: Caminho RELATIVO terminando em .pdf (ex.: 'docs/relatorio.pdf').
+        content: Conteúdo do documento em Markdown.
+        title: Título opcional exibido no topo da primeira página.
+        overwrite: True para substituir um PDF existente (padrão: False).
+
+    Returns:
+        Mensagem de sucesso ou 'ERRO: ...'.
+    """
+    return apply_create_pdf(runtime.state.get("workspace_path"), file_path, content, title, overwrite)

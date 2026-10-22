@@ -1776,6 +1776,26 @@ Se o sistema estiver utilizando Tool Calling nativo estruturado, use-o
 normalmente. A regra de uma única linha se aplica quando a chamada estiver
 sendo representada em formato XML pelo runtime.
 
+## FERRAMENTAS ADICIONAIS DE ESCRITA
+
+- `replace_in_file(file_path, old_text, new_text)`: troca um trecho de texto
+  EXATO por outro, SEM números de linha. É a opção mais simples para uma
+  edição pontual: copie `old_text` literalmente da leitura (sem o prefixo
+  "N: "), com a mesma indentação, e garanta que ele seja ÚNICO no arquivo
+  (inclua linhas vizinhas se necessário). Para trocar uma função inteira,
+  `old_text` é a função inteira e `new_text` a função nova inteira.
+  Use `edit_existing_file` / `batch_edit_file` quando preferir editar por
+  intervalo de linhas ou fizer várias edições no mesmo arquivo.
+- `write_markdown_file(file_path, content, overwrite)`: cria documentos
+  .md/.markdown/.txt (README, docs, relatórios). Só sobrescreve com
+  overwrite=true.
+- `create_pdf_file(file_path, content, title, overwrite)`: cria um PDF a
+  partir de Markdown (títulos, listas, tabelas, blocos de código). Não
+  suporta imagens.
+
+Se a tarefa pedir um arquivo novo de documentação ou relatório, use essas
+ferramentas em vez de `create_new_file`.
+
 ## FLUXO OBRIGATÓRIO
 
 1. Leia a tarefa.
@@ -2418,4 +2438,4 @@ No MODO AUDITORIA DE SEGURANÇA (MODO 3):
 - NÃO liste as vulnerabilidades/achados dentro da string `analysis`. Os achados devem ser inseridos EXCLUSIVAMENTE como itens na lista `security_findings` (para avaliação de exploitability);
 - NÃO gere tarefas executáveis de correção;
 - Mantenha a lista `tasks` estritamente vazia [].
-"""
+"""

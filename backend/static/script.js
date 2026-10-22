@@ -11,12 +11,20 @@ const API = {
   createTask: (threadId) => `/api/tasks/${threadId}`,
   updateTask: (taskId) => `/api/tasks/${taskId}`,
   deleteTask: (taskId) => `/api/tasks/${taskId}`,
+  retryTask: (taskId) => `/api/tasks/${taskId}/retry`,
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
   send: "/api/ai/",
   stop: (threadId) => `/api/ai/${threadId}/stop`,
   rewind: (threadId) => `/api/ai/${threadId}/rewind`,
   batch: "/api/ai/batch/",
+  upload: (threadId) => `/api/uploads/${encodeURIComponent(threadId)}`,
 };
+
+// Deve ser igual a ATTACHMENT_MARKER em backend/graph/utils.py
+const ATTACHMENT_MARKER = "[Arquivos anexados]";
+const ATTACH_EXTENSIONS = [".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx"];
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACH_MAX_FILES = 5;
 
 // ============================================================
 // ELEMENTOS
@@ -34,6 +42,9 @@ const el = {
   messages: document.getElementById("messages"),
   chatForm: document.getElementById("chat-form"),
   chatInput: document.getElementById("chat-input"),
+  btnAttach: document.getElementById("btn-attach"),
+  attachInput: document.getElementById("attach-input"),
+  attachments: document.getElementById("attachments"),
   btnHeavy: document.getElementById("btn-heavy"),
   btnSend: document.getElementById("btn-send"),
   btnTheme: document.getElementById("btn-theme"),
@@ -102,6 +113,8 @@ const state = {
   expectedAiCount: {},
   workspacePath: "",
   workspaces: [],
+  attachments: [], // File[] aguardando envio junto com a próxima mensagem
+  uploading: false,
   currentTasks: [], // Guarda as tarefas exibidas em tela para edição rápida
   tasksSig: null,
   stopRequested: false,
@@ -440,9 +453,12 @@ function normalizeTaskDescription(desc) {
 function renderTasks(tasks) {
   el.tasksList.innerHTML = "";
   const pendingTasks = tasks.filter((task) => task.status === "pending");
-  el.tasksCount.textContent = pendingTasks.length
-    ? `${pendingTasks.length} tarefa(s) pendente(s)`
-    : "Nenhuma tarefa pendente.";
+  const failedTasks = tasks.filter((task) => task.status === "failed");
+  el.tasksCount.textContent =
+    (pendingTasks.length
+      ? `${pendingTasks.length} tarefa(s) pendente(s)`
+      : "Nenhuma tarefa pendente.") +
+    (failedTasks.length ? ` · ${failedTasks.length} com falha` : "");
 
   el.btnExecuteTasks.disabled = !pendingTasks.length;
 
@@ -453,11 +469,16 @@ function renderTasks(tasks) {
 
   tasks.forEach((task) => {
     const card = document.createElement("article");
-    card.className = "task-card";
+    const failed = task.status === "failed";
+    card.className = "task-card" + (failed ? " task-card-failed" : "");
     const files = Array.isArray(task.files) ? task.files : [];
     const desc = normalizeTaskDescription(task.description);
     const snippet = String(task.code_snippet || "").trim();
     const long = desc.length > 320;
+    const steps = Array.isArray(task.steps) ? task.steps : [];
+    const stepsText = steps
+      .map((step, i) => `${i + 1}. ${step.op}${step.path ? " " + step.path : ""}${step.branch ? " " + step.branch : ""}`)
+      .join("\n");
 
     card.innerHTML = `
       <div class="task-card-head">
@@ -473,7 +494,8 @@ function renderTasks(tasks) {
       ${desc ? `<div class="task-card-description md${long ? " clamped" : ""}">${renderContent(desc)}</div>` : ""}
       ${long ? `<button type="button" class="task-expand">Ver mais</button>` : ""}
       ${snippet ? `<details class="task-snippet"><summary>Código de referência</summary><pre><code>${escapeHtml(snippet)}</code></pre></details>` : ""}
-      ${task.last_error ? `<div class="task-error"><strong>Última tentativa não terminou</strong><pre>${escapeHtml(task.last_error)}</pre></div>` : ""}
+      ${steps.length ? `<details class="task-snippet"><summary>Passos (${steps.length})</summary><pre><code>${escapeHtml(stepsText)}</code></pre></details>` : ""}
+      ${task.last_error ? `<div class="task-error"><strong>${failed ? "Falhou" : "Última tentativa não terminou"}</strong><pre>${escapeHtml(task.last_error)}</pre></div>` : ""}
       ${files.length ? `
         <div class="task-files">
           ${files.map((file) => `<span class="task-file" title="${escapeHtml(file)}">${escapeHtml(file)}</span>`).join("")}
@@ -481,7 +503,10 @@ function renderTasks(tasks) {
       }
       <div class="task-card-footer">
         <span class="task-priority">${escapeHtml(task.priority || "medium")}</span>
-        <span class="task-status ${escapeHtml(task.status || "pending")}">${escapeHtml(task.status || "pending")}</span>
+        <span class="task-footer-right">
+          ${failed ? `<button type="button" class="btn btn-ghost btn-sm btn-retry-task" data-task-id="${task.id}">Reiniciar</button>` : ""}
+          <span class="task-status ${escapeHtml(task.status || "pending")}">${escapeHtml(task.status || "pending")}</span>
+        </span>
       </div>
     `;
 
@@ -524,6 +549,21 @@ async function deleteTaskAction(taskId) {
     if (chat?.thread_id) loadTasks(chat.thread_id);
   } catch (error) {
     alert("Erro ao deletar: " + error.message);
+  }
+}
+
+async function retryTaskAction(taskId) {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  if (!chat?.thread_id) return;
+  try {
+    await api(API.retryTask(taskId), { method: "POST" });
+    await loadTasks(chat.thread_id);
+    el.tasksPanel.classList.add("hidden");
+    await sendMessage(`@generate ${taskId}`);
+    await loadTasks(chat.thread_id);
+  } catch (error) {
+    alert("Não foi possível reiniciar a tarefa: " + error.message);
+    loadTasks(chat.thread_id);
   }
 }
 
@@ -737,6 +777,103 @@ async function resendEdited(messageId, text) {
   await sendMessage(text);
 }
 
+// ============================================================
+// ANEXOS
+// ============================================================
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderAttachments() {
+  el.attachments.innerHTML = "";
+  el.attachments.classList.toggle("hidden", state.attachments.length === 0);
+  el.attachments.classList.toggle("uploading", state.uploading);
+
+  state.attachments.forEach((file, index) => {
+    const chip = document.createElement("span");
+    chip.className = "attachment-chip";
+    chip.innerHTML = `
+      <span class="attachment-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+      <span class="attachment-size">${formatBytes(file.size)}</span>
+      <button type="button" title="Remover anexo" aria-label="Remover anexo">×</button>
+    `;
+    chip.querySelector("button").addEventListener("click", () => {
+      state.attachments.splice(index, 1);
+      renderAttachments();
+    });
+    el.attachments.appendChild(chip);
+  });
+}
+
+function addAttachments(fileList) {
+  const rejected = [];
+  for (const file of fileList) {
+    const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
+    if (!ATTACH_EXTENSIONS.includes(ext)) {
+      rejected.push(`${file.name}: extensão não permitida`);
+    } else if (file.size > ATTACH_MAX_BYTES) {
+      rejected.push(`${file.name}: maior que ${formatBytes(ATTACH_MAX_BYTES)}`);
+    } else if (file.size === 0) {
+      rejected.push(`${file.name}: arquivo vazio`);
+    } else if (state.attachments.length >= ATTACH_MAX_FILES) {
+      rejected.push(`${file.name}: limite de ${ATTACH_MAX_FILES} anexos por mensagem`);
+    } else {
+      state.attachments.push(file);
+    }
+  }
+  renderAttachments();
+  if (rejected.length) alert("Alguns arquivos não foram anexados:\n" + rejected.join("\n"));
+}
+
+// Envia os anexos ao workspace e devolve o texto final da mensagem (ou null se falhar).
+async function composeWithAttachments(text) {
+  if (!state.workspacePath) {
+    alert("Defina um diretório de trabalho para poder anexar arquivos.");
+    return null;
+  }
+  if (state.activeId == null) {
+    await createChat();
+    if (state.activeId == null) return null;
+  }
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  if (!chat) return null;
+
+  state.uploading = true;
+  renderAttachments();
+  try {
+    for (const file of state.attachments) {
+      if (file.uploadedPath) continue; // já enviado numa tentativa anterior
+      const form = new FormData();
+      form.append("workspace_path", state.workspacePath);
+      form.append("file", file);
+      const res = await fetch(API.upload(chat.thread_id), { method: "POST", body: form });
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.json())?.detail || ""; } catch {}
+        throw new Error(`${file.name}: ${detail || "HTTP " + res.status}`);
+      }
+      file.uploadedPath = (await res.json()).path;
+    }
+  } catch (err) {
+    alert("Falha ao enviar anexo: " + err.message);
+    return null;
+  } finally {
+    state.uploading = false;
+    renderAttachments();
+  }
+
+  const paths = state.attachments.map((file) => file.uploadedPath);
+  state.attachments = [];
+  renderAttachments();
+
+  const base = text.trim() || "Analise os arquivos anexados.";
+  return `${base}\n\n${ATTACHMENT_MARKER} (leia com read_file_content, read_file_chunk ou search_in_file):\n` +
+    paths.map((path) => `- ${path}`).join("\n");
+}
+
 async function sendMessage(text) {
   if (!text.trim() || state.sending) return;
   if (state.activeId == null) {
@@ -908,14 +1045,26 @@ el.chatInput.addEventListener("keydown", (event) => {
   }
 });
 
-el.chatForm.addEventListener("submit", (e) => {
+el.chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (state.sending) { stopGeneration(); return; }
-  const text = el.chatInput.value;
+  if (state.uploading) return;
+  let text = el.chatInput.value;
+  if (state.attachments.length) {
+    const composed = await composeWithAttachments(text);
+    if (composed === null) return; // mantém texto e anexos para tentar de novo
+    text = composed;
+  }
   el.chatInput.value = "";
   autoResize();
   syncChips();
   sendMessage(text);
+});
+
+el.btnAttach.addEventListener("click", () => el.attachInput.click());
+el.attachInput.addEventListener("change", () => {
+  addAttachments(Array.from(el.attachInput.files || []));
+  el.attachInput.value = "";
 });
 
 el.btnToggleBatch.addEventListener("click", () => el.batchPanel.classList.toggle("hidden"));
@@ -979,6 +1128,13 @@ document.addEventListener('click', (event) => {
     return;
   }
   
+  const btnRetry = event.target.closest('.btn-retry-task');
+  if (btnRetry) {
+    const taskId = parseInt(btnRetry.getAttribute('data-task-id'));
+    if (taskId) retryTaskAction(taskId);
+    return;
+  }
+
   const btnDelete = event.target.closest('.btn-delete-task');
   if (btnDelete) {
     const taskId = parseInt(btnDelete.getAttribute('data-task-id'));
@@ -1046,11 +1202,18 @@ el.importTasksForm.addEventListener('submit', async (event) => {
       // Fecha o modal
       el.importTasksModal.close();
     } else {
-      alert('Erro ao importar tarefas. Verifique o console para mais detalhes.');
+      let detail = '';
+      try {
+        const body = await response.json();
+        detail = Array.isArray(body?.detail)
+          ? body.detail.slice(0, 3).map((d) => `• ${(d.loc || []).filter((x) => x !== 'body').join('.')}: ${d.msg}`).join('\n')
+          : (body?.detail || '');
+      } catch {}
+      alert('Erro ao importar tarefas.' + (detail ? '\n\n' + detail : ''));
       console.error('Erro na importação:', response);
     }
   } catch (error) {
     alert('Erro ao fazer parse do JSON. Verifique se o formato está correto.');
     console.error('Erro de parsing:', error);
   }
-});
+});

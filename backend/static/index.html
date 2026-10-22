@@ -180,7 +180,12 @@
         <form id="chat-form" class="chat-form">
           <div class="composer">
             <div class="composer-tools">
-              
+              <button type="button" id="btn-attach" class="chip" title="Anexar arquivos (md, txt, py, json, csv, pdf, docx — até 10 MB)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                Anexar
+              </button>
+              <input type="file" id="attach-input" multiple hidden accept=".md,.txt,.py,.json,.csv,.pdf,.docx">
+
               <button type="button" id="btn-heavy" class="chip" title="Inserir @heavy para usar o modelo especialista">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg>
                 @heavy
@@ -194,6 +199,8 @@
               <span class="chip-hint">Tags de roteamento manual</span>
             </div>
             
+            <div id="attachments" class="attachments hidden"></div>
+
             <div class="composer-field">
               <textarea id="chat-input" rows="1" placeholder="Digite sua mensagem para a IA..." autocomplete="off"></textarea>
               <button type="submit" id="btn-send" class="btn btn-primary btn-send" title="Enviar" aria-label="Enviar">

@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Literal
+from pydantic import BaseModel, Field, field_validator
+from typing import Annotated, Literal, Union
 from datetime import datetime
 
 
@@ -27,6 +27,96 @@ class BatchRequestSchema(BaseModel):
     prompts: list[str]
     
 
+# ----------------------------------------------------------------------
+# MICROTASKS EXECUTÁVEIS
+# Cada passo é uma operação EXATA (sem LLM): quem planeja (ex.: Claude) já
+# entrega o texto/código final, e o executor apenas aplica e verifica.
+# ----------------------------------------------------------------------
+
+class _PathMixin(BaseModel):
+    path: str = Field(description="Caminho RELATIVO à raiz do workspace.")
+
+    @field_validator("path")
+    @classmethod
+    def _path_not_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("path não pode ser vazio")
+        return value
+
+
+class StepCreateBranch(BaseModel):
+    op: Literal["create_branch"]
+    branch: str = Field(description="Ex.: feature/pdf-tools. Se já estiver numa branch segura, é reaproveitada.")
+
+
+class StepCreateFile(_PathMixin):
+    op: Literal["create_file"]
+    content: str = Field(description="Conteúdo COMPLETO do arquivo novo.")
+
+
+class StepReplaceText(_PathMixin):
+    op: Literal["replace_text"]
+    old: str = Field(description="Trecho EXATO atual do arquivo (único, ou use occurrences='all').")
+    new: str = Field(description="Trecho novo que o substitui.")
+    occurrences: Literal["one", "all"] = "one"
+
+
+class StepAppend(_PathMixin):
+    op: Literal["append"]
+    content: str
+
+
+class StepWriteMarkdown(_PathMixin):
+    op: Literal["write_markdown"]
+    content: str
+    overwrite: bool = False
+
+
+class StepCreatePdf(_PathMixin):
+    op: Literal["create_pdf"]
+    content: str = Field(description="Conteúdo em Markdown.")
+    title: str = ""
+    overwrite: bool = False
+
+
+TaskStep = Annotated[
+    Union[
+        StepCreateBranch,
+        StepCreateFile,
+        StepReplaceText,
+        StepAppend,
+        StepWriteMarkdown,
+        StepCreatePdf,
+    ],
+    Field(discriminator="op"),
+]
+
+
+class CheckFileExists(_PathMixin):
+    type: Literal["file_exists"]
+
+
+class CheckContains(_PathMixin):
+    type: Literal["contains"]
+    text: str
+
+
+class CheckNotContains(_PathMixin):
+    type: Literal["not_contains"]
+    text: str
+
+
+class CheckPythonSyntax(_PathMixin):
+    type: Literal["python_syntax"]
+
+
+TaskCheck = Annotated[
+    Union[CheckFileExists, CheckContains, CheckNotContains, CheckPythonSyntax],
+    Field(discriminator="type"),
+]
+
+
 class GenerateTaskSchema(BaseModel):
     id: int
     title: str
@@ -37,6 +127,7 @@ class GenerateTaskSchema(BaseModel):
     priority: Literal["low", "medium", "high"] = "medium"
     code_snippet: str | None = None
     status: Literal["pending", "queued", "running", "completed", "failed"] = "pending"
+    verify: list[TaskCheck] = Field(default_factory=list)
     
 
 class HeavyGeneratedTask(BaseModel):
@@ -128,6 +219,9 @@ class TaskResponseSchema(BaseModel):
     status: str
     code_snippet: str | None = None
     last_error: str | None = None
+    steps: list[dict] | None = None
+    verify: list[dict] | None = None
+    attempts: int = 0
 
     class Config:
         from_attributes = True
@@ -141,3 +235,5 @@ class TaskCreateSchema(BaseModel):
     priority: str = "medium"
     status: str = "pending"
     code_snippet: str | None = None
+    steps: list[TaskStep] | None = None
+    verify: list[TaskCheck] | None = None

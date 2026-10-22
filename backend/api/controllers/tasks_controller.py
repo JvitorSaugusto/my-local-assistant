@@ -25,7 +25,10 @@ async def list_tasks(service: TaskServiceDep):
 
 @task_router.put("/{task_id}", response_model=TaskResponseSchema)
 async def update_task(task_id: int, updates: dict, service: TaskServiceDep):
-    task = await service.update(task_id, updates)
+    try:
+        task = await service.update(task_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return task
@@ -40,5 +43,19 @@ async def delete_task(task_id: int, service: TaskServiceDep):
 
 
 @task_router.get("/{thread_id}/tasks", response_model=list[TaskResponseSchema])
-async def get_pending_tasks(thread_id: str, service: TaskServiceDep):
-    return await service.get_pending_by_thread(thread_id)
+async def get_thread_tasks(thread_id: str, service: TaskServiceDep, status: str | None = None):
+    """Todas as tarefas da conversa. Use ?status=pending para filtrar."""
+    return await service.get_by_thread(thread_id, status)
+
+
+@task_router.post("/{task_id}/retry", response_model=TaskResponseSchema)
+async def retry_task(task_id: int, service: TaskServiceDep):
+    """Reinicia uma tarefa que falhou (volta para 'pending')."""
+    try:
+        task = await service.retry(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    return task
