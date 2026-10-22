@@ -13,10 +13,18 @@ from typing import Awaitable, Callable
 
 UPLOAD_DIR_NAME = ".assistant_uploads"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_ZIP_BYTES = 50 * 1024 * 1024
 MAX_FILES_PER_THREAD = 50
 CHUNK_SIZE = 64 * 1024
-ALLOWED_EXTENSIONS = {".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx"}
-TEXT_EXTENSIONS = {".md", ".txt", ".py", ".json", ".csv"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"}
+ALLOWED_EXTENSIONS = {
+    ".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx", ".svg", ".zip", *IMAGE_EXTENSIONS,
+}
+TEXT_EXTENSIONS = {".md", ".txt", ".py", ".json", ".csv", ".svg"}
+
+
+def max_bytes_for(ext: str) -> int:
+    return MAX_ZIP_BYTES if ext == ".zip" else MAX_UPLOAD_BYTES
 
 _WINDOWS_RESERVED = {
     "con", "prn", "aux", "nul",
@@ -65,6 +73,18 @@ def _validate_first_chunk(ext: str, chunk: bytes) -> None:
         raise UploadError("O arquivo não parece ser um PDF válido.", 415)
     if ext == ".docx" and not chunk.startswith(b"PK\x03\x04"):
         raise UploadError("O arquivo não parece ser um DOCX válido.", 415)
+    if ext == ".zip" and not (chunk.startswith(b"PK\x03\x04") or chunk.startswith(b"PK\x05\x06")):
+        raise UploadError("O arquivo não parece ser um ZIP válido.", 415)
+    magic = {
+        ".png": (b"\x89PNG",),
+        ".jpg": (b"\xff\xd8\xff",),
+        ".jpeg": (b"\xff\xd8\xff",),
+        ".gif": (b"GIF87a", b"GIF89a"),
+        ".webp": (b"RIFF",),
+        ".ico": (b"\x00\x00\x01\x00", b"\x00\x00\x02\x00"),
+    }.get(ext)
+    if magic and not chunk.startswith(magic):
+        raise UploadError(f"O arquivo não parece ser uma imagem {ext} válida.", 415)
     if ext in TEXT_EXTENSIONS and b"\x00" in chunk:
         raise UploadError("O arquivo contém dados binários, mas a extensão é de texto.", 415)
 
@@ -117,6 +137,7 @@ async def save_upload(
     if len(existing) >= MAX_FILES_PER_THREAD:
         raise UploadError(f"Limite de {MAX_FILES_PER_THREAD} anexos por conversa atingido.", 409)
 
+    limit = max_bytes_for(ext)
     first = await read_chunk(CHUNK_SIZE)
     if not first:
         raise UploadError("Arquivo vazio.")
@@ -142,9 +163,9 @@ async def save_upload(
             chunk = first
             while chunk:
                 size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
+                if size > limit:
                     raise UploadError(
-                        f"Arquivo maior que o limite de {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.", 413
+                        f"Arquivo maior que o limite de {limit // (1024 * 1024)} MB.", 413
                     )
                 handle.write(chunk)
                 chunk = await read_chunk(CHUNK_SIZE)
@@ -161,3 +182,46 @@ async def save_upload(
         "name": final_path.name,
         "size": size,
     }
+
+
+def list_uploads(workspace_path: str, thread_id: str) -> list[dict]:
+    """Anexos já enviados desta conversa: [{name, path, size}] (mais recentes primeiro)."""
+    if not workspace_path or not workspace_path.strip():
+        raise UploadError("Defina um diretório de trabalho antes de listar anexos.")
+    root = Path(workspace_path.strip()).resolve()
+    if not root.is_dir():
+        raise UploadError("O diretório de trabalho não existe.")
+    folder = root / UPLOAD_DIR_NAME / sanitize_thread_id(thread_id)
+    if not folder.is_dir():
+        return []
+    files = [p for p in folder.iterdir() if p.is_file() and not p.is_symlink()]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [
+        {"name": p.name, "path": p.relative_to(root).as_posix(), "size": p.stat().st_size}
+        for p in files
+    ]
+
+
+def find_upload(workspace_path: str, thread_id: str | None, source: str) -> tuple[Path | None, str | None]:
+    """Resolve o NOME de um anexo desta conversa. Devolve (arquivo, None) ou (None, erro)."""
+    if not thread_id:
+        return None, "ERRO: esta execução não tem conversa associada, então não há anexos."
+    root = Path(workspace_path).resolve()
+    try:
+        folder = (root / UPLOAD_DIR_NAME / sanitize_thread_id(thread_id)).resolve()
+        folder.relative_to(root)
+    except (UploadError, ValueError):
+        return None, "ERRO: pasta de anexos inválida."
+
+    name = (source or "").replace("\\", "/").split("/")[-1].strip()
+    available = (
+        sorted(p.name for p in folder.iterdir() if p.is_file() and not p.is_symlink())
+        if folder.is_dir() else []
+    )
+    match = next((n for n in available if n == name), None) or next(
+        (n for n in available if n.lower() == name.lower()), None
+    )
+    if not match:
+        shown = ", ".join(available) if available else "nenhum anexo enviado nesta conversa"
+        return None, f"ERRO: anexo '{source}' não encontrado. Anexos disponíveis: {shown}."
+    return folder / match, None

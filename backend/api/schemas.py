@@ -80,6 +80,35 @@ class StepCreatePdf(_PathMixin):
     overwrite: bool = False
 
 
+class StepCopyUpload(_PathMixin):
+    op: Literal["copy_upload"]
+    source: str = Field(description="NOME do arquivo anexado (ex.: favicon.png), enviado pelo botão Anexar.")
+    overwrite: bool = False
+
+    @field_validator("source")
+    @classmethod
+    def _source_not_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("source não pode ser vazio")
+        return value
+
+
+class StepExtractZip(_PathMixin):
+    op: Literal["extract_zip"]
+    source: str = Field(description="NOME do .zip anexado. `path` é a PASTA de destino ('.' = raiz).")
+    on_conflict: Literal["skip", "overwrite"] = "skip"
+    strip_top_folder: bool = True
+
+    @field_validator("source")
+    @classmethod
+    def _source_not_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("source não pode ser vazio")
+        return value
+
+
 TaskStep = Annotated[
     Union[
         StepCreateBranch,
@@ -88,6 +117,8 @@ TaskStep = Annotated[
         StepAppend,
         StepWriteMarkdown,
         StepCreatePdf,
+        StepCopyUpload,
+        StepExtractZip,
     ],
     Field(discriminator="op"),
 ]

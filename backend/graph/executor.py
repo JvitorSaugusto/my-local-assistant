@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import threading
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,9 +30,11 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from backend.api.schemas import TaskCheck, TaskStep
+from backend.api.uploads import find_upload
 
 from .tools import (
     PROTECTED_BRANCHES,
+    _check_not_on_protected_branch,
     _confined_path,
     _read_text_keep_newline,
     append_to_file,
@@ -237,7 +240,201 @@ def _step_create_pdf(workspace: str, step) -> tuple[str, str]:
     return _classify(result), result
 
 
-def _run_step(workspace: str, step, later_steps: list[Any]) -> tuple[str, str]:
+# Limites do extract_zip (proteção contra zip bomb / zip slip).
+ZIP_MAX_ENTRIES = 5000
+ZIP_MAX_FILE_BYTES = 25 * 1024 * 1024
+ZIP_MAX_TOTAL_BYTES = 200 * 1024 * 1024
+_ZIP_JUNK = ("__macosx/",)
+_ZIP_JUNK_NAMES = {".ds_store", "thumbs.db"}
+
+
+def _write_bytes_atomic(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _step_copy_upload(workspace: str, thread_id: str | None, step) -> tuple[str, str]:
+    source, error = find_upload(workspace, thread_id, step.source)
+    if error:
+        return "failed", error
+    assert source is not None
+
+    resolved, error = _confined_path(step.path, workspace)
+    if error:
+        return "failed", error
+    assert resolved is not None
+
+    if resolved.is_dir():
+        return "failed", (
+            f"'{step.path}' é uma pasta. Informe o caminho do arquivo final "
+            f"(ex.: {step.path.rstrip('/')}/{source.name})."
+        )
+
+    security_error = _check_not_on_protected_branch(str(resolved))
+    if security_error:
+        return "failed", security_error
+
+    data = source.read_bytes()
+    if resolved.exists():
+        try:
+            if resolved.read_bytes() == data:
+                return "skipped", f"'{step.path}' já existe com exatamente o conteúdo do anexo."
+        except OSError as exc:
+            return "failed", f"não foi possível ler '{step.path}': {exc}"
+        if not step.overwrite:
+            return "failed", (
+                f"'{step.path}' já existe com conteúdo DIFERENTE. "
+                "Use overwrite=true para substituí-lo pelo anexo."
+            )
+
+    try:
+        _write_bytes_atomic(resolved, data)
+    except OSError as exc:
+        return "failed", f"erro ao gravar '{step.path}': {exc}"
+    return "ok", f"anexo '{source.name}' copiado para '{step.path}' ({len(data)} bytes)."
+
+
+def _zip_entry_name(raw: str) -> str | None:
+    """Nome normalizado de uma entrada, ou levanta ValueError se for perigoso."""
+    name = raw.replace("\\", "/")
+    if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+        raise ValueError(f"caminho absoluto no zip: '{raw}'")
+    parts = [p for p in name.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        raise ValueError(f"caminho com '..' no zip: '{raw}'")
+    return "/".join(parts) or None
+
+
+def _step_extract_zip(workspace: str, thread_id: str | None, step) -> tuple[str, str]:
+    source, error = find_upload(workspace, thread_id, step.source)
+    if error:
+        return "failed", error
+    assert source is not None
+
+    dest_root, error = _confined_path(step.path, workspace)
+    if error:
+        return "failed", error
+    assert dest_root is not None
+    if dest_root.exists() and not dest_root.is_dir():
+        return "failed", f"'{step.path}' existe e não é uma pasta."
+
+    security_error = _check_not_on_protected_branch(str(dest_root / "x"))
+    if security_error:
+        return "failed", security_error
+
+    try:
+        archive = zipfile.ZipFile(source)
+    except (zipfile.BadZipFile, OSError) as exc:
+        return "failed", f"zip inválido ou corrompido: {exc}"
+
+    with archive:
+        infos = [i for i in archive.infolist() if not i.is_dir()]
+        if len(infos) > ZIP_MAX_ENTRIES:
+            return "failed", f"zip com arquivos demais ({len(infos)} > {ZIP_MAX_ENTRIES})."
+
+        entries: list[tuple[zipfile.ZipInfo, str]] = []
+        ignored = 0
+        total = 0
+        for info in infos:
+            try:
+                name = _zip_entry_name(info.filename)
+            except ValueError as exc:
+                return "failed", f"zip rejeitado por segurança: {exc}. Nada foi extraído."
+            if not name:
+                continue
+            low = name.lower()
+            if low.startswith(_ZIP_JUNK) or low.rsplit("/", 1)[-1] in _ZIP_JUNK_NAMES:
+                continue
+            if (info.external_attr >> 16) & 0o170000 == 0o120000:  # symlink
+                ignored += 1
+                continue
+            if info.flag_bits & 0x1:
+                return "failed", "zip protegido por senha: não é possível extrair."
+            if info.file_size > ZIP_MAX_FILE_BYTES:
+                return "failed", f"'{name}' é grande demais ({info.file_size} bytes) para extrair."
+            total += info.file_size
+            if total > ZIP_MAX_TOTAL_BYTES:
+                return "failed", "o conteúdo do zip passa do limite total permitido."
+            entries.append((info, name))
+
+        if not entries:
+            return "failed", "o zip não tem nenhum arquivo utilizável."
+
+        if step.strip_top_folder:
+            tops = {n.split("/", 1)[0] for _, n in entries}
+            if len(tops) == 1 and all("/" in n for _, n in entries):
+                entries = [(i, n.split("/", 1)[1]) for i, n in entries]
+
+        # Fase 1: planejar (nada é gravado ainda).
+        plan: list[tuple[Path, zipfile.ZipInfo, bytes, str]] = []
+        identical = protected = 0
+        kept: list[str] = []
+        for info, name in entries:
+            target, err = _confined_path(f"{step.path.rstrip('/')}/{name}", workspace)
+            if err or target is None:
+                protected += 1
+                continue
+            data = bytearray()
+            with archive.open(info) as handle:
+                while True:
+                    chunk = handle.read(64 * 1024)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > ZIP_MAX_FILE_BYTES:
+                        return "failed", f"'{name}' passou do limite de tamanho ao extrair."
+            data = bytes(data)
+
+            if target.is_dir():
+                return "failed", f"'{name}' conflita com uma pasta existente em '{step.path}'."
+            if target.exists():
+                try:
+                    same = target.read_bytes() == data
+                except OSError:
+                    same = False
+                if same:
+                    identical += 1
+                    continue
+                if step.on_conflict != "overwrite":
+                    kept.append(name)
+                    continue
+                plan.append((target, info, data, "atualizado"))
+            else:
+                plan.append((target, info, data, "criado"))
+
+    created = updated = 0
+    for target, _info, data, kind in plan:
+        try:
+            _write_bytes_atomic(target, data)
+        except OSError as exc:
+            return "failed", f"erro ao gravar '{target.name}': {exc}"
+        created += kind == "criado"
+        updated += kind == "atualizado"
+
+    parts = [f"{created} criado(s)", f"{updated} atualizado(s)", f"{identical} idêntico(s) pulado(s)"]
+    if kept:
+        sample = ", ".join(kept[:5]) + ("..." if len(kept) > 5 else "")
+        parts.append(f"{len(kept)} conflito(s) MANTIDO(S) sem alterar (on_conflict=skip): {sample}")
+    if protected:
+        parts.append(f"{protected} em área protegida ignorado(s)")
+    if ignored:
+        parts.append(f"{ignored} symlink(s) ignorado(s)")
+    detail = f"zip '{source.name}' → '{step.path}': " + ", ".join(parts) + "."
+    return ("ok" if (created or updated) else "skipped"), detail
+
+
+def _run_step(
+    workspace: str, step, later_steps: list[Any], thread_id: str | None = None
+) -> tuple[str, str]:
     if step.op == "create_branch":
         return _step_create_branch(workspace, step.branch)
     if step.op == "create_file":
@@ -258,6 +455,10 @@ def _run_step(workspace: str, step, later_steps: list[Any]) -> tuple[str, str]:
         return _step_write_markdown(workspace, step, later_steps)
     if step.op == "create_pdf":
         return _step_create_pdf(workspace, step)
+    if step.op == "copy_upload":
+        return _step_copy_upload(workspace, thread_id, step)
+    if step.op == "extract_zip":
+        return _step_extract_zip(workspace, thread_id, step)
     return "failed", f"operação desconhecida: {step.op}"
 
 
@@ -329,7 +530,7 @@ def run_checks(checks: list[Any], workspace: str) -> list[str]:
 # Orquestração
 # ──────────────────────────────────────────────────────────────────────────
 
-def execute_task_sync(task: dict, workspace: str) -> TaskRunResult:
+def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) -> TaskRunResult:
     """Executa os `steps` da tarefa e depois as verificações."""
     if not workspace:
         return TaskRunResult(ok=False, error="Nenhum workspace definido para esta conversa.")
@@ -357,7 +558,7 @@ def execute_task_sync(task: dict, workspace: str) -> TaskRunResult:
 
         for index, step in enumerate(steps, start=1):
             try:
-                status, detail = _run_step(workspace, step, steps[index:])
+                status, detail = _run_step(workspace, step, steps[index:], thread_id)
             except Exception as exc:  # um bug de passo nunca derruba o worker
                 status, detail = "failed", f"exceção inesperada: {type(exc).__name__}: {exc}"
 
@@ -401,6 +602,33 @@ def execute_task_sync(task: dict, workspace: str) -> TaskRunResult:
     return result
 
 
-async def execute_task(task: dict, workspace: str) -> TaskRunResult:
+def workspace_summary(workspace: str) -> str:
+    """Linha(s) curtas para o relatório: onde foi aplicado, branch e o que mudou (git)."""
+    lines = [f"📂 Workspace: {Path(workspace).resolve()}"]
+    try:
+        branch = _git(workspace, "branch", "--show-current").stdout.strip()
+        if branch:
+            lines.append(f"🌿 Branch: {branch}")
+        stat = _git(workspace, "diff", "--stat", "HEAD").stdout.strip()
+        lines.append(
+            f"📝 Alterações no git (vs HEAD):\n{stat}" if stat
+            else "📝 O git NÃO detecta nenhuma alteração neste workspace."
+        )
+    except (OSError, subprocess.SubprocessError):
+        lines.append("(git indisponível: não foi possível listar as alterações)")
+    return "\n".join(lines)
+
+
+def missing_listed_files(files: list[str] | None, workspace: str) -> list[str]:
+    """Arquivos citados em `files` da tarefa que não existem no workspace."""
+    missing: list[str] = []
+    for rel in files or []:
+        resolved, error = _confined_path(rel, workspace)
+        if error or resolved is None or not resolved.exists():
+            missing.append(rel)
+    return missing
+
+
+async def execute_task(task: dict, workspace: str, thread_id: str | None = None) -> TaskRunResult:
     """Versão assíncrona (roda em thread para não bloquear o event loop)."""
-    return await asyncio.to_thread(execute_task_sync, task, workspace)
+    return await asyncio.to_thread(execute_task_sync, task, workspace, thread_id)

@@ -260,6 +260,15 @@
       <label for="import_json_content">Cole o Array de Tarefas (JSON)</label>
       <textarea id="import_json_content" required placeholder="[ { &quot;title&quot;: &quot;...&quot; } ]" style="min-height: 200px; font-family: var(--font-mono);"></textarea>
     </div>
+    <div class="form-group">
+      <label>Anexos para as tarefas (imagens, .zip, documentos)</label>
+      <div class="task-uploads-tools">
+        <button type="button" id="btn-task-attach" class="btn btn-ghost btn-sm">Anexar arquivos</button>
+        <button type="button" id="btn-copy-prompt" class="btn btn-ghost btn-sm" title="Copia um prompt explicando o formato das microtasks para você colar em outra IA">Copiar prompt para IA</button>
+        <input type="file" id="task-attach-input" multiple hidden accept=".png,.jpg,.jpeg,.gif,.webp,.ico,.svg,.zip,.md,.txt,.py,.json,.csv,.pdf,.docx">
+      </div>
+      <div id="task-uploads" class="task-uploads"></div>
+    </div>
     <div class="modal-actions">
       <button type="button" id="btn-cancel-import" class="btn btn-ghost">Cancelar</button>
       <button type="submit" class="btn btn-primary">Importar</button>

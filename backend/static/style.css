@@ -2579,3 +2579,8 @@ button {
   opacity: 0.6;
   pointer-events: none;
 }
+
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.task-uploads-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.task-uploads { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.task-uploads-empty { font-size: 12px; opacity: 0.7; }

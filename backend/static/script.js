@@ -646,6 +646,26 @@ async function refreshMessages(chat) {
   }
 }
 
+// Separa o texto digitado do bloco técnico "[Arquivos anexados]" (que só serve para o agente).
+function splitAttachments(content) {
+  const index = content.indexOf(ATTACHMENT_MARKER);
+  if (index === -1) return { text: content, files: [] };
+  const files = content.slice(index).split("\n").slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).split("/").pop());
+  return { text: content.slice(0, index).trimEnd(), files };
+}
+
+function renderUserContent({ text, files }) {
+  const chips = files.length
+    ? `<div class="msg-attachments">${files.map((name) =>
+        `<span class="attachment-chip"><span class="attachment-name" title="${escapeHtml(name)}">📎 ${escapeHtml(name)}</span></span>`
+      ).join("")}</div>`
+    : "";
+  return escapeHtml(text) + chips;
+}
+
 function appendMessage(role, content, modelName = null, meta = {}) {
   const isUser = role === "user";
   const wrap = document.createElement("div");
@@ -653,7 +673,7 @@ function appendMessage(role, content, modelName = null, meta = {}) {
   if (meta.id) wrap.dataset.messageId = meta.id;
 
   const roleName = isUser ? "Você" : (modelName ? `Assistente (${modelName})` : "Assistente");
-  const renderedContent = isUser ? escapeHtml(content) : renderContent(content);
+  const renderedContent = isUser ? renderUserContent(splitAttachments(content)) : renderContent(content);
   const elapsed = isUser ? "" : formatElapsed(meta.elapsed_seconds);
   const metaText = [formatTime(meta.created_at), elapsed && `⏱ ${elapsed}`].filter(Boolean).join(" · ");
 
@@ -1153,6 +1173,117 @@ autoResize();
 syncChips();
 startPolling();
 // ============================================================
+// ANEXOS DAS TAREFAS + PROMPT PARA GERAR MICROTASKS
+// ============================================================
+
+const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele executa as tarefas de forma DETERMINÍSTICA, SEM LLM: aplica exatamente o que você escrever e depois roda as verificações. Ele não interpreta, não completa e não corrige nada. Por isso, cada passo precisa ter o texto/código FINAL e EXATO.\n\nREGRAS DE OURO\n- Responda SOMENTE com um array JSON válido (sem comentários, sem texto fora do JSON).\n- Para alterar um arquivo existente, preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Tarefas pequenas: um objetivo por tarefa. Elas rodam em ordem; se uma falhar, as seguintes não rodam.\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Não existe operação de apagar arquivos.\n- Se o projeto estiver na branch principal (main/master), a primeira tarefa deve ter um passo create_branch.\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n\nFORMATO DE CADA TAREFA\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\")\n- create_branch: { \"op\": \"create_branch\", \"branch\": \"feature/nome\" }\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" } (arquivo novo)\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n  Copia um ARQUIVO ANEXADO (imagem, etc.) para o projeto. \"path\" é o caminho FINAL do arquivo; \"source\" é só o NOME do anexo.\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n  Extrai e MESCLA o conteúdo de um .zip anexado na pasta \"path\" (\".\" = raiz do projeto). Arquivos novos são criados; idênticos são pulados; se já existir um arquivo DIFERENTE, \"skip\" mantém o atual e \"overwrite\" o substitui pelo do zip. \"strip_top_folder\": true remove a pasta raiz única do zip.\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\nSempre inclua verify: confirme o resultado (ex.: contains do texto novo e not_contains do texto antigo; file_exists para arquivos copiados/criados).\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLO\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" },\n      { \"type\": \"not_contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 22px;\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
+
+const TASK_ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".zip", ".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx"];
+state.taskUploads = [];
+
+function activeChatOrNull() {
+  return state.chats.find((c) => c.id === state.activeId) || null;
+}
+
+function renderTaskUploads() {
+  const box = document.getElementById("task-uploads");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.taskUploads.length) {
+    box.innerHTML = '<span class="task-uploads-empty">Nenhum anexo nesta conversa. Nos steps, use o NOME do arquivo em "source".</span>';
+    return;
+  }
+  state.taskUploads.forEach((file) => {
+    const chip = document.createElement("span");
+    chip.className = "attachment-chip";
+    chip.innerHTML = `<span class="attachment-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span><span class="attachment-size">${formatBytes(file.size)}</span>`;
+    box.appendChild(chip);
+  });
+}
+
+async function refreshTaskUploads() {
+  const chat = activeChatOrNull();
+  state.taskUploads = [];
+  if (chat && state.workspacePath) {
+    try {
+      const res = await fetch(`${API.upload(chat.thread_id)}?workspace_path=${encodeURIComponent(state.workspacePath)}`);
+      if (res.ok) state.taskUploads = await res.json();
+    } catch (err) {
+      console.error("Falha ao listar anexos:", err);
+    }
+  }
+  renderTaskUploads();
+}
+
+async function uploadTaskFiles(fileList) {
+  const chat = activeChatOrNull();
+  if (!chat) { alert("Nenhuma conversa ativa encontrada."); return; }
+  if (!state.workspacePath) { alert("Defina um diretório de trabalho para poder anexar arquivos."); return; }
+  const errors = [];
+  for (const file of fileList) {
+    const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
+    const limit = ext === ".zip" ? 50 * 1024 * 1024 : ATTACH_MAX_BYTES;
+    if (!TASK_ATTACH_EXTENSIONS.includes(ext)) { errors.push(`${file.name}: extensão não permitida`); continue; }
+    if (file.size > limit) { errors.push(`${file.name}: maior que ${formatBytes(limit)}`); continue; }
+    const form = new FormData();
+    form.append("workspace_path", state.workspacePath);
+    form.append("file", file);
+    try {
+      const res = await fetch(API.upload(chat.thread_id), { method: "POST", body: form });
+      if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.json())?.detail || ""; } catch {}
+        errors.push(`${file.name}: ${detail || "HTTP " + res.status}`);
+      }
+    } catch (err) {
+      errors.push(`${file.name}: ${err.message}`);
+    }
+  }
+  await refreshTaskUploads();
+  if (errors.length) alert("Alguns arquivos não foram enviados:\n" + errors.join("\n"));
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch {}
+    area.remove();
+    return ok;
+  }
+}
+
+document.getElementById("btn-task-attach").addEventListener("click", () => {
+  document.getElementById("task-attach-input").click();
+});
+
+document.getElementById("task-attach-input").addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (files.length) await uploadTaskFiles(files);
+});
+
+document.getElementById("btn-copy-prompt").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  await refreshTaskUploads();
+  const names = state.taskUploads.length
+    ? state.taskUploads.map((f) => `- ${f.name}`).join("\n")
+    : "(nenhum anexo enviado)";
+  const ok = await copyText(TASKS_PROMPT_TEMPLATE.replace("{{ANEXOS}}", () => names));
+  const original = "Copiar prompt para IA";
+  button.textContent = ok ? "Prompt copiado!" : "Não foi possível copiar";
+  setTimeout(() => { button.textContent = original; }, 2000);
+});
+
+// ============================================================
 // LÓGICA DO MODAL DE IMPORTAÇÃO DE TAREFAS
 // ============================================================
 
@@ -1161,6 +1292,7 @@ el.btnImportTasks.addEventListener('click', () => {
   el.inputImportJson.value = '';
   // Abre o modal
   el.importTasksModal.showModal();
+  refreshTaskUploads();
 });
 
 el.btnCancelImport.addEventListener('click', () => {
