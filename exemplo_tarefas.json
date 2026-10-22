@@ -1,0 +1,47 @@
+[
+  {
+    "title": "Docs: criar documentação do fluxo de tarefas",
+    "description": "Cria o documento docs/FLUXO_TAREFAS.md e uma versão em PDF.",
+    "files": ["docs/FLUXO_TAREFAS.md", "docs/FLUXO_TAREFAS.pdf"],
+    "reason": "Documentar como as microtasks são executadas.",
+    "priority": "low",
+    "steps": [
+      { "op": "create_branch", "branch": "feature/docs-fluxo-tarefas" },
+      {
+        "op": "write_markdown",
+        "path": "docs/FLUXO_TAREFAS.md",
+        "content": "# Fluxo de tarefas\n\n1. A tarefa é importada (JSON).\n2. `@generate <id>` dispara a execução.\n3. Cada passo é aplicado e verificado.\n\n| Status | Significado |\n|---|---|\n| pending | aguardando |\n| failed | falhou — use **Reiniciar** |\n"
+      },
+      {
+        "op": "create_pdf",
+        "path": "docs/FLUXO_TAREFAS.pdf",
+        "title": "Fluxo de tarefas",
+        "content": "# Fluxo de tarefas\n\n- Importar JSON\n- Executar\n- Verificar\n"
+      }
+    ],
+    "verify": [
+      { "type": "file_exists", "path": "docs/FLUXO_TAREFAS.md" },
+      { "type": "file_exists", "path": "docs/FLUXO_TAREFAS.pdf" }
+    ]
+  },
+  {
+    "title": "Router: aumentar janela de detecção de tags para 80 caracteres",
+    "description": "Em backend/graph/utils.py, TAG_LOOKAHEAD_CHARS passa de 50 para 80.",
+    "files": ["backend/graph/utils.py"],
+    "reason": "Permitir @heavy/@enhance um pouco mais adiante no texto.",
+    "priority": "low",
+    "steps": [
+      {
+        "op": "replace_text",
+        "path": "backend/graph/utils.py",
+        "old": "TAG_LOOKAHEAD_CHARS = 50",
+        "new": "TAG_LOOKAHEAD_CHARS = 80"
+      }
+    ],
+    "verify": [
+      { "type": "contains", "path": "backend/graph/utils.py", "text": "TAG_LOOKAHEAD_CHARS = 80" },
+      { "type": "not_contains", "path": "backend/graph/utils.py", "text": "TAG_LOOKAHEAD_CHARS = 50" },
+      { "type": "python_syntax", "path": "backend/graph/utils.py" }
+    ]
+  }
+]
