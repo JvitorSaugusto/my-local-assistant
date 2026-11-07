@@ -2137,3 +2137,30 @@ def create_pdf_file(
         Mensagem de sucesso ou 'ERRO: ...'.
     """
     return apply_create_pdf(runtime.state.get("workspace_path"), file_path, content, title, overwrite)
+
+
+@tool
+async def search_codebase(query: str, runtime: ToolRuntime, path_prefix: str = "", limit: int = 6) -> str:
+    """
+    Busca no ÍNDICE SEMÂNTICO (RAG) do repositório: classes, funções e métodos por
+    assunto ou por nome, sem ler arquivos inteiros.
+
+    Use para localizar onde algo está num repositório grande ("onde validamos o
+    cadastro?", "ALLOWED_SIGNUP_TIPOS", "classe que envia e-mail"). Cada resultado
+    traz arquivo, linhas, tipo, resumo e o trecho de código.
+
+    Atenção: o índice pode estar desatualizado para arquivos editados nesta
+    tarefa; confirme com `read_file_chunk` antes de editar.
+
+    Args:
+        query (str): Assunto ou nome a buscar.
+        path_prefix (str): Opcional. Restringe a uma pasta (ex.: "backend/api").
+        limit (int): Máximo de resultados (1 a 10).
+
+    Returns:
+        str: Resultados formatados, ou uma mensagem explicando por que não há índice.
+    """
+    from .rag_bridge import rag_search_for_tool
+
+    workspace_path = runtime.state.get("workspace_path")
+    return await rag_search_for_tool(workspace_path, query, path_prefix or None, max(1, min(int(limit), 10)))

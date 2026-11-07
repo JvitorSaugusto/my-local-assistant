@@ -6,7 +6,7 @@ from langchain_core.messages import BaseMessage
 from typing import Annotated, Literal, NotRequired, TypedDict, cast
 from pydantic import Field
 from backend.api.schemas import GenerateTaskSchema, HeavyAnalysisSchema
-from backend.graph.tools import append_to_file, create_git_branch, create_new_file, create_pdf_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, replace_in_file, search_in_file, list_directory_files, read_file_content, validate_python_syntax, write_markdown_file
+from backend.graph.tools import append_to_file, create_git_branch, create_new_file, create_pdf_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, replace_in_file, search_in_file, search_codebase, list_directory_files, read_file_content, validate_python_syntax, write_markdown_file
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -40,7 +40,7 @@ class State(TypedDict):
     workspace_path: str
 
 FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content, read_file_chunk, search_in_file]
-FILE_TOOLS_FULL = [read_file_content, generate_repo_map, read_file_chunk, search_in_file]
+FILE_TOOLS_FULL = [read_file_content, generate_repo_map, read_file_chunk, search_in_file, search_codebase]
 WRITE_AND_GIT_TOOLS = [
     create_git_branch,
     create_new_file,
@@ -55,6 +55,7 @@ WRITE_AND_GIT_TOOLS = [
     list_directory_files,
     read_file_chunk,
     search_in_file,
+    search_codebase,
     validate_python_syntax,
 ]
 
