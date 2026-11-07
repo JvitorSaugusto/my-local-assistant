@@ -80,7 +80,15 @@ router_structured = load_llm().with_structured_output(RouteDecision).with_config
 standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=131072)
 
 code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=131072)
-generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=131072)
+# Janela de contexto do agente Generate. O Ollama CORTA o excesso do prompt sem avisar;
+# o sistema estima o tamanho do prompt e avisa quando chegar perto deste valor.
+GENERATE_NUM_CTX = 131072
+# Quantas vezes o agente pode corrigir o próprio resultado quando a verificação automática falha.
+MAX_VERIFY_RETRIES = 2
+# True: tarefas em modo livre terminam em 'review' e só viram 'completed' após aprovação no painel.
+REVIEW_FREE_TASKS = True
+
+generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=GENERATE_NUM_CTX)
 
 note_llm_draft = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=8192, num_ctx=65536)
 note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=24576, num_ctx=65536)

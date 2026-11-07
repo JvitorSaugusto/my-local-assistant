@@ -62,7 +62,7 @@ class TaskService:
         "title", "description", "files", "reason", "priority",
         "status", "code_snippet", "last_error", "steps", "verify", "attempts",
     }
-    VALID_STATUSES = {"pending", "queued", "running", "completed", "failed"}
+    VALID_STATUSES = {"pending", "queued", "running", "review", "completed", "failed"}
     
     def __init__(self, db: AsyncSession):
             self.db = db
@@ -156,3 +156,31 @@ class TaskService:
         await self.db.commit()
         
         return True
+
+    async def delete_many(self, task_ids: list[int]) -> dict:
+        """Exclui várias tarefas. Tarefas em execução (queued/running) são preservadas.
+
+        Retorna {"deleted": [ids], "skipped": [{"id": id, "reason": "..."}]}.
+        """
+        ids = list(dict.fromkeys(task_ids))
+        result = await self.db.execute(select(TaskModel).where(TaskModel.id.in_(ids)))
+        found = {task.id: task for task in result.scalars().all()}
+
+        deleted: list[int] = []
+        skipped: list[dict] = []
+        for task_id in ids:
+            task = found.get(task_id)
+            if task is None:
+                skipped.append({"id": task_id, "reason": "tarefa não encontrada"})
+            elif task.status in {"queued", "running"}:
+                skipped.append({"id": task_id, "reason": f"está em execução ({task.status})"})
+            else:
+                await self.db.delete(task)
+                deleted.append(task_id)
+
+        await self.db.commit()
+        return {"deleted": deleted, "skipped": skipped}
+
+
+    async def get(self, task_id: int) -> TaskModel | None:
+        return await self.db.get(TaskModel, task_id)

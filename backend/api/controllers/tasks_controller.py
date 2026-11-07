@@ -1,10 +1,12 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Annotated
 
 from backend.api.services import TaskService
-from backend.api.schemas import TaskCreateSchema, TaskResponseSchema
+from backend.api.schemas import TaskBulkDeleteSchema, TaskCreateSchema, TaskResponseSchema
 from backend.database.config import get_db
+from backend.graph.context_builder import task_changes
 
 
 task_router = APIRouter()
@@ -59,3 +61,21 @@ async def retry_task(task_id: int, service: TaskServiceDep):
     if not task:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     return task
+
+
+@task_router.post("/bulk/delete")
+async def bulk_delete_tasks(payload: TaskBulkDeleteSchema, service: TaskServiceDep):
+    """Exclui várias tarefas de uma vez. Tarefas em execução são ignoradas e listadas em 'skipped'."""
+    return await service.delete_many(payload.ids)
+
+
+
+@task_router.get("/{task_id}/diff")
+async def task_diff(task_id: int, workspace: str, service: TaskServiceDep):
+    """Alterações dos arquivos da tarefa (git diff + arquivos novos), para revisão humana."""
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    if not workspace.strip():
+        raise HTTPException(status_code=400, detail="Informe o diretório de trabalho (workspace).")
+    return await asyncio.to_thread(task_changes, workspace, list(task.files or []))

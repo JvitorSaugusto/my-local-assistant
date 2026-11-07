@@ -17,6 +17,9 @@ from backend.database.config import async_session_env
 from backend.database.models import TaskModel
 
 from .config import (
+    GENERATE_NUM_CTX,
+    MAX_VERIFY_RETRIES,
+    REVIEW_FREE_TASKS,
     State,
     code_llm_with_tools,
     context_gatherer_llm_with_tools,
@@ -41,7 +44,9 @@ from .node_helpers import (
     _check_python_syntax,
     _extract_edited_python_files,
     _extract_gatherer_tool_trace,
+    _extract_written_files,
     _has_write_call,
+    _messages_of_current_task,
     _parse_xml_tool_fallback,
     build_security_report,
     build_system_context,
@@ -50,6 +55,8 @@ from .node_helpers import (
     stamp_message,
 )
 from .executor import execute_task, missing_listed_files, run_checks, workspace_summary
+from .context_builder import build_task_dossier, estimate_tokens, format_report
+from .grounding import auto_check_documents
 from .utils import ATTACHMENT_MARKER, detect_explicit_route, strip_leading_tags
 
 
@@ -473,6 +480,12 @@ async def _generate_node_impl(state: State):
                 recent_messages[i] = HumanMessage(content=state["enhanced_prompt"])
                 break
 
+    dossier_text, dossier_report = "", {}
+    if task:
+        dossier_text, dossier_report = await asyncio.to_thread(
+            build_task_dossier, workspace, list(task.files or [])
+        )
+
     context = [
         build_system_context(
             GENERATE_NODE_PROMPT,
@@ -483,10 +496,28 @@ async def _generate_node_impl(state: State):
             (f"TAREFA DE IMPLEMENTAÇÃO:\n\n{task.model_dump_json(indent=2)}")
             if task
             else None,
+            dossier_text or None,
         )
     ]
 
     context.extend(recent_messages)
+
+    prompt_tokens = estimate_tokens("\n".join(str(getattr(m, "content", "")) for m in context))
+    context_notice = None
+    first_call = not any(getattr(m, "type", "") == "ai" for m in _messages_of_current_task(recent_messages))
+    if task and first_call:
+        context_notice = AIMessage(
+            content=format_report(dossier_report, GENERATE_NUM_CTX, prompt_tokens),
+            name="Qwen3-Coder (Generate)",
+            additional_kwargs={"message_tag": "internal_context_report"},
+        )
+        stamp_message(context_notice)
+        print(f"\n{context_notice.content}\n")
+    elif prompt_tokens > 0.85 * GENERATE_NUM_CTX:
+        print(
+            f"⚠️ [GENERATE] Prompt estimado em ~{prompt_tokens} tokens, perto do num_ctx={GENERATE_NUM_CTX}: "
+            "o Ollama pode cortar o início sem avisar."
+        )
 
     response = await generate_llm_with_tools.ainvoke(context)
 
@@ -527,7 +558,7 @@ async def _generate_node_impl(state: State):
 
     print("====================\n")
 
-    messages_to_return = [response]
+    messages_to_return = ([context_notice] if context_notice else []) + [response]
 
     is_final_response = not bool(response.tool_calls)
 
@@ -620,6 +651,10 @@ async def _generate_node_impl(state: State):
             final_status = "completed"
             last_error = None
 
+            # Só a execução ATUAL conta (o grafo guarda a conversa inteira, com tarefas antigas).
+            task_messages = _messages_of_current_task(all_messages_this_run)
+            wrote_something = _has_write_call(task_messages)
+
             if not wrote_something:
                 final_status = "failed"
                 last_error = (
@@ -629,57 +664,109 @@ async def _generate_node_impl(state: State):
                 )
                 print("⚠️ [GENERATE] Nenhuma alteração feita. Tarefa marcada como falha.")
 
-            edited_py_files = _extract_edited_python_files(all_messages_this_run)
-            syntax_errors = _check_python_syntax(edited_py_files, workspace)
+            problems: list[str] = []
 
+            syntax_errors = _check_python_syntax(_extract_edited_python_files(task_messages), workspace)
             if syntax_errors:
+                problems.append(
+                    "Erro de sintaxe após as edições:\n" + "\n".join(f"- {err}" for err in syntax_errors)
+                )
+
+            if wrote_something:
+                if task.verify:
+                    check_failures = await asyncio.to_thread(run_checks, task.verify, workspace or "")
+                    if check_failures:
+                        problems.append(
+                            "Verificação final falhou:\n" + "\n".join(f"- {item}" for item in check_failures)
+                        )
+
+                # Documento novo (.md/.txt): confere, sem LLM, se os valores citados existem nas fontes.
+                grounding_failures = await asyncio.to_thread(
+                    auto_check_documents,
+                    _extract_written_files(task_messages, {"write_markdown_file", "create_new_file"}),
+                    list(task.files or []),
+                    workspace or "",
+                )
+                if grounding_failures:
+                    problems.append(
+                        "Valores do documento sem respaldo nas fontes:\n"
+                        + "\n".join(f"- {item}" for item in grounding_failures)
+                    )
+
+            if problems and final_status == "completed":
+                problem_report = "\n\n".join(problems)
+                print(f"❌ [GENERATE] Revisão automática encontrou problemas:\n{problem_report}")
+
+                retries_used = sum(
+                    1
+                    for msg in task_messages
+                    if (getattr(msg, "additional_kwargs", None) or {}).get("message_tag") == "internal_verify_retry"
+                )
+
+                if retries_used < MAX_VERIFY_RETRIES:
+                    correction = HumanMessage(
+                        name="hidden_task_prompt",
+                        content=(
+                            "A revisão automática do sistema encontrou problemas no seu resultado "
+                            f"(tentativa de correção {retries_used + 1} de {MAX_VERIFY_RETRIES}):\n\n"
+                            f"{problem_report}\n\n"
+                            "Corrija usando as ferramentas: releia o código REAL, ajuste o arquivo e, em "
+                            "documentos, remova ou troque por VERIFICAR qualquer valor que não esteja "
+                            "literalmente no código. Não responda apenas com texto."
+                        ),
+                        additional_kwargs={"message_tag": "internal_verify_retry"},
+                    )
+                    retry_response = await generate_llm_with_tools.ainvoke(
+                        context + messages_to_return + [correction]
+                    )
+                    retry_response.name = "Qwen3-Coder (Generate)"
+                    retry_response.additional_kwargs["message_tag"] = "internal_verify_retry_response"
+                    stamp_message(retry_response)
+
+                    if not retry_response.tool_calls and retry_response.content:
+                        recovered_retry_calls = _parse_xml_tool_fallback(str(retry_response.content))
+                        if recovered_retry_calls:
+                            retry_response = AIMessage(
+                                content="",
+                                tool_calls=recovered_retry_calls,
+                                additional_kwargs={"message_tag": "internal_tool_fallback"},
+                                name="Qwen3-Coder (Generate)",
+                            )
+
+                    messages_to_return.extend([correction, retry_response])
+
+                    if retry_response.tool_calls:
+                        # Continua: as tools rodam e este nó revisa de novo ao terminar.
+                        return {
+                            "messages": messages_to_return,
+                            "active_node": "generate_node",
+                            "enhanced_prompt": None,
+                            "active_generate_task": task,
+                        }
+
                 final_status = "failed"
-                error_report = "\n".join(f"- {err}" for err in syntax_errors)
-                last_error = f"Erro de sintaxe após as edições:\n{error_report}"
-
-                print(f"❌ [GENERATE] Sintaxe inválida após as edições:\n{error_report}")
-
+                last_error = problem_report
                 messages_to_return.append(
                     AIMessage(
                         content=(
-                            "❌ A tarefa FALHOU: os arquivos abaixo "
-                            "ficaram com erro de sintaxe após as edições e precisam "
-                            "de revisão (ex.: `git diff` / `git checkout -- <arquivo>`). "
-                            "Depois use 'Reiniciar' no painel de tarefas:\n"
-                            f"{error_report}"
+                            "❌ A tarefa FALHOU na revisão automática:\n"
+                            f"{problem_report}\n"
+                            "Revise (ex.: `git diff` / `git checkout -- <arquivo>`) e use 'Reiniciar' no painel de tarefas."
                         ),
                         name="Qwen3-Coder (Generate)",
-                        additional_kwargs={
-                            "message_tag": "internal_syntax_gate",
-                            "created_at": now_iso(),
-                        },
+                        additional_kwargs={"message_tag": "internal_verify_gate", "created_at": now_iso()},
                     )
                 )
 
-            if final_status == "completed" and task.verify:
-                check_failures = await asyncio.to_thread(run_checks, task.verify, workspace or "")
-
-                if check_failures:
-                    final_status = "failed"
-                    check_report = "\n".join(f"- {item}" for item in check_failures)
-                    last_error = f"Verificação final falhou:\n{check_report}"
-
-                    print(f"❌ [GENERATE] Verificação final falhou:\n{check_report}")
-
-                    messages_to_return.append(
-                        AIMessage(
-                            content=(
-                                "❌ A tarefa FALHOU na verificação final:\n"
-                                f"{check_report}\n"
-                                "Use 'Reiniciar' no painel de tarefas para tentar de novo."
-                            ),
-                            name="Qwen3-Coder (Generate)",
-                            additional_kwargs={
-                                "message_tag": "internal_verify_gate",
-                                "created_at": now_iso(),
-                            },
-                        )
+            if final_status == "completed" and REVIEW_FREE_TASKS:
+                final_status = "review"
+                messages_to_return.append(
+                    AIMessage(
+                        content="🔎 Tarefa pronta para revisão: veja as alterações no painel de tarefas e clique em Aprovar ou Reprovar.",
+                        name="Qwen3-Coder (Generate)",
+                        additional_kwargs={"message_tag": "internal_review_gate", "created_at": now_iso()},
                     )
+                )
 
             async with async_session_env() as db:
                 stmt = (

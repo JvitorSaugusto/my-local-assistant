@@ -142,8 +142,15 @@ class CheckPythonSyntax(_PathMixin):
     type: Literal["python_syntax"]
 
 
+class CheckLiteralsGrounded(_PathMixin):
+    """Confere, sem LLM, se valores citados no documento `path` existem nas `sources`."""
+    type: Literal["literals_grounded"]
+    sources: list[str] = Field(min_length=1, description="Arquivos-fonte em que o documento deve se basear.")
+    allow: list[str] = Field(default_factory=list, description="Valores permitidos mesmo sem estar nas fontes.")
+
+
 TaskCheck = Annotated[
-    Union[CheckFileExists, CheckContains, CheckNotContains, CheckPythonSyntax],
+    Union[CheckFileExists, CheckContains, CheckNotContains, CheckPythonSyntax, CheckLiteralsGrounded],
     Field(discriminator="type"),
 ]
 
@@ -157,7 +164,7 @@ class GenerateTaskSchema(BaseModel):
     repo_path: str
     priority: Literal["low", "medium", "high"] = "medium"
     code_snippet: str | None = None
-    status: Literal["pending", "queued", "running", "completed", "failed"] = "pending"
+    status: Literal["pending", "queued", "running", "review", "completed", "failed"] = "pending"
     verify: list[TaskCheck] = Field(default_factory=list)
     
 
@@ -268,3 +275,8 @@ class TaskCreateSchema(BaseModel):
     code_snippet: str | None = None
     steps: list[TaskStep] | None = None
     verify: list[TaskCheck] | None = None
+
+
+
+class TaskBulkDeleteSchema(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)

@@ -245,3 +245,28 @@ def build_security_report(findings: list[dict]) -> str:
         report += f"**Evidência (Código):**\n{fence}text\n{evidence}\n{fence}\n"
         report += f"**Análise Técnica:** {tech}\n\n"
     return report
+
+
+def _extract_written_files(messages, only: set[str] | None = None) -> list[str]:
+    """Caminhos gravados por tool calls de escrita (sem repetição, na ordem). `only` filtra por nome de tool."""
+    written: list[str] = []
+    for msg in messages:
+        for call in getattr(msg, "tool_calls", None) or []:
+            name = call.get("name")
+            if name not in FILE_WRITE_TOOL_NAMES or (only is not None and name not in only):
+                continue
+            file_path = (call.get("args") or {}).get("file_path")
+            if isinstance(file_path, str) and file_path.strip() and file_path not in written:
+                written.append(file_path)
+    return written
+
+
+def _messages_of_current_task(messages) -> list:
+    """Mensagens da execução ATUAL da tarefa (a partir do último prompt interno da tarefa)."""
+    start = 0
+    for index in range(len(messages) - 1, -1, -1):
+        tag = (getattr(messages[index], "additional_kwargs", None) or {}).get("message_tag")
+        if tag == "internal_task_instruction":
+            start = index
+            break
+    return list(messages[start:])

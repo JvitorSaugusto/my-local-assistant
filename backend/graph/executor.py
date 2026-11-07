@@ -43,6 +43,7 @@ from .tools import (
     apply_write_markdown,
     create_new_file,
 )
+from .grounding import check_literals_grounded
 
 _STEPS_ADAPTER = TypeAdapter(list[TaskStep])
 _CHECKS_ADAPTER = TypeAdapter(list[TaskCheck])
@@ -510,6 +511,10 @@ def run_checks(checks: list[Any], workspace: str) -> list[str]:
             problem = _python_syntax_error(resolved, check.path)
             if problem:
                 failures.append(problem)
+            continue
+
+        if check.type == "literals_grounded":
+            failures.extend(check_literals_grounded(check.path, check.sources, workspace, check.allow))
             continue
 
         text = _normalized(resolved)
