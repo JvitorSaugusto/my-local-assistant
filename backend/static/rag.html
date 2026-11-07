@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Indexação de repositórios (RAG)</title>
+<style>
+  :root { --bg:#fff; --card:#f6f7f9; --text:#1c1f24; --muted:#6b7280; --border:#d9dde3; --accent:#3b6df0; --danger:#d64545; --ok:#2e9e5b; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161a; --card:#1d2026; --text:#e6e8ec; --muted:#8b93a1; --border:#2d323b; --accent:#6c93ff; --danger:#ef756c; --ok:#4cc38a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; display:grid; gap:16px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 10px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  input[type=text], input[type=file] { flex:1 1 240px; height:34px; padding:0 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font:inherit; }
+  input[type=file] { padding-top:5px; }
+  button { height:34px; padding:0 14px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--danger); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  .muted { color:var(--muted); font-size:12px; word-break:break-all; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; border:1px solid var(--border); }
+  .pill.done { color:var(--ok); } .pill.failed, .pill.interrupted { color:var(--danger); }
+  .bar { height:6px; background:var(--border); border-radius:99px; overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  pre { margin:0; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; overflow:auto; max-height:360px; font-size:12px; white-space:pre-wrap; }
+  .hit { margin-bottom:10px; } .hit b { word-break:break-all; }
+  #msg { min-height:20px; } #msg.err { color:var(--danger); }
+</style>
+</head>
+<body>
+<main>
+  <div class="row"><h1>Indexação de repositórios (RAG)</h1><a href="/" style="margin-left:auto">← voltar ao chat</a></div>
+  <div id="msg" class="muted"></div>
+
+  <section class="card">
+    <h2>Indexar uma pasta do computador</h2>
+    <div class="row">
+      <input id="ws-path" type="text" placeholder="Caminho da pasta (ex.: C:\projetos\meu_app)" />
+      <input id="ws-name" type="text" placeholder="Nome (opcional)" style="flex:0 1 180px" />
+      <button class="primary" id="ws-go">Indexar</button>
+    </div>
+    <p class="muted">Só arquivos novos ou alterados são reprocessados. Respeita o .gitignore e ignora binários e .env.</p>
+  </section>
+
+  <section class="card">
+    <h2>Enviar um zip</h2>
+    <div class="row">
+      <input id="zip-file" type="file" accept=".zip" />
+      <input id="zip-name" type="text" placeholder="Nome da fonte" style="flex:0 1 180px" />
+      <button class="primary" id="zip-go">Enviar e indexar</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Fontes indexadas</h2>
+    <table>
+      <thead><tr><th>Nome</th><th>Origem</th><th>Arquivos</th><th>Chunks</th><th>Estado</th><th></th></tr></thead>
+      <tbody id="sources"><tr><td colspan="6" class="muted">Carregando…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Buscar no índice</h2>
+    <div class="row">
+      <input id="q" type="text" placeholder="Ex.: onde ficam os tipos de cadastro permitidos?" />
+      <button id="q-go">Buscar</button>
+    </div>
+    <div id="results" style="margin-top:12px"></div>
+  </section>
+
+  <section class="card" id="map-card" hidden>
+    <h2 id="map-title">Mapa</h2>
+    <pre id="map"></pre>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ACTIVE = new Set(["queued", "running"]);
+let timer = null;
+
+function say(text, error = false) { const el = $("msg"); el.textContent = text || ""; el.className = "muted" + (error ? " err" : ""); }
+
+async function api(url, options = {}) {
+  const response = await fetch(url, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.detail || `Erro ${response.status}`);
+  return body;
+}
+
+function stateCell(job) {
+  if (!job) return '<span class="muted">sem ingestão</span>';
+  const pct = job.files_total ? Math.round((100 * job.files_done) / job.files_total) : (job.status === "done" ? 100 : 0);
+  let html = `<span class="pill ${esc(job.status)}">${esc(job.status)}</span>`;
+  if (ACTIVE.has(job.status)) {
+    html += `<div class="bar"><i style="width:${pct}%"></i></div><div class="muted">${job.files_done}/${job.files_total} · ${esc(job.current_file)}</div>`;
+    html += ` <button data-cancel="${job.id}">Cancelar</button>`;
+  } else if (job.error) {
+    html += `<div class="muted">${esc(job.error)}</div>`;
+  }
+  return html;
+}
+
+async function loadSources() {
+  try {
+    const sources = await api("/api/rag/sources");
+    const infos = await Promise.all(sources.map((s) => api(`/api/rag/sources/${s.id}`).catch(() => ({ job: null }))));
+    const rows = sources.map((s, i) => `
+      <tr>
+        <td><b>${esc(s.name)}</b></td>
+        <td><span class="pill">${esc(s.kind)}</span><div class="muted">${esc(s.root_path || "")}</div></td>
+        <td>${s.files}</td><td>${s.chunks}</td>
+        <td>${stateCell(infos[i].job)}</td>
+        <td class="row"><button data-map="${s.id}" data-name="${esc(s.name)}">Mapa</button><button data-reindex="${s.id}" data-path="${esc(s.root_path || "")}" ${s.root_path ? "" : "disabled title='Zip: envie de novo'"}>Reindexar</button><button class="danger" data-del="${s.id}" data-name="${esc(s.name)}">Apagar</button></td>
+      </tr>`);
+    $("sources").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">Nenhuma fonte indexada ainda.</td></tr>';
+    const busy = infos.some((x) => x.job && ACTIVE.has(x.job.status));
+    clearTimeout(timer);
+    if (busy) timer = setTimeout(loadSources, 2000);
+  } catch (error) { say(error.message, true); }
+}
+
+$("ws-go").onclick = async () => {
+  const path = $("ws-path").value.trim();
+  if (!path) return say("Informe o caminho da pasta.", true);
+  try { await api("/api/rag/sources/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, name: $("ws-name").value.trim() || null }) }); say("Ingestão iniciada."); loadSources(); }
+  catch (error) { say(error.message, true); }
+};
+
+$("zip-go").onclick = async () => {
+  const file = $("zip-file").files[0];
+  if (!file) return say("Escolha um arquivo .zip.", true);
+  const form = new FormData();
+  form.append("file", file);
+  form.append("name", $("zip-name").value.trim());
+  say("Enviando…");
+  try { await api("/api/rag/sources/zip", { method: "POST", body: form }); say("Ingestão iniciada."); loadSources(); }
+  catch (error) { say(error.message, true); }
+};
+
+$("sources").onclick = async (event) => {
+  const b = event.target.closest("button");
+  if (!b) return;
+  try {
+    if (b.dataset.del) { if (confirm(`Apagar a fonte "${b.dataset.name}" e todos os seus chunks?`)) { await api(`/api/rag/sources/${b.dataset.del}`, { method: "DELETE" }); say("Fonte apagada."); loadSources(); } }
+    else if (b.dataset.cancel) { await api(`/api/rag/jobs/${b.dataset.cancel}/cancel`, { method: "POST" }); say("Cancelando…"); }
+    else if (b.dataset.reindex) { await api("/api/rag/sources/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: b.dataset.path }) }); say("Reindexação iniciada."); loadSources(); }
+    else if (b.dataset.map) { const r = await api(`/api/rag/sources/${b.dataset.map}/map`); $("map-title").textContent = `Mapa: ${b.dataset.name}`; $("map").textContent = r.map || "(vazio)"; $("map-card").hidden = false; $("map-card").scrollIntoView({ behavior: "smooth" }); }
+  } catch (error) { say(error.message, true); }
+};
+
+$("q-go").onclick = async () => {
+  const query = $("q").value.trim();
+  if (!query) return;
+  try {
+    const hits = await api("/api/rag/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query, limit: 8 }) });
+    $("results").innerHTML = hits.map((h) => `<div class="hit"><b>${esc(h.path)}:${h.start_line}-${h.end_line}</b> <span class="pill">${esc(h.kind)}</span> <span class="muted">${esc(h.qualname)} · ${esc(h.matched_by.join(", "))}</span><div class="muted">${esc(h.summary)}</div><pre>${esc(h.content.slice(0, 900))}</pre></div>`).join("") || '<span class="muted">Nada encontrado.</span>';
+  } catch (error) { say(error.message, true); }
+};
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") $("q-go").click(); });
+
+loadSources();
+</script>
+</body>
+</html>
