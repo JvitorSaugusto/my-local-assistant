@@ -12,6 +12,8 @@ const API = {
   updateTask: (taskId) => `/api/tasks/${taskId}`,
   deleteTask: (taskId) => `/api/tasks/${taskId}`,
   retryTask: (taskId) => `/api/tasks/${taskId}/retry`,
+  taskDiff: (taskId) => `/api/tasks/${taskId}/diff`,
+  bulkDeleteTasks: "/api/tasks/bulk/delete",
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
   send: "/api/ai/",
   stop: (threadId) => `/api/ai/${threadId}/stop`,
@@ -60,6 +62,15 @@ const el = {
   tasksList: document.getElementById("tasks-list"),
   tasksCount: document.getElementById("tasks-count"),
   btnExecuteTasks: document.getElementById("btn-execute-tasks"),
+  taskFilterSearch: document.getElementById("task-filter-search"),
+  taskFilterStatus: document.getElementById("task-filter-status"),
+  taskFilterPriority: document.getElementById("task-filter-priority"),
+  taskFilterMode: document.getElementById("task-filter-mode"),
+  btnClearTaskFilters: document.getElementById("btn-clear-task-filters"),
+  taskSelectAll: document.getElementById("task-select-all"),
+  tasksSelectedCount: document.getElementById("tasks-selected-count"),
+  btnExecuteSelected: document.getElementById("btn-execute-selected"),
+  btnDeleteSelected: document.getElementById("btn-delete-selected"),
   workspacePath: document.getElementById("workspace-path"),
   btnAddWorkspace: document.getElementById("btn-add-workspace"),
   workspaceList: document.getElementById("workspace-list"),
@@ -117,6 +128,8 @@ const state = {
   uploading: false,
   currentTasks: [], // Guarda as tarefas exibidas em tela para edição rápida
   tasksSig: null,
+  taskFilters: { q: "", status: "all", priority: "all", mode: "all" },
+  selectedTaskIds: new Set(), // ids marcados para executar/excluir em lote
   stopRequested: false,
 };
 
@@ -458,19 +471,40 @@ function renderTasks(tasks) {
     (pendingTasks.length
       ? `${pendingTasks.length} tarefa(s) pendente(s)`
       : "Nenhuma tarefa pendente.") +
-    (failedTasks.length ? ` · ${failedTasks.length} com falha` : "");
+    (failedTasks.length ? ` · ${failedTasks.length} com falha` : "") +
+    (hasActiveTaskFilters() ? ` · exibindo ${applyTaskFilters(tasks, state.taskFilters).length} de ${tasks.length}` : "");
 
   el.btnExecuteTasks.disabled = !pendingTasks.length;
 
+  // Seleção: descarta ids de tarefas que sumiram ou que estão em execução.
+  for (const id of [...state.selectedTaskIds]) {
+    const current = tasks.find((task) => task.id === id);
+    if (!current || isTaskLocked(current)) state.selectedTaskIds.delete(id);
+  }
+
   if (!tasks.length) {
     el.tasksList.innerHTML = `<div class="tasks-empty">Nenhuma tarefa foi gerada nesta conversa.</div>`;
+    updateTaskToolbar([], []);
     return;
   }
 
-  tasks.forEach((task) => {
+  const visibleTasks = applyTaskFilters(tasks, state.taskFilters);
+  updateTaskToolbar(tasks, visibleTasks);
+
+  if (!visibleTasks.length) {
+    el.tasksList.innerHTML = `<div class="tasks-empty">Nenhuma tarefa corresponde aos filtros.</div>`;
+    return;
+  }
+
+  visibleTasks.forEach((task) => {
     const card = document.createElement("article");
     const failed = task.status === "failed";
-    card.className = "task-card" + (failed ? " task-card-failed" : "");
+    const locked = isTaskLocked(task);
+    const inReview = task.status === "review";
+    const selected = state.selectedTaskIds.has(task.id);
+    card.className =
+      "task-card" + (failed ? " task-card-failed" : "") + (selected ? " task-card-selected" : "");
+    card.dataset.taskId = String(task.id);
     const files = Array.isArray(task.files) ? task.files : [];
     const desc = normalizeTaskDescription(task.description);
     const snippet = String(task.code_snippet || "").trim();
@@ -483,6 +517,7 @@ function renderTasks(tasks) {
     card.innerHTML = `
       <div class="task-card-head">
         <div class="task-card-titlewrap">
+          <input type="checkbox" class="task-select" data-task-id="${task.id}" ${selected ? "checked" : ""} ${locked ? 'disabled title="Em execução"' : ""} aria-label="Selecionar tarefa #${task.id}" />
           <span class="task-card-id">#${task.id}</span>
           <h4 class="task-card-title">${escapeHtml(task.title || "Tarefa sem título")}</h4>
         </div>
@@ -501,10 +536,12 @@ function renderTasks(tasks) {
           ${files.map((file) => `<span class="task-file" title="${escapeHtml(file)}">${escapeHtml(file)}</span>`).join("")}
         </div>` : ""
       }
+      ${inReview ? `<div class="task-diff" data-diff-for="${task.id}" hidden></div>` : ""}
       <div class="task-card-footer">
         <span class="task-priority">${escapeHtml(task.priority || "medium")}</span>
         <span class="task-footer-right">
           ${failed ? `<button type="button" class="btn btn-ghost btn-sm btn-retry-task" data-task-id="${task.id}">Reiniciar</button>` : ""}
+          ${inReview ? `<button type="button" class="btn btn-ghost btn-sm btn-diff-task" data-task-id="${task.id}">Ver alterações</button><button type="button" class="btn btn-primary btn-sm btn-approve-task" data-task-id="${task.id}">Aprovar</button><button type="button" class="btn btn-ghost btn-sm btn-reject-task" data-task-id="${task.id}">Reprovar</button>` : ""}
           <span class="task-status ${escapeHtml(task.status || "pending")}">${escapeHtml(task.status || "pending")}</span>
         </span>
       </div>
@@ -520,6 +557,221 @@ function renderTasks(tasks) {
     enhanceCodeBlocks(card);
     el.tasksList.appendChild(card);
   });
+}
+
+// ============================================================
+// FILTROS E SELEÇÃO EM LOTE
+// ============================================================
+
+function isTaskLocked(task) {
+  return task.status === "queued" || task.status === "running";
+}
+
+function taskMode(task) {
+  return Array.isArray(task.steps) && task.steps.length ? "steps" : "ai";
+}
+
+function taskMatchesFilters(task, filters) {
+  if (filters.status !== "all" && (task.status || "pending") !== filters.status) return false;
+  if (filters.priority !== "all" && (task.priority || "medium") !== filters.priority) return false;
+  if (filters.mode !== "all" && taskMode(task) !== filters.mode) return false;
+
+  const query = String(filters.q || "").trim().toLowerCase();
+  if (!query) return true;
+  const haystack = [`#${task.id}`, task.title, task.description, ...(Array.isArray(task.files) ? task.files : [])]
+    .join("\n")
+    .toLowerCase();
+  return haystack.includes(query);
+}
+
+function applyTaskFilters(tasks, filters) {
+  return tasks.filter((task) => taskMatchesFilters(task, filters));
+}
+
+function hasActiveTaskFilters() {
+  const f = state.taskFilters;
+  return Boolean(String(f.q || "").trim()) || f.status !== "all" || f.priority !== "all" || f.mode !== "all";
+}
+
+function updateTaskToolbar(allTasks, visibleTasks) {
+  const selectable = visibleTasks.filter((task) => !isTaskLocked(task));
+  const selectedVisible = selectable.filter((task) => state.selectedTaskIds.has(task.id));
+  const selectedTasks = allTasks.filter((task) => state.selectedTaskIds.has(task.id));
+  const runnable = selectedTasks.filter((task) => task.status === "pending" || task.status === "failed");
+
+  el.tasksSelectedCount.textContent = `${selectedTasks.length} selecionada(s)`;
+  el.taskSelectAll.disabled = !selectable.length;
+  el.taskSelectAll.checked = selectable.length > 0 && selectedVisible.length === selectable.length;
+  el.taskSelectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < selectable.length;
+
+  el.btnExecuteSelected.disabled = !runnable.length;
+  el.btnExecuteSelected.textContent = runnable.length
+    ? `Executar selecionadas (${runnable.length})`
+    : "Executar selecionadas";
+  el.btnDeleteSelected.disabled = !selectedTasks.length;
+  el.btnDeleteSelected.textContent = selectedTasks.length
+    ? `Excluir selecionadas (${selectedTasks.length})`
+    : "Excluir selecionadas";
+}
+
+async function executeSelectedTasks() {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  if (!chat?.thread_id) return;
+
+  const selected = state.currentTasks
+    .filter((task) => state.selectedTaskIds.has(task.id))
+    .sort((a, b) => a.id - b.id);
+  const runnable = selected.filter((task) => task.status === "pending" || task.status === "failed");
+  const ignored = selected.length - runnable.length;
+
+  if (!runnable.length) {
+    alert("Nenhuma das tarefas selecionadas pode ser executada: só tarefas pendentes ou com falha.");
+    return;
+  }
+
+  const lines = runnable.slice(0, 8).map((task) => `#${task.id} ${task.title}`).join("\n");
+  const more = runnable.length > 8 ? `\n… e mais ${runnable.length - 8}` : "";
+  const retryNote = runnable.some((task) => task.status === "failed")
+    ? "\nTarefas com falha serão reiniciadas antes."
+    : "";
+  const ignoredNote = ignored ? `\n${ignored} selecionada(s) serão ignoradas (já concluídas ou em execução).` : "";
+  const ok = confirm(
+    `Executar ${runnable.length} tarefa(s) selecionada(s), em ordem de ID?\n\n${lines}${more}${retryNote}${ignoredNote}\n\n` +
+      "Se uma tarefa com passos falhar, as seguintes continuam pendentes."
+  );
+  if (!ok) return;
+
+  try {
+    for (const task of runnable.filter((item) => item.status === "failed")) {
+      await api(API.retryTask(task.id), { method: "POST" });
+    }
+    state.selectedTaskIds.clear();
+    state.tasksSig = null;
+    el.tasksPanel.classList.add("hidden");
+    await sendMessage(`@generate ${runnable.map((task) => task.id).join(" ")}`);
+    await loadTasks(chat.thread_id);
+  } catch (error) {
+    alert("Não foi possível executar as tarefas selecionadas: " + error.message);
+    state.tasksSig = null;
+    loadTasks(chat.thread_id);
+  }
+}
+
+async function deleteSelectedTasks() {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  const tasks = state.currentTasks.filter((task) => state.selectedTaskIds.has(task.id) && !isTaskLocked(task));
+  if (!tasks.length) return;
+
+  const lines = tasks.slice(0, 8).map((task) => `#${task.id} ${task.title}`).join("\n");
+  const more = tasks.length > 8 ? `\n… e mais ${tasks.length - 8}` : "";
+  if (!confirm(`Excluir ${tasks.length} tarefa(s)? Esta ação não pode ser desfeita.\n\n${lines}${more}`)) return;
+
+  try {
+    const result = await api(API.bulkDeleteTasks, {
+      method: "POST",
+      body: JSON.stringify({ ids: tasks.map((task) => task.id) }),
+    });
+    (result?.deleted || []).forEach((id) => state.selectedTaskIds.delete(id));
+    if (result?.skipped?.length) {
+      alert("Não foram excluídas:\n" + result.skipped.map((item) => `#${item.id}: ${item.reason}`).join("\n"));
+    }
+  } catch (error) {
+    alert("Erro ao excluir em lote: " + error.message);
+  }
+  state.tasksSig = null;
+  if (chat?.thread_id) await loadTasks(chat.thread_id);
+}
+
+function applyTaskFilterInputs() {
+  state.taskFilters = {
+    q: el.taskFilterSearch.value,
+    status: el.taskFilterStatus.value,
+    priority: el.taskFilterPriority.value,
+    mode: el.taskFilterMode.value,
+  };
+  renderTasks(state.currentTasks);
+}
+
+let taskFilterTimer = null;
+function onTaskFilterChange() {
+  clearTimeout(taskFilterTimer);
+  taskFilterTimer = setTimeout(applyTaskFilterInputs, 120);
+}
+
+function clearTaskFilters() {
+  el.taskFilterSearch.value = "";
+  el.taskFilterStatus.value = "all";
+  el.taskFilterPriority.value = "all";
+  el.taskFilterMode.value = "all";
+  applyTaskFilterInputs();
+}
+
+function toggleSelectAllVisible(checked) {
+  applyTaskFilters(state.currentTasks, state.taskFilters)
+    .filter((task) => !isTaskLocked(task))
+    .forEach((task) => (checked ? state.selectedTaskIds.add(task.id) : state.selectedTaskIds.delete(task.id)));
+  renderTasks(state.currentTasks);
+}
+
+async function toggleTaskDiff(taskId, button) {
+  const box = el.tasksList.querySelector(`[data-diff-for="${taskId}"]`);
+  if (!box) return;
+  if (!box.hidden) {
+    box.hidden = true;
+    button.textContent = "Ver alterações";
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = '<div class="task-diff-loading">Carregando alterações…</div>';
+  try {
+    const url = `${API.taskDiff(taskId)}?workspace=${encodeURIComponent(state.workspacePath || "")}`;
+    const data = await api(url);
+    const parts = [];
+    if (data?.diff) parts.push(`<pre><code>${escapeHtml(data.diff)}</code></pre>`);
+    (data?.new_files || []).forEach((file) => {
+      parts.push(`<details open><summary>Arquivo novo: ${escapeHtml(file.path)}</summary><pre><code>${escapeHtml(file.content)}</code></pre></details>`);
+    });
+    if (!parts.length) parts.push('<div class="task-diff-loading">Nenhuma alteração detectada nos arquivos da tarefa.</div>');
+    if (data?.truncated) parts.push('<div class="task-diff-loading">Saída truncada: veja o restante no git.</div>');
+    box.innerHTML = parts.join("");
+    button.textContent = "Ocultar alterações";
+  } catch (error) {
+    box.innerHTML = `<div class="task-error"><pre>${escapeHtml(error.message)}</pre></div>`;
+  }
+}
+
+async function approveTask(taskId) {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  try {
+    await api(API.updateTask(taskId), { method: "PUT", body: JSON.stringify({ status: "completed", last_error: null }) });
+  } catch (error) {
+    alert("Erro ao aprovar: " + error.message);
+  }
+  state.tasksSig = null;
+  if (chat?.thread_id) await loadTasks(chat.thread_id);
+}
+
+async function rejectTask(taskId) {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  const task = state.currentTasks.find((item) => item.id === taskId);
+  if (!task) return;
+  const note = prompt("O que precisa ser corrigido? (será anexado à descrição e a tarefa volta para pendente)");
+  if (note === null) return;
+  const extra = note.trim() || "Reprovada na revisão, sem comentário.";
+  try {
+    await api(API.updateTask(taskId), {
+      method: "PUT",
+      body: JSON.stringify({
+        status: "pending",
+        last_error: null,
+        description: `${task.description || ""}\n\n**Correção pedida na revisão:** ${extra}`,
+      }),
+    });
+  } catch (error) {
+    alert("Erro ao reprovar: " + error.message);
+  }
+  state.tasksSig = null;
+  if (chat?.thread_id) await loadTasks(chat.thread_id);
 }
 
 function openTaskModal(task = null) {
@@ -1099,6 +1351,26 @@ el.btnToggleTasks.addEventListener("click", async () => {
   }
 });
 el.btnExecuteTasks.addEventListener("click", executePendingTasks);
+el.taskFilterSearch.addEventListener("input", onTaskFilterChange);
+[el.taskFilterStatus, el.taskFilterPriority, el.taskFilterMode].forEach((select) =>
+  select.addEventListener("change", onTaskFilterChange)
+);
+el.btnClearTaskFilters.addEventListener("click", clearTaskFilters);
+el.taskSelectAll.addEventListener("change", () => toggleSelectAllVisible(el.taskSelectAll.checked));
+el.btnExecuteSelected.addEventListener("click", executeSelectedTasks);
+el.btnDeleteSelected.addEventListener("click", deleteSelectedTasks);
+
+// Marcar/desmarcar um card sem redesenhar a lista (preserva detalhes abertos).
+document.addEventListener("change", (event) => {
+  const box = event.target?.closest?.(".task-select");
+  if (!box) return;
+  const taskId = parseInt(box.getAttribute("data-task-id"));
+  if (!taskId) return;
+  if (box.checked) state.selectedTaskIds.add(taskId);
+  else state.selectedTaskIds.delete(taskId);
+  box.closest(".task-card")?.classList.toggle("task-card-selected", box.checked);
+  updateTaskToolbar(state.currentTasks, applyTaskFilters(state.currentTasks, state.taskFilters));
+});
 el.btnAddWorkspace.addEventListener("click", addWorkspace);
 el.workspacePath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); addWorkspace(); }
@@ -1155,6 +1427,24 @@ document.addEventListener('click', (event) => {
     return;
   }
 
+  const btnDiff = event.target.closest('.btn-diff-task');
+  if (btnDiff) {
+    toggleTaskDiff(parseInt(btnDiff.getAttribute('data-task-id')), btnDiff);
+    return;
+  }
+
+  const btnApprove = event.target.closest('.btn-approve-task');
+  if (btnApprove) {
+    approveTask(parseInt(btnApprove.getAttribute('data-task-id')));
+    return;
+  }
+
+  const btnReject = event.target.closest('.btn-reject-task');
+  if (btnReject) {
+    rejectTask(parseInt(btnReject.getAttribute('data-task-id')));
+    return;
+  }
+
   const btnDelete = event.target.closest('.btn-delete-task');
   if (btnDelete) {
     const taskId = parseInt(btnDelete.getAttribute('data-task-id'));
@@ -1176,7 +1466,7 @@ startPolling();
 // ANEXOS DAS TAREFAS + PROMPT PARA GERAR MICROTASKS
 // ============================================================
 
-const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele executa as tarefas de forma DETERMINÍSTICA, SEM LLM: aplica exatamente o que você escrever e depois roda as verificações. Ele não interpreta, não completa e não corrige nada. Por isso, cada passo precisa ter o texto/código FINAL e EXATO.\n\nREGRAS DE OURO\n- Responda SOMENTE com um array JSON válido (sem comentários, sem texto fora do JSON).\n- Para alterar um arquivo existente, preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Tarefas pequenas: um objetivo por tarefa. Elas rodam em ordem; se uma falhar, as seguintes não rodam.\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Não existe operação de apagar arquivos.\n- Se o projeto estiver na branch principal (main/master), a primeira tarefa deve ter um passo create_branch.\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n\nFORMATO DE CADA TAREFA\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\")\n- create_branch: { \"op\": \"create_branch\", \"branch\": \"feature/nome\" }\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" } (arquivo novo)\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n  Copia um ARQUIVO ANEXADO (imagem, etc.) para o projeto. \"path\" é o caminho FINAL do arquivo; \"source\" é só o NOME do anexo.\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n  Extrai e MESCLA o conteúdo de um .zip anexado na pasta \"path\" (\".\" = raiz do projeto). Arquivos novos são criados; idênticos são pulados; se já existir um arquivo DIFERENTE, \"skip\" mantém o atual e \"overwrite\" o substitui pelo do zip. \"strip_top_folder\": true remove a pasta raiz única do zip.\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\nSempre inclua verify: confirme o resultado (ex.: contains do texto novo e not_contains do texto antigo; file_exists para arquivos copiados/criados).\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLO\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" },\n      { \"type\": \"not_contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 22px;\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
+const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele possui dois modos de execução: DETERMINÍSTICO (padrão) e DINÂMICO (via LLM).\n\nREGRAS DE OURO PARA MODO DETERMINÍSTICO (Edições e Operações de Arquivo)\n- Na maioria das vezes, ele executa as tarefas de forma determinística: aplica exatamente o que você escrever e roda as verificações. Ele não interpreta nem corrige. Cada passo precisa ter o texto/código FINAL e EXATO.\n- Para alterar um arquivo existente (replace_text), preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Não existe operação de apagar arquivos.\n- Se o projeto estiver na branch principal, a primeira tarefa deve ter um passo create_branch.\n\nREGRAS PARA MODO DINÂMICO / LLM (Documentação, Refatoração, Análise)\n- O assistente TEM capacidade de leitura, interpretação e geração de código/texto por conta própria.\n- Se a tarefa exigir análise de arquivos que acabaram de ser modificados, geração de documentação, ou refatoração complexa onde um \"replace_text\" determinístico seria inviável, DEIXE O ARRAY \"steps\" VAZIO: \"steps\": [].\n- Quando \"steps\" estiver vazio, o assistente usará o texto que você colocar no campo \"description\" como um prompt para executar a tarefa usando sua própria inteligência (LLM). Descreva EXATAMENTE o que ele deve ler e o que deve gerar.\n- DOCUMENTAÇÃO QUE VAI PARA OUTRA PESSOA: prefira o modo determinístico com write_markdown e o texto FINAL escrito por você a partir do código real que eu colei. Se usar o modo dinâmico, liste em \"files\" TODOS os arquivos-fonte e inclua em \"verify\" a checagem literals_grounded.\n- O modo dinâmico monta o contexto sozinho (git diff, arquivos, constantes referenciadas) e confere por código se os valores citados existem nas fontes.\n\nFORMATO DO JSON\n- Responda SOMENTE com um array JSON válido (sem comentários, sem Markdown fora do JSON).\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n- Formato de cada objeto no array:\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz (se for dinâmica, seja extremamente detalhista aqui)\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados/lidos)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações (ou vazio [] para tarefas dinâmicas)... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\" - USE APENAS EM MODO DETERMINÍSTICO)\n- create_branch: { \"op\": \"create_branch\", \"branch\": \"feature/nome\" }\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" }\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\n- literals_grounded: { \"type\": \"literals_grounded\", \"path\": \"doc.md\", \"sources\": [\"app/views.py\"], \"allow\": [] } (confere por código se valores entre aspas, headers e códigos HTTP do documento existem nas fontes)\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLOS\n\nTarefa Determinística (Edição exata):\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" }\n    ]\n  }\n]\n\nTarefa Dinâmica (Análise/Geração usando IA do assistente):\n[\n  {\n    \"title\": \"Documentar API\",\n    \"description\": \"Leia o arquivo app/views.py e crie um arquivo README.md detalhando os endpoints encontrados, métodos HTTP, payloads e retornos.\",\n    \"reason\": \"Facilitar o consumo da API pelo frontend.\",\n    \"files\": [\"app/views.py\", \"README.md\"],\n    \"priority\": \"medium\",\n    \"steps\": [],\n    \"verify\": [\n      { \"type\": \"file_exists\", \"path\": \"README.md\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
 
 const TASK_ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".zip", ".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx"];
 state.taskUploads = [];
@@ -1348,4 +1638,4 @@ el.importTasksForm.addEventListener('submit', async (event) => {
     alert('Erro ao fazer parse do JSON. Verifique se o formato está correto.');
     console.error('Erro de parsing:', error);
   }
-});
+});

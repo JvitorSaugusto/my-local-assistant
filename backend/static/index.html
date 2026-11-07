@@ -172,6 +172,42 @@
             </button>
           </div>
 
+          <div id="tasks-toolbar" class="tasks-toolbar">
+            <div class="tasks-filters">
+              <input id="task-filter-search" class="tasks-filter-input" type="search" placeholder="Buscar por título, descrição, arquivo ou #id…" autocomplete="off" />
+              <select id="task-filter-status" class="tasks-filter-select" aria-label="Filtrar por status">
+                <option value="all">Todos os status</option>
+                <option value="pending">Pendentes</option>
+                <option value="queued">Na fila</option>
+                <option value="running">Executando</option>
+                <option value="review">Em revisão</option>
+                <option value="completed">Concluídas</option>
+                <option value="failed">Com falha</option>
+              </select>
+              <select id="task-filter-priority" class="tasks-filter-select" aria-label="Filtrar por prioridade">
+                <option value="all">Todas as prioridades</option>
+                <option value="high">Alta</option>
+                <option value="medium">Média</option>
+                <option value="low">Baixa</option>
+              </select>
+              <select id="task-filter-mode" class="tasks-filter-select" aria-label="Filtrar por modo de execução">
+                <option value="all">Todos os modos</option>
+                <option value="steps">Determinísticas (steps)</option>
+                <option value="ai">Modo livre (IA)</option>
+              </select>
+              <button id="btn-clear-task-filters" class="btn btn-ghost btn-sm" type="button">Limpar filtros</button>
+            </div>
+            <div class="tasks-bulk">
+              <label class="tasks-select-all">
+                <input type="checkbox" id="task-select-all" />
+                <span>Selecionar visíveis</span>
+              </label>
+              <span id="tasks-selected-count" class="tasks-selected-count">0 selecionada(s)</span>
+              <button id="btn-execute-selected" class="btn btn-primary btn-sm" type="button" disabled>Executar selecionadas</button>
+              <button id="btn-delete-selected" class="btn btn-ghost btn-sm btn-danger-soft" type="button" disabled>Excluir selecionadas</button>
+            </div>
+          </div>
+
           <div id="tasks-list" class="tasks-list"></div>
         </div>
 
