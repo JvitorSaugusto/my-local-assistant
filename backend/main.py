@@ -4,6 +4,8 @@ from backend.api.controllers.chat_controller import chat_router
 from backend.api.controllers.ai_controller import ai_router
 from backend.api.controllers.tasks_controller import task_router
 from backend.api.controllers.upload_controller import upload_router
+from backend.rag import rag_startup
+from backend.rag.api import rag_router
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from contextlib import asynccontextmanager
@@ -33,6 +35,8 @@ async def lifespan(app: FastAPI):
         app.state.langgraph_checkpointer = checkpointer
         
         app.state.compiled_graph = build_graph().compile(checkpointer=checkpointer)
+
+        await rag_startup()  # prepara o schema do RAG; nunca derruba o app
         
         yield
         
@@ -50,3 +54,5 @@ app.include_router(ai_router, prefix="/api/ai", tags=["InteligenciaArtificial"])
 app.include_router(chat_router, prefix="/api/chats", tags=["ChatInteligenciaArtificial"])
 app.include_router(task_router, prefix="/api/tasks", tags=["Tarefas"])
 app.include_router(upload_router, prefix="/api/uploads", tags=["Uploads"])
+
+app.include_router(rag_router, prefix="/api/rag", tags=["RAG"])
