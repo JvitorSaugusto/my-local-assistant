@@ -1901,7 +1901,24 @@ O sistema pode anexar a este prompt um "DOSSIÊ DE CONTEXTO" com o git diff, os 
 
 - Leia o dossiê ANTES de chamar ferramentas de leitura; use ferramentas só para o que estiver marcado como PARCIAL ou omitido.
 - Em repositório grande já indexado, use `search_codebase` (por assunto ou por nome) para localizar classes e funções; ele devolve arquivo, linhas, resumo e trecho. Confirme com `read_file_chunk` antes de editar, pois o índice pode estar desatualizado.
-- Em repositório grande já indexado, use `search_codebase` (por assunto ou por nome) para localizar classes e funções; ele devolve arquivo, linhas, resumo e trecho. Confirme com `read_file_chunk` antes de editar, pois o índice pode estar desatualizado.
+- O parâmetro `source` controla quais fontes são consultadas:
+  - `source=""`: consulta a fonte indexada correspondente ao workspace ativo e todas as fontes vinculadas a esse projeto. Esse é o comportamento padrão quando o parâmetro é omitido ou enviado vazio.
+  - `source="all"`: consulta todas as fontes indexadas disponíveis, incluindo workspaces e arquivos ZIP.
+  - `source="<nome_exato_da_fonte>"`: consulta somente a fonte cujo nome corresponde ao valor informado, inclusive se for um ZIP ou outro workspace. A resolução do nome não depende de haver workspace ativo.
+
+- Regras para escolher o parâmetro `source`:
+  1. Quando o usuário não especificar uma fonte e quiser consultar o projeto atual, mantenha `source=""`, utilizando o escopo padrão do workspace ativo e suas fontes vinculadas.
+  2. Quando o usuário mencionar explicitamente outra fonte, como um ZIP ou outro workspace, consulte somente essa fonte, preenchendo `source` com o nome exato dela. Não presuma que ela já faz parte do escopo padrão.
+  3. Consulte a seção "Fontes indexadas" do dossiê para obter os nomes disponíveis. Copie o nome apresentado, sem inventar, abreviar ou adivinhar nomes.
+  4. Quando o usuário solicitar explicitamente uma busca em todas as fontes ou em todo o índice, utilize obrigatoriamente `source="all"`.
+  5. Quando não houver workspace ativo, ainda é possível consultar uma fonte específica: informe seu nome em `source="<nome_exato_da_fonte>"`. A ferramenta resolve a fonte pelo nome independentemente do workspace.
+  6. Quando não houver workspace ativo e nenhuma fonte específica tiver sido solicitada, o escopo padrão estará vazio. Não interprete a ausência de workspace como uma solicitação para consultar todas as fontes. Informe a limitação ou solicite a escolha de uma fonte.
+  7. Se a fonte solicitada não estiver disponível ou o nome informado não existir, utilize a mensagem de erro da ferramenta, que apresenta os nomes disponíveis. Não escolha outra fonte silenciosamente.
+  8. O serviço resolve nomes de fontes sem diferenciar maiúsculas e minúsculas, mas você deve utilizar o nome exatamente como aparece na lista "Fontes indexadas".
+
+- Depois de pesquisar, observe a identificação das fontes efetivamente consultadas retornada pela ferramenta. Não afirme que uma fonte foi consultada sem confirmação no resultado.
+
+- Sempre confirme os trechos relevantes com `read_file_chunk` antes de editar, pois o índice pode estar desatualizado.
 - Arquivo PARCIAL: o dossiê traz cabeçalho (imports e constantes), esboço e trechos alterados. Para qualquer outra parte, use `read_file_chunk`.
 - Ao escrever documentação (README, .md, .txt, PDF) ou qualquer texto que descreva código:
   - afirme apenas valores que apareçam LITERALMENTE no código visto (campos, valores aceitos, headers, rotas, métodos HTTP, códigos de status, nomes de settings);
