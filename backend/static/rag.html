@@ -65,6 +65,13 @@
   </section>
 
   <section class="card">
+    <h2>Contexto do projeto ativo</h2>
+    <p class="muted" style="margin:0 0 8px">Por padrão o agente consulta só o índice do projeto ativo no chat. Marque abaixo outras fontes (zip, outro workspace) para ele consultar junto. Ele também pode consultar qualquer fonte pelo nome quando você pedir.</p>
+    <div id="links-box" class="muted">Carregando…</div>
+    <div class="row" style="margin-top:10px"><button id="links-save" class="primary">Salvar vínculos</button></div>
+  </section>
+
+  <section class="card">
     <h2>Buscar no índice</h2>
     <div class="row">
       <input id="q" type="text" placeholder="Ex.: onde ficam os tipos de cadastro permitidos?" />
@@ -120,6 +127,7 @@ async function loadSources() {
         <td class="row"><button data-map="${s.id}" data-name="${esc(s.name)}">Mapa</button><button data-reindex="${s.id}" data-path="${esc(s.root_path || "")}" ${s.root_path ? "" : "disabled title='Zip: envie de novo'"}>Reindexar</button><button class="danger" data-del="${s.id}" data-name="${esc(s.name)}">Apagar</button></td>
       </tr>`);
     $("sources").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">Nenhuma fonte indexada ainda.</td></tr>';
+    renderLinks(sources);
     const busy = infos.some((x) => x.job && ACTIVE.has(x.job.status));
     clearTimeout(timer);
     if (busy) timer = setTimeout(loadSources, 2000);
@@ -164,6 +172,36 @@ $("q-go").onclick = async () => {
   } catch (error) { say(error.message, true); }
 };
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") $("q-go").click(); });
+
+const activeWorkspace = () => localStorage.getItem("assistant_workspace_active") || "";
+let linkedIds = new Set();
+let linksFor = null;
+
+async function renderLinks(sources) {
+  const box = $("links-box");
+  const ws = activeWorkspace();
+  if (!ws) { box.innerHTML = '<span class="muted">Nenhum projeto ativo no chat. Escolha um na aba Projeto.</span>'; return; }
+  if (linksFor !== ws) {
+    try { linkedIds = new Set((await api("/api/rag/links?path=" + encodeURIComponent(ws))).source_ids); linksFor = ws; }
+    catch (error) { box.innerHTML = `<span class="muted">${esc(error.message)}</span>`; return; }
+  }
+  const own = sources.find((s) => s.root_path && s.root_path.toLowerCase() === ws.toLowerCase());
+  const others = sources.filter((s) => !own || s.id !== own.id);
+  const head = `<div>Projeto ativo: <b>${esc(ws)}</b> ${own ? `(indexado como “${esc(own.name)}”)` : "(ainda não indexado)"}</div>`;
+  const rows = others.map((s) => `<label class="row" style="gap:8px;margin-top:6px"><input type="checkbox" data-link="${s.id}" ${linkedIds.has(s.id) ? "checked" : ""}> ${esc(s.name)} <span class="pill">${esc(s.kind)}</span></label>`).join("");
+  box.innerHTML = head + (rows || '<div class="muted" style="margin-top:6px">Nenhuma outra fonte indexada.</div>');
+}
+
+$("links-save").onclick = async () => {
+  const ws = activeWorkspace();
+  if (!ws) return say("Nenhum projeto ativo.", true);
+  const ids = [...document.querySelectorAll("[data-link]:checked")].map((box) => Number(box.dataset.link));
+  try {
+    const r = await api("/api/rag/links", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: ws, source_ids: ids }) });
+    linkedIds = new Set(r.source_ids);
+    say("Vínculos salvos.");
+  } catch (error) { say(error.message, true); }
+};
 
 loadSources();
 </script>

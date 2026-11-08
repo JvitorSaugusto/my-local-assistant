@@ -14,6 +14,8 @@ const API = {
   retryTask: (taskId) => `/api/tasks/${taskId}/retry`,
   taskDiff: (taskId) => `/api/tasks/${taskId}/diff`,
   bulkDeleteTasks: "/api/tasks/bulk/delete",
+  ragScope: "/api/rag/scope",
+  ragLinks: "/api/rag/links",
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
   send: "/api/ai/",
   stop: (threadId) => `/api/ai/${threadId}/stop`,
@@ -52,18 +54,40 @@ const el = {
   btnTheme: document.getElementById("btn-theme"),
   inputSnippet: document.getElementById("task_snippet"),
   btnEnhance: document.getElementById("btn-enhance"),
-  btnToggleBatch: document.getElementById("btn-toggle-batch"),
   batchPanel: document.getElementById("batch-panel"),
   batchInput: document.getElementById("batch-input"),
   btnSendBatch: document.getElementById("btn-send-batch"),
   batchStatus: document.getElementById("batch-status"),
   btnToggleTasks: document.getElementById("btn-toggle-tasks"),
+  app: document.getElementById("app"),
+  scrim: document.getElementById("scrim"),
+  btnAuto: document.getElementById("btn-auto"),
+  btnSidebarClose: document.getElementById("btn-sidebar-close"),
+  btnCloseDrawer: document.getElementById("btn-close-drawer"),
+  tasksBadge: document.getElementById("tasks-badge"),
+  taskSummary: document.getElementById("task-summary"),
+  btnTaskFilters: document.getElementById("btn-task-filters"),
+  taskFiltersAdv: document.getElementById("task-filters-adv"),
+  filtersDot: document.getElementById("filters-dot"),
+  bulkBar: document.getElementById("bulk-bar"),
+  drawerFoot: document.getElementById("drawer-foot"),
+  chatSearch: document.getElementById("chat-search"),
+  btnWorkspaceChip: document.getElementById("btn-workspace-chip"),
+  workspaceChipLabel: document.getElementById("workspace-chip-label"),
+  connDot: document.getElementById("conn-dot"),
+  connText: document.getElementById("conn-text"),
+  composer: document.getElementById("composer"),
+  composerFoot: document.getElementById("composer-foot"),
+  btnSources: document.getElementById("btn-sources"),
+  sourcesMenu: document.getElementById("sources-menu"),
+  sourcesList: document.getElementById("sources-list"),
+  sourcesNote: document.getElementById("sources-note"),
+  sourcesCount: document.getElementById("sources-count"),
   tasksPanel: document.getElementById("tasks-panel"),
   tasksList: document.getElementById("tasks-list"),
   tasksCount: document.getElementById("tasks-count"),
   btnExecuteTasks: document.getElementById("btn-execute-tasks"),
   taskFilterSearch: document.getElementById("task-filter-search"),
-  taskFilterStatus: document.getElementById("task-filter-status"),
   taskFilterPriority: document.getElementById("task-filter-priority"),
   taskFilterMode: document.getElementById("task-filter-mode"),
   btnClearTaskFilters: document.getElementById("btn-clear-task-filters"),
@@ -115,6 +139,9 @@ const ICON = {
 // ESTADO
 // ============================================================
 
+ICON.bolt = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg>`;
+ICON.spark = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"/></svg>`;
+
 const state = {
   chats: [],
   activeId: null,
@@ -130,6 +157,9 @@ const state = {
   tasksSig: null,
   taskFilters: { q: "", status: "all", priority: "all", mode: "all" },
   selectedTaskIds: new Set(), // ids marcados para executar/excluir em lote
+  chatQuery: "", // filtro da busca de conversas
+  drawerTab: "tasks",
+  routeModes: {}, // modo fixo por conversa: { [chatId]: "heavy" | "enhance" }
   stopRequested: false,
 };
 
@@ -242,11 +272,25 @@ function enhanceCodeBlocks(container) {
 // API
 // ============================================================
 
+function setConn(ok) {
+  if (!el.connDot) return;
+  el.connDot.classList.toggle("ok", ok);
+  el.connDot.classList.toggle("off", !ok);
+  if (el.connText) el.connText.textContent = ok ? "servidor online" : "sem conexão";
+}
+
 async function api(url, options = {}) {
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch (error) {
+    setConn(false);
+    throw error;
+  }
+  setConn(true);
 
   if (!res.ok) {
     let detail = "";
@@ -293,6 +337,8 @@ function saveWorkspaces() {
 }
 
 function renderWorkspaces() {
+  syncWorkspaceChip();
+  loadRagScope();
   el.workspaceList.innerHTML = "";
   if (!state.workspaces.length) {
     el.workspaceList.innerHTML = `<div class="workspace-empty">Nenhum diretório adicionado.</div>`;
@@ -339,15 +385,88 @@ function removeWorkspace(workspace) {
 // MOBILE SIDEBAR
 // ============================================================
 
-function isMobile() { return window.matchMedia("(max-width: 780px)").matches; }
-function openSidebar() { el.sidebar.classList.add("open"); el.sidebarToggle.setAttribute("aria-expanded", "true"); }
-function closeSidebar() { el.sidebar.classList.remove("open"); el.sidebarToggle.setAttribute("aria-expanded", "false"); }
-function toggleSidebar() { if (el.sidebar.classList.contains("open")) closeSidebar(); else openSidebar(); }
+const SB_KEY = "assistant_sidebar_collapsed";
 
-window.addEventListener("resize", () => { if (!isMobile()) closeSidebar(); });
+function isMobile() { return window.matchMedia("(max-width: 780px)").matches; }
+function isOverlayDrawer() { return window.matchMedia("(max-width: 1100px)").matches; }
+
+function updateScrim() {
+  const sidebarOpen = isMobile() && el.sidebar.classList.contains("open");
+  const drawerOpen = isOverlayDrawer() && el.app.classList.contains("drawer-open");
+  el.scrim.classList.toggle("show", sidebarOpen || drawerOpen);
+}
+
+function sidebarIsOpen() {
+  return isMobile() ? el.sidebar.classList.contains("open") : !el.app.classList.contains("sb-collapsed");
+}
+
+function openSidebar() {
+  if (isMobile()) {
+    el.sidebar.classList.add("open");
+  } else {
+    el.app.classList.remove("sb-collapsed");
+    try { localStorage.setItem(SB_KEY, "0"); } catch {}
+  }
+  el.sidebarToggle.setAttribute("aria-expanded", "true");
+  updateScrim();
+}
+
+function closeSidebar() {
+  if (isMobile()) {
+    el.sidebar.classList.remove("open");
+  } else {
+    el.app.classList.add("sb-collapsed");
+    try { localStorage.setItem(SB_KEY, "1"); } catch {}
+  }
+  el.sidebarToggle.setAttribute("aria-expanded", "false");
+  updateScrim();
+}
+
+function toggleSidebar() { if (sidebarIsOpen()) closeSidebar(); else openSidebar(); }
+
+function setDrawerTab(tab) {
+  state.drawerTab = tab;
+  document.querySelectorAll(".drawer .tab").forEach((node) => {
+    const on = node.dataset.tab === tab;
+    node.classList.toggle("active", on);
+    node.setAttribute("aria-selected", String(on));
+  });
+  document.querySelectorAll(".drawer .tab-panel").forEach((node) => {
+    node.classList.toggle("hidden", node.dataset.panel !== tab);
+  });
+  el.drawerFoot.classList.toggle("hidden", tab !== "tasks");
+}
+
+function openDrawer(tab) {
+  if (tab) setDrawerTab(tab);
+  if (isMobile()) el.sidebar.classList.remove("open");
+  el.app.classList.add("drawer-open");
+  el.tasksPanel.setAttribute("aria-hidden", "false");
+  el.btnToggleTasks.classList.add("active");
+  updateScrim();
+}
+
+function closeDrawer() {
+  el.app.classList.remove("drawer-open");
+  el.tasksPanel.setAttribute("aria-hidden", "true");
+  el.btnToggleTasks.classList.remove("active");
+  updateScrim();
+}
+
+// Em telas largas o painel fica ao lado do chat; nas demais ele cobre a tela e precisa fechar sozinho.
+function closeDrawerIfOverlay() { if (isOverlayDrawer()) closeDrawer(); }
+
+window.addEventListener("resize", () => {
+  if (!isMobile()) el.sidebar.classList.remove("open");
+  el.sidebarToggle.setAttribute("aria-expanded", String(sidebarIsOpen()));
+  updateScrim();
+});
+
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.sending && !event.defaultPrevented) stopGeneration();
-  if (event.key === "Escape" && isMobile() && el.sidebar.classList.contains("open")) closeSidebar();
+  if (event.key !== "Escape") return;
+  if (state.sending && !event.defaultPrevented) { stopGeneration(); return; }
+  if (el.app.classList.contains("drawer-open") && isOverlayDrawer()) closeDrawer();
+  else if (isMobile() && el.sidebar.classList.contains("open")) closeSidebar();
 });
 
 // ============================================================
@@ -365,9 +484,45 @@ async function loadChats() {
   }
 }
 
+function chatGroupLabel(iso) {
+  const when = new Date(iso);
+  if (isNaN(when)) return "Anteriores";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  when.setHours(0, 0, 0, 0);
+  const days = Math.round((today - when) / 86400000);
+  if (days <= 0) return "Hoje";
+  if (days === 1) return "Ontem";
+  if (days <= 7) return "Últimos 7 dias";
+  if (days <= 30) return "Últimos 30 dias";
+  return "Anteriores";
+}
+
 function renderChatList() {
   el.chatList.innerHTML = "";
-  state.chats.forEach((chat) => {
+  const query = state.chatQuery.trim().toLowerCase();
+  const chats = state.chats
+    .filter((chat) => !query || String(chat.title || "").toLowerCase().includes(query))
+    .sort((a, b) => (Date.parse(b.created_at) || Date.now()) - (Date.parse(a.created_at) || Date.now()));
+
+  if (!chats.length && query) {
+    const empty = document.createElement("li");
+    empty.className = "chat-group";
+    empty.textContent = "Nenhuma conversa encontrada";
+    el.chatList.appendChild(empty);
+    return;
+  }
+
+  let lastGroup = null;
+  chats.forEach((chat) => {
+    const group = chatGroupLabel(chat.created_at);
+    if (group !== lastGroup) {
+      const header = document.createElement("li");
+      header.className = "chat-group";
+      header.textContent = group;
+      el.chatList.appendChild(header);
+      lastGroup = group;
+    }
     const li = document.createElement("li");
     li.className = "chat-item" + (chat.id === state.activeId ? " active" : "");
     li.dataset.id = chat.id;
@@ -463,16 +618,42 @@ function normalizeTaskDescription(desc) {
   return String(desc || "").trim().replace(/^\*\*(.+?):\*\*[ \t]*$/gm, "#### $1");
 }
 
+const STATUS_LABEL = {
+  pending: "Pendente", queued: "Na fila", running: "Executando",
+  review: "Em revisão", completed: "Concluída", failed: "Falhou",
+};
+const PRIORITY_LABEL = { high: "Alta", medium: "Média", low: "Baixa" };
+
 function renderTasks(tasks) {
   el.tasksList.innerHTML = "";
   const pendingTasks = tasks.filter((task) => task.status === "pending");
   const failedTasks = tasks.filter((task) => task.status === "failed");
-  el.tasksCount.textContent =
-    (pendingTasks.length
-      ? `${pendingTasks.length} tarefa(s) pendente(s)`
-      : "Nenhuma tarefa pendente.") +
-    (failedTasks.length ? ` · ${failedTasks.length} com falha` : "") +
-    (hasActiveTaskFilters() ? ` · exibindo ${applyTaskFilters(tasks, state.taskFilters).length} de ${tasks.length}` : "");
+  const reviewTasks = tasks.filter((task) => task.status === "review");
+
+  const stats = {
+    all: tasks.length,
+    pending: pendingTasks.length,
+    active: tasks.filter(isTaskLocked).length,
+    review: reviewTasks.length,
+    failed: failedTasks.length,
+    completed: tasks.filter((task) => task.status === "completed").length,
+  };
+  Object.entries(stats).forEach(([key, value]) => {
+    const node = document.getElementById(`stat-${key}`);
+    if (node) node.textContent = String(value);
+  });
+  el.taskSummary.querySelectorAll(".stat-pill").forEach((pill) => {
+    pill.classList.toggle("active", pill.dataset.status === state.taskFilters.status);
+  });
+
+  const attention = pendingTasks.length + reviewTasks.length;
+  el.tasksBadge.textContent = String(attention);
+  el.tasksBadge.classList.toggle("hidden", attention === 0);
+  el.tasksBadge.classList.toggle("warn", reviewTasks.length > 0 || failedTasks.length > 0);
+  el.filtersDot.classList.toggle("hidden", state.taskFilters.priority === "all" && state.taskFilters.mode === "all");
+  el.tasksCount.textContent = hasActiveTaskFilters()
+    ? `${applyTaskFilters(tasks, state.taskFilters).length} de ${tasks.length}`
+    : tasks.length ? `${tasks.length} tarefa(s)` : "";
 
   el.btnExecuteTasks.disabled = !pendingTasks.length;
 
@@ -522,6 +703,7 @@ function renderTasks(tasks) {
           <h4 class="task-card-title">${escapeHtml(task.title || "Tarefa sem título")}</h4>
         </div>
         <div class="task-card-actions">
+          <span class="task-status ${escapeHtml(task.status || "pending")}">${escapeHtml(STATUS_LABEL[task.status || "pending"] || task.status)}</span>
           <button class="btn-icon-task btn-edit-task" data-task-id="${task.id}" title="Editar">${ICON.pencil}</button>
           <button class="btn-icon-task btn-delete-task" data-task-id="${task.id}" title="Excluir">${ICON.trash}</button>
         </div>
@@ -538,11 +720,10 @@ function renderTasks(tasks) {
       }
       ${inReview ? `<div class="task-diff" data-diff-for="${task.id}" hidden></div>` : ""}
       <div class="task-card-footer">
-        <span class="task-priority">${escapeHtml(task.priority || "medium")}</span>
+        <span class="task-meta"><span class="task-priority p-${escapeHtml(task.priority || "medium")}">${escapeHtml(PRIORITY_LABEL[task.priority || "medium"] || task.priority)}</span><span class="task-mode">${steps.length ? "determinística" : "modo livre"}</span></span>
         <span class="task-footer-right">
           ${failed ? `<button type="button" class="btn btn-ghost btn-sm btn-retry-task" data-task-id="${task.id}">Reiniciar</button>` : ""}
           ${inReview ? `<button type="button" class="btn btn-ghost btn-sm btn-diff-task" data-task-id="${task.id}">Ver alterações</button><button type="button" class="btn btn-primary btn-sm btn-approve-task" data-task-id="${task.id}">Aprovar</button><button type="button" class="btn btn-ghost btn-sm btn-reject-task" data-task-id="${task.id}">Reprovar</button>` : ""}
-          <span class="task-status ${escapeHtml(task.status || "pending")}">${escapeHtml(task.status || "pending")}</span>
         </span>
       </div>
     `;
@@ -572,7 +753,11 @@ function taskMode(task) {
 }
 
 function taskMatchesFilters(task, filters) {
-  if (filters.status !== "all" && (task.status || "pending") !== filters.status) return false;
+  if (filters.status !== "all") {
+    const current = task.status || "pending";
+    const matches = filters.status === "active" ? current === "queued" || current === "running" : current === filters.status;
+    if (!matches) return false;
+  }
   if (filters.priority !== "all" && (task.priority || "medium") !== filters.priority) return false;
   if (filters.mode !== "all" && taskMode(task) !== filters.mode) return false;
 
@@ -599,19 +784,18 @@ function updateTaskToolbar(allTasks, visibleTasks) {
   const selectedTasks = allTasks.filter((task) => state.selectedTaskIds.has(task.id));
   const runnable = selectedTasks.filter((task) => task.status === "pending" || task.status === "failed");
 
-  el.tasksSelectedCount.textContent = `${selectedTasks.length} selecionada(s)`;
+  el.tasksSelectedCount.textContent = `${selectedTasks.length} selecionada${selectedTasks.length === 1 ? "" : "s"}`;
   el.taskSelectAll.disabled = !selectable.length;
   el.taskSelectAll.checked = selectable.length > 0 && selectedVisible.length === selectable.length;
   el.taskSelectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < selectable.length;
 
   el.btnExecuteSelected.disabled = !runnable.length;
-  el.btnExecuteSelected.textContent = runnable.length
-    ? `Executar selecionadas (${runnable.length})`
-    : "Executar selecionadas";
+  el.btnExecuteSelected.textContent = runnable.length ? `Executar (${runnable.length})` : "Executar";
   el.btnDeleteSelected.disabled = !selectedTasks.length;
-  el.btnDeleteSelected.textContent = selectedTasks.length
-    ? `Excluir selecionadas (${selectedTasks.length})`
-    : "Excluir selecionadas";
+  el.btnDeleteSelected.textContent = selectedTasks.length ? `Excluir (${selectedTasks.length})` : "Excluir";
+
+  el.bulkBar.classList.toggle("hidden", selectedTasks.length === 0);
+  el.drawerFoot.classList.toggle("has-selection", selectedTasks.length > 0);
 }
 
 async function executeSelectedTasks() {
@@ -647,7 +831,7 @@ async function executeSelectedTasks() {
     }
     state.selectedTaskIds.clear();
     state.tasksSig = null;
-    el.tasksPanel.classList.add("hidden");
+    closeDrawerIfOverlay();
     await sendMessage(`@generate ${runnable.map((task) => task.id).join(" ")}`);
     await loadTasks(chat.thread_id);
   } catch (error) {
@@ -685,7 +869,7 @@ async function deleteSelectedTasks() {
 function applyTaskFilterInputs() {
   state.taskFilters = {
     q: el.taskFilterSearch.value,
-    status: el.taskFilterStatus.value,
+    status: state.taskFilters.status,
     priority: el.taskFilterPriority.value,
     mode: el.taskFilterMode.value,
   };
@@ -700,9 +884,9 @@ function onTaskFilterChange() {
 
 function clearTaskFilters() {
   el.taskFilterSearch.value = "";
-  el.taskFilterStatus.value = "all";
   el.taskFilterPriority.value = "all";
   el.taskFilterMode.value = "all";
+  state.taskFilters.status = "all";
   applyTaskFilterInputs();
 }
 
@@ -810,7 +994,7 @@ async function retryTaskAction(taskId) {
   try {
     await api(API.retryTask(taskId), { method: "POST" });
     await loadTasks(chat.thread_id);
-    el.tasksPanel.classList.add("hidden");
+    closeDrawerIfOverlay();
     await sendMessage(`@generate ${taskId}`);
     await loadTasks(chat.thread_id);
   } catch (error) {
@@ -831,7 +1015,7 @@ async function executePendingTasks() {
     }
     const taskIds = pendingTasks.map((task) => task.id).join(" ");
     const command = `@generate ${taskIds}`;
-    el.tasksPanel.classList.add("hidden");
+    closeDrawerIfOverlay();
     await sendMessage(command);
     await loadTasks(chat.thread_id);
   } catch (err) {}
@@ -846,6 +1030,10 @@ async function openChat(id) {
   renderChatList();
   el.welcome.classList.add("hidden");
   el.chatView.classList.remove("hidden");
+  el.btnToggleTasks.classList.remove("hidden");
+  syncChips();
+  autoResize();
+  loadRagScope();
   el.messages.innerHTML = "";
   const chat = state.chats.find((item) => item.id === id);
   el.chatTitle.textContent = chat?.title || "Conversa";
@@ -881,6 +1069,9 @@ async function openChat(id) {
 function showWelcome() {
   el.chatView.classList.add("hidden");
   el.welcome.classList.remove("hidden");
+  el.btnToggleTasks.classList.add("hidden");
+  el.chatTitle.textContent = "Assistente Local";
+  closeDrawer();
 }
 
 function renderHistory(messages) {
@@ -910,12 +1101,19 @@ function splitAttachments(content) {
 }
 
 function renderUserContent({ text, files }) {
+  const tag = text.match(/^\s*@(heavy|enhance)\b\s*/i);
+  let badge = "";
+  if (tag) {
+    const kind = tag[1].toLowerCase();
+    badge = `<span class="route-badge ${kind}">${kind === "heavy" ? ICON.bolt : ICON.spark}${kind === "heavy" ? "Heavy" : "Enhance"}</span>`;
+    text = text.slice(tag[0].length);
+  }
   const chips = files.length
     ? `<div class="msg-attachments">${files.map((name) =>
         `<span class="attachment-chip"><span class="attachment-name" title="${escapeHtml(name)}">📎 ${escapeHtml(name)}</span></span>`
       ).join("")}</div>`
     : "";
-  return escapeHtml(text) + chips;
+  return badge + escapeHtml(text) + chips;
 }
 
 function appendMessage(role, content, modelName = null, meta = {}) {
@@ -1265,34 +1463,179 @@ function autoResize() {
   el.chatInput.style.height = Math.min(el.chatInput.scrollHeight, 200) + "px";
 }
 
-function insertHeavy() {
-  let value = el.chatInput.value;
-  if (!/(^|\s)@heavy(\s|$)/.test(value)) {
-    value = value.replace(/(^|\s)@enhance(\s|$)/g, ' '); 
-    el.chatInput.value = "@heavy " + value.replace(/^\s+/, "");
-  }
-  el.chatInput.focus();
-  autoResize();
-  syncChips();
+// Modo de roteamento fixo: vale para TODAS as mensagens da conversa até ser solto.
+const ROUTE_TAGS = { auto: "", heavy: "@heavy", enhance: "@enhance" };
+const ROUTE_LABEL = { heavy: "Heavy", enhance: "Enhance" };
+const ROUTE_STORE = "assistant_route_modes";
+
+function loadRouteModes() {
+  try { state.routeModes = JSON.parse(localStorage.getItem(ROUTE_STORE) || "{}") || {}; }
+  catch { state.routeModes = {}; }
 }
 
-function insertEnhance() {
-  let value = el.chatInput.value;
-  if (!/(^|\s)@enhance(\s|$)/.test(value)) {
-    value = value.replace(/(^|\s)@heavy(\s|$)/g, ' '); 
-    el.chatInput.value = "@enhance " + value.replace(/^\s+/, "");
-  }
-  el.chatInput.focus();
-  autoResize();
+function saveRouteModes() {
+  try { localStorage.setItem(ROUTE_STORE, JSON.stringify(state.routeModes)); } catch {}
+}
+
+function getRouteMode() {
+  const mode = state.routeModes[String(state.activeId)];
+  return mode && Object.prototype.hasOwnProperty.call(ROUTE_TAGS, mode) ? mode : "auto";
+}
+
+function setRouteMode(mode) {
+  if (state.activeId == null) return;
+  if (mode === "auto") delete state.routeModes[String(state.activeId)];
+  else state.routeModes[String(state.activeId)] = mode;
+  saveRouteModes();
   syncChips();
+  if (!isMobile()) el.chatInput.focus();
+}
+
+function toggleRouteMode(mode) { setRouteMode(getRouteMode() === mode ? "auto" : mode); }
+
+// Aplica a etiqueta do modo fixo, sem duplicar se o usuário já digitou uma e sem tocar em comandos (@generate).
+function applyRouteMode(text) {
+  const tag = ROUTE_TAGS[getRouteMode()];
+  if (!tag || !text.trim()) return text;
+  if (/^\s*@(?:generate|heavy|enhance)\b/i.test(text) || /(^|\s)@(?:heavy|enhance)(\s|$)/i.test(text)) return text;
+  return `${tag} ${text.replace(/^\s+/, "")}`;
 }
 
 function syncChips() {
-  const value = el.chatInput.value;
-  el.btnHeavy.classList.toggle("active", /(^|\s)@heavy(\s|$)/.test(value));
-  if (el.btnEnhance) {
-    el.btnEnhance.classList.toggle("active", /(^|\s)@enhance(\s|$)/.test(value));
+  const mode = getRouteMode();
+  [[el.btnAuto, "auto"], [el.btnHeavy, "heavy"], [el.btnEnhance, "enhance"]].forEach(([button, name]) => {
+    if (!button) return;
+    const on = mode === name;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-checked", String(on));
+  });
+  el.composer.dataset.mode = mode;
+  const fixed = mode !== "auto";
+  el.composerFoot.classList.toggle("fixed", fixed);
+  el.composerFoot.innerHTML = fixed
+    ? `Modo <b>${ROUTE_LABEL[mode]}</b> fixo nesta conversa · toque de novo para soltar`
+    : "Enter envia · Shift+Enter quebra a linha";
+  el.chatInput.placeholder = fixed ? `Pergunte (${ROUTE_LABEL[mode]})…` : "Pergunte alguma coisa…";
+}
+
+async function startWith(prompt, mode) {
+  await createChat();
+  if (state.activeId == null) return;
+  setRouteMode(mode || "auto");
+  el.chatInput.value = prompt || "";
+  autoResize();
+  el.chatInput.focus();
+}
+
+// ============================================================
+// FONTES DE CONHECIMENTO (RAG): quais fontes o agente consulta neste projeto
+// ============================================================
+const RAG = { ok: false, own: null, linked: new Set(), sources: [], workspace: "" };
+
+function ragProjectName() {
+  return RAG.workspace ? RAG.workspace.split(/[\\/]/).filter(Boolean).pop() || RAG.workspace : "";
+}
+
+async function loadRagScope() {
+  if (!el.btnSources) return;
+  RAG.workspace = state.workspacePath || "";
+  try {
+    const data = await api(`${API.ragScope}?path=${encodeURIComponent(RAG.workspace)}`);
+    RAG.ok = true;
+    RAG.own = data.own || null;
+    RAG.linked = new Set(data.linked_ids || []);
+    RAG.sources = data.sources || [];
+  } catch {
+    RAG.ok = false;
+    RAG.own = null;
+    RAG.linked = new Set();
+    RAG.sources = [];
   }
+  renderSources();
+}
+
+function sourceRow(source, checked, locked, label) {
+  const off = locked || !RAG.workspace;
+  return `<label class="src-row${locked ? " locked" : ""}">
+    <input type="checkbox" data-source="${source.id}" ${checked ? "checked" : ""} ${off ? "disabled" : ""} />
+    <span class="src-name">${escapeHtml(source.name)}</span>
+    <span class="src-kind">${escapeHtml(label || source.kind)}</span>
+    <small class="src-meta">${source.files ?? 0} arquivos</small>
+  </label>`;
+}
+
+function renderSources() {
+  const visible = RAG.ok && RAG.sources.length > 0;
+  el.btnSources.classList.toggle("hidden", !visible);
+  if (!visible) {
+    closeSourcesMenu();
+    return;
+  }
+
+  el.sourcesCount.textContent = String((RAG.own ? 1 : 0) + RAG.linked.size);
+  el.btnSources.classList.toggle("has-extra", RAG.linked.size > 0);
+
+  const project = ragProjectName();
+  el.sourcesNote.innerHTML = project
+    ? `Vale para o projeto <b>${escapeHtml(project)}</b>, em todas as conversas dele. Você também pode pedir uma fonte pelo nome na pergunta.`
+    : "Selecione um projeto na aba Projeto para escolher as fontes.";
+
+  const html = [];
+  if (project) {
+    html.push('<div class="src-group">Do projeto</div>');
+    const ownFull = RAG.own && RAG.sources.find((source) => source.id === RAG.own.id);
+    html.push(
+      ownFull
+        ? sourceRow(ownFull, true, true, "projeto")
+        : `<div class="src-row src-off"><span class="src-name">${escapeHtml(project)}</span><span class="src-kind">projeto</span><small class="src-meta">não indexado</small></div>`
+    );
+  }
+  const others = RAG.sources.filter((source) => !RAG.own || source.id !== RAG.own.id);
+  if (others.length) {
+    html.push('<div class="src-group">Também consultar</div>');
+    others.forEach((source) => html.push(sourceRow(source, RAG.linked.has(source.id), false)));
+  }
+  el.sourcesList.innerHTML = html.join("");
+}
+
+async function toggleSourceLink(id, checked) {
+  if (!RAG.workspace) return;
+  const previous = RAG.linked;
+  const next = new Set(previous);
+  if (checked) next.add(id);
+  else next.delete(id);
+  RAG.linked = next;
+  renderSources();
+  try {
+    const result = await api(API.ragLinks, {
+      method: "PUT",
+      body: JSON.stringify({ path: RAG.workspace, source_ids: [...next] }),
+    });
+    RAG.linked = new Set(result.source_ids || []);
+  } catch (error) {
+    RAG.linked = previous;
+    alert("Não foi possível salvar as fontes: " + error.message);
+  }
+  renderSources();
+}
+
+function openSourcesMenu() {
+  el.sourcesMenu.classList.remove("hidden");
+  el.btnSources.setAttribute("aria-expanded", "true");
+  loadRagScope(); // atualiza ao abrir: novas fontes indexadas aparecem na hora
+}
+
+function closeSourcesMenu() {
+  if (!el.sourcesMenu) return;
+  el.sourcesMenu.classList.add("hidden");
+  el.btnSources.setAttribute("aria-expanded", "false");
+}
+
+function syncWorkspaceChip() {
+  if (!el.workspaceChipLabel) return;
+  const path = state.workspacePath || "";
+  el.workspaceChipLabel.textContent = path ? path.split(/[\\/]/).filter(Boolean).pop() || path : "Sem projeto";
+  el.btnWorkspaceChip.title = path || "Nenhum diretório de trabalho selecionado";
 }
 
 // ============================================================
@@ -1300,8 +1643,9 @@ function syncChips() {
 // ============================================================
 
 el.btnNewChat.addEventListener("click", createChat);
-el.btnHeavy.addEventListener("click", insertHeavy);
-if (el.btnEnhance) el.btnEnhance.addEventListener("click", insertEnhance);
+el.btnAuto.addEventListener("click", () => setRouteMode("auto"));
+el.btnHeavy.addEventListener("click", () => toggleRouteMode("heavy"));
+el.btnEnhance.addEventListener("click", () => toggleRouteMode("enhance"));
 
 // Restauração do Evento Input e Enter
 el.chatInput.addEventListener("input", () => {
@@ -1327,6 +1671,7 @@ el.chatForm.addEventListener("submit", async (e) => {
     if (composed === null) return; // mantém texto e anexos para tentar de novo
     text = composed;
   }
+  text = applyRouteMode(text);
   el.chatInput.value = "";
   autoResize();
   syncChips();
@@ -1339,20 +1684,61 @@ el.attachInput.addEventListener("change", () => {
   el.attachInput.value = "";
 });
 
-el.btnToggleBatch.addEventListener("click", () => el.batchPanel.classList.toggle("hidden"));
+document.querySelectorAll(".drawer .tab").forEach((tab) => {
+  tab.addEventListener("click", () => setDrawerTab(tab.dataset.tab));
+});
+el.btnCloseDrawer.addEventListener("click", closeDrawer);
+el.btnSidebarClose.addEventListener("click", closeSidebar);
+el.scrim.addEventListener("click", () => {
+  if (isMobile()) el.sidebar.classList.remove("open");
+  closeDrawerIfOverlay();
+  updateScrim();
+});
+el.taskSummary.addEventListener("click", (event) => {
+  const pill = event.target.closest(".stat-pill");
+  if (!pill) return;
+  state.taskFilters.status = pill.dataset.status;
+  renderTasks(state.currentTasks);
+});
+el.btnTaskFilters.addEventListener("click", () => {
+  const open = !el.taskFiltersAdv.classList.toggle("hidden");
+  el.btnTaskFilters.setAttribute("aria-expanded", String(open));
+});
+el.chatSearch.addEventListener("input", () => {
+  state.chatQuery = el.chatSearch.value;
+  renderChatList();
+});
+el.btnWorkspaceChip.addEventListener("click", () => openDrawer("project"));
+el.btnSources.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (el.sourcesMenu.classList.contains("hidden")) openSourcesMenu();
+  else closeSourcesMenu();
+});
+el.sourcesMenu.addEventListener("click", (event) => event.stopPropagation());
+el.sourcesList.addEventListener("change", (event) => {
+  const box = event.target.closest?.("[data-source]");
+  if (box) toggleSourceLink(Number(box.dataset.source), box.checked);
+});
+document.addEventListener("click", closeSourcesMenu);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSourcesMenu(); });
+document.querySelectorAll(".suggest").forEach((card) => {
+  card.addEventListener("click", () => startWith(card.dataset.prompt, card.dataset.mode));
+});
 el.btnSendBatch.addEventListener("click", sendBatch);
 el.sidebarToggle.addEventListener("click", toggleSidebar);
 
 el.btnToggleTasks.addEventListener("click", async () => {
-  el.tasksPanel.classList.toggle("hidden");
-  const chat = state.chats.find((c) => c.id === state.activeId);
-  if (!el.tasksPanel.classList.contains("hidden") && chat?.thread_id) {
-    await loadTasks(chat.thread_id);
+  if (el.app.classList.contains("drawer-open")) {
+    closeDrawer();
+    return;
   }
+  openDrawer("tasks");
+  const chat = state.chats.find((c) => c.id === state.activeId);
+  if (chat?.thread_id) await loadTasks(chat.thread_id);
 });
 el.btnExecuteTasks.addEventListener("click", executePendingTasks);
 el.taskFilterSearch.addEventListener("input", onTaskFilterChange);
-[el.taskFilterStatus, el.taskFilterPriority, el.taskFilterMode].forEach((select) =>
+[el.taskFilterPriority, el.taskFilterMode].forEach((select) =>
   select.addEventListener("change", onTaskFilterChange)
 );
 el.btnClearTaskFilters.addEventListener("click", clearTaskFilters);
@@ -1460,7 +1846,12 @@ setSendButtonMode(false);
 loadChats();
 loadWorkspaces();
 autoResize();
+loadRouteModes();
+if (!isMobile() && localStorage.getItem(SB_KEY) === "1") el.app.classList.add("sb-collapsed");
+el.sidebarToggle.setAttribute("aria-expanded", String(sidebarIsOpen()));
+setDrawerTab("tasks");
 syncChips();
+syncWorkspaceChip();
 startPolling();
 // ============================================================
 // ANEXOS DAS TAREFAS + PROMPT PARA GERAR MICROTASKS
