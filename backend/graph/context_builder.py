@@ -431,6 +431,8 @@ def format_report(report: dict, num_ctx: int | None = None, prompt_tokens: int |
         lines.append("- definições resolvidas: " + ", ".join(report["references"]))
     if report.get("rag_chars"):
         lines.append(f"- trechos do RAG: {report['rag_chars']} caracteres")
+    if report.get("rag_chars"):
+        lines.append(f"- trechos do RAG: {report['rag_chars']} caracteres")
     lines.append(f"- dossiê: ~{report.get('est_tokens', 0)} tokens estimados")
     if report.get("truncated"):
         lines.append("⚠️ Parte do conteúdo ficou de fora do dossiê (orçamento). O agente deve usar read_file_chunk para o restante.")

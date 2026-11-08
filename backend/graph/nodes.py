@@ -58,6 +58,7 @@ from .executor import execute_task, missing_listed_files, run_checks, workspace_
 from .context_builder import build_task_dossier, estimate_tokens, format_report
 from .grounding import auto_check_documents
 from .rag_bridge import rag_context
+from .rag_bridge import rag_context
 from .utils import ATTACHMENT_MARKER, detect_explicit_route, strip_leading_tags
 
 
@@ -486,6 +487,15 @@ async def _generate_node_impl(state: State):
         dossier_text, dossier_report = await asyncio.to_thread(
             build_task_dossier, workspace, list(task.files or [])
         )
+        rag_text = await rag_context(workspace, f"{task.title}\n{(task.description or '')[:600]}")
+        if rag_text:
+            dossier_report["rag_chars"] = len(rag_text)
+            header = "" if dossier_text else "## DOSSIÊ DE CONTEXTO (montado pelo sistema)\n"
+            dossier_text = (
+                (dossier_text + "\n\n" if dossier_text else header)
+                + "### Trechos relacionados do repositório (RAG)\n"
+                + rag_text
+            )
         rag_text = await rag_context(workspace, f"{task.title}\n{(task.description or '')[:600]}")
         if rag_text:
             dossier_report["rag_chars"] = len(rag_text)

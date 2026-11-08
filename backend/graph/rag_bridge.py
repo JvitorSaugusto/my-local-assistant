@@ -17,26 +17,38 @@ _off_until = 0.0
 
 
 async def rag_context(workspace: str | None, query: str, limit: int = 6, max_chars: int = 6000) -> str:
-    """Trechos relacionados à consulta, prontos para o dossiê. Vazio se não houver índice."""
+    """Fontes disponíveis + trechos do escopo padrão do projeto, para o dossiê. Vazio se nada foi indexado."""
     global _off_until
     query = (query or "").strip()
-    now = time.monotonic()
-    if not workspace or not query or now < _off_until:
+    if not workspace or not query or time.monotonic() < _off_until:
         return ""
-
-    key = (workspace, query[:400])
-    cached = _CACHE.get(key)
-    if cached and now - cached[0] < _CACHE_TTL:
-        return cached[1]
 
     try:
         from backend.rag import get_service
 
-        text = await get_service().context_for_workspace(workspace, query, limit=limit, max_chars=max_chars)
+        service = get_service()
+        refreshed = await service.refresh_workspace(workspace)  # só o que mudou; com trava de intervalo
+        if refreshed and (refreshed.get("files_indexed") or refreshed.get("files_removed")):
+            _CACHE.clear()
+
+        key = (workspace, query[:400])
+        cached = _CACHE.get(key)
+        if cached and time.monotonic() - cached[0] < _CACHE_TTL:
+            return cached[1]
+
+        hits_text = await service.context_for_workspace(workspace, query, limit=limit, max_chars=max_chars)
+        overview = await service.overview(workspace)
     except Exception as exc:  # noqa: BLE001
         print(f"ℹ️ [RAG] contexto indisponível (seguindo sem ele): {exc}")
         _off_until = time.monotonic() + _OFF_SECONDS
         return ""
+
+    parts = []
+    if overview:
+        parts.append('Fontes indexadas (para consultar outra, use search_codebase com source="nome"):\n' + overview)
+    if hits_text:
+        parts.append(hits_text)
+    text = "\n\n".join(parts)
 
     if len(_CACHE) >= _CACHE_MAX:
         _CACHE.pop(next(iter(_CACHE)))
@@ -45,11 +57,9 @@ async def rag_context(workspace: str | None, query: str, limit: int = 6, max_cha
 
 
 async def rag_search_for_tool(
-    workspace: str | None, query: str, path_prefix: str | None = None, limit: int = 6
+    workspace: str | None, query: str, path_prefix: str | None = None, limit: int = 6, source: str | None = None
 ) -> str:
-    """Resposta da tool search_codebase (mensagens de erro claras para o modelo)."""
-    if not workspace:
-        return "ERRO: o workspace não está definido."
+    """Resposta da tool search_codebase. `source`: vazio = projeto + vinculadas, 'all' = todas, ou o nome de uma fonte."""
     if not (query or "").strip():
         return "ERRO: informe o que buscar."
     try:
@@ -57,13 +67,23 @@ async def rag_search_for_tool(
         from backend.rag.search import format_hits
 
         service = get_service()
-        source = await service.find_source_for_workspace(workspace)
-        if not source:
+        if workspace:
+            refreshed = await service.refresh_workspace(workspace)
+            if refreshed and (refreshed.get("files_indexed") or refreshed.get("files_removed")):
+                _CACHE.clear()
+        hits, label, sources = await service.search_scoped(query, workspace, source, limit, path_prefix)
+        if not sources:
+            overview = await service.overview(workspace)
+            if overview:
+                return (
+                    "Nenhuma fonte é consultada por padrão para este workspace. Fontes disponíveis:\n"
+                    f'{overview}\nRefaça a busca com source="nome" ou source="all".'
+                )
             return (
-                "Este workspace ainda não foi indexado no RAG. Use search_in_file e generate_repo_map, "
-                "ou peça ao usuário para indexá-lo em /static/rag.html."
+                "Nada foi indexado no RAG ainda. Use search_in_file e generate_repo_map, "
+                "ou peça ao usuário para indexar em /static/rag.html."
             )
-        hits = await service.search(query, source_id=source["id"], limit=limit, path_prefix=path_prefix)
-        return format_hits(hits)
+        names = ", ".join(s["name"] for s in sources)
+        return f"Consultado: {label} ({names})\n\n" + format_hits(hits)
     except Exception as exc:  # noqa: BLE001
         return f"ERRO ao consultar o RAG: {exc}"

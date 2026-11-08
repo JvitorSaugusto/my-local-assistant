@@ -1901,6 +1901,7 @@ O sistema pode anexar a este prompt um "DOSSIÊ DE CONTEXTO" com o git diff, os 
 
 - Leia o dossiê ANTES de chamar ferramentas de leitura; use ferramentas só para o que estiver marcado como PARCIAL ou omitido.
 - Em repositório grande já indexado, use `search_codebase` (por assunto ou por nome) para localizar classes e funções; ele devolve arquivo, linhas, resumo e trecho. Confirme com `read_file_chunk` antes de editar, pois o índice pode estar desatualizado.
+- Em repositório grande já indexado, use `search_codebase` (por assunto ou por nome) para localizar classes e funções; ele devolve arquivo, linhas, resumo e trecho. Confirme com `read_file_chunk` antes de editar, pois o índice pode estar desatualizado.
 - Arquivo PARCIAL: o dossiê traz cabeçalho (imports e constantes), esboço e trechos alterados. Para qualquer outra parte, use `read_file_chunk`.
 - Ao escrever documentação (README, .md, .txt, PDF) ou qualquer texto que descreva código:
   - afirme apenas valores que apareçam LITERALMENTE no código visto (campos, valores aceitos, headers, rotas, métodos HTTP, códigos de status, nomes de settings);

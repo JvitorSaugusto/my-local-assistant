@@ -39,7 +39,7 @@ class State(TypedDict):
     
     workspace_path: str
 
-FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content, read_file_chunk, search_in_file]
+FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content, read_file_chunk, search_in_file, search_codebase]
 FILE_TOOLS_FULL = [read_file_content, generate_repo_map, read_file_chunk, search_in_file, search_codebase]
 WRITE_AND_GIT_TOOLS = [
     create_git_branch,
