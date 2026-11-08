@@ -80,6 +80,10 @@ class PgVectorStore:
                 files_total INT NOT NULL DEFAULT 0, files_done INT NOT NULL DEFAULT 0,
                 chunks_done INT NOT NULL DEFAULT 0, current_file TEXT NOT NULL DEFAULT '', error TEXT,
                 started_at TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ)""",
+            """CREATE TABLE IF NOT EXISTS rag.workspace_links (
+                workspace_root TEXT NOT NULL,
+                source_id INT NOT NULL REFERENCES rag.sources(id) ON DELETE CASCADE,
+                PRIMARY KEY (workspace_root, source_id))""",
         ]
         async with self.engine.begin() as conn:
             for statement in ddl:
@@ -263,3 +267,20 @@ class PgVectorStore:
                           error = 'Servidor reiniciado durante a ingestão.'
                    WHERE status IN ('queued', 'running')"""))
         return result.rowcount or 0
+
+
+    async def set_workspace_links(self, root, source_ids):
+        ids = list(dict.fromkeys(int(i) for i in source_ids))
+        async with self.engine.begin() as conn:
+            await conn.execute(text("DELETE FROM rag.workspace_links WHERE workspace_root = :r"), {"r": root})
+            if ids:
+                await conn.execute(
+                    text("INSERT INTO rag.workspace_links (workspace_root, source_id) VALUES (:r, :s) ON CONFLICT DO NOTHING"),
+                    [{"r": root, "s": i} for i in ids],
+                )
+
+    async def get_workspace_links(self, root):
+        sql = "SELECT source_id FROM rag.workspace_links WHERE workspace_root = :r ORDER BY source_id"
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(text(sql), {"r": root})).all()
+        return [r[0] for r in rows]

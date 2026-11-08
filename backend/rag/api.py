@@ -120,3 +120,35 @@ async def search(payload: SearchRequest):
          "summary": h.summary, "content": h.content, "score": round(h.score, 5), "matched_by": h.matched_by}
         for h in hits
     ]
+
+
+
+class LinksRequest(BaseModel):
+    path: str = Field(min_length=1)
+    source_ids: list[int] = Field(default_factory=list)
+
+
+@rag_router.get("/links")
+async def get_links(path: str):
+    try:
+        return {"source_ids": await get_service().get_links(path)}
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from exc
+
+
+@rag_router.put("/links")
+async def put_links(payload: LinksRequest):
+    try:
+        return {"source_ids": await get_service().set_links(payload.path, payload.source_ids)}
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from exc
+
+
+
+@rag_router.get("/scope")
+async def scope(path: str = ""):
+    """Fonte do projeto + vínculos + todas as fontes (alimenta o seletor de fontes do chat)."""
+    try:
+        return await get_service().scope_info(path)
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from exc

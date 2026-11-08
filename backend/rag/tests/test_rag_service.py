@@ -95,5 +95,96 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.service.list_sources(), [])
 
 
+class ScopeAndRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.proj = base / "projeto_x"
+        self.other = base / "projeto_y"
+        for folder, code in ((self.proj, "def so_no_x():\n    return 1\n"), (self.other, "def so_no_y():\n    return 2\n")):
+            folder.mkdir()
+            (folder / "m.py").write_text(code, encoding="utf-8")
+        self.service = make_service(os.path.join(self.tmp.name, "work"))
+        for folder in (self.proj, self.other):
+            started = await self.service.ingest_workspace(str(folder))
+            await wait_done(self.service, started["source_id"])
+        zpath = os.path.join(self.tmp.name, "z.zip")
+        with zipfile.ZipFile(zpath, "w") as z:
+            z.writestr("pasta/z.py", "def so_no_zip():\n    return 3\n")
+        started = await self.service.ingest_zip(zpath, "meu-zip")
+        await wait_done(self.service, started["source_id"])
+        self.ws = str(self.proj)
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def names(self, source=None):
+        _hits, _label, sources = await self.service.search_scoped("def", self.ws, source)
+        return sorted(s["name"] for s in sources)
+
+    async def test_default_scope_is_active_workspace_only(self):
+        self.assertEqual(await self.names(), ["projeto_x"])
+
+    async def test_named_source_reaches_zip_and_other_workspace(self):
+        self.assertEqual(await self.names("meu-zip"), ["meu-zip"])
+        self.assertEqual(await self.names("PROJETO_Y"), ["projeto_y"])
+        hits, _l, _s = await self.service.search_scoped("so_no_zip", self.ws, "meu-zip")
+        self.assertEqual(hits[0].path, "z.py")
+
+    async def test_all_and_unknown(self):
+        self.assertEqual(await self.names("all"), ["meu-zip", "projeto_x", "projeto_y"])
+        with self.assertRaises(ValueError) as ctx:
+            await self.service.resolve_scope(self.ws, "nao-existe")
+        self.assertIn("meu-zip", str(ctx.exception))
+
+    async def test_links_extend_default_scope(self):
+        zip_id = (await self.service._source_by_name("meu-zip"))["id"]
+        own_id = (await self.service.find_source_for_workspace(self.ws))["id"]
+        saved = await self.service.set_links(self.ws, [zip_id, own_id, 999])
+        self.assertEqual(saved, [zip_id])  # ignora a própria fonte e ids inexistentes
+        self.assertEqual(await self.names(), ["meu-zip", "projeto_x"])
+        await self.service.delete_source(zip_id)
+        self.assertEqual(await self.names(), ["projeto_x"])
+
+    async def test_overview_tells_what_is_default(self):
+        text = await self.service.overview(self.ws)
+        self.assertIn("projeto_x", text)
+        self.assertIn("consultada por padrão", text)
+        self.assertIn('source="meu-zip"', text)
+
+    async def test_refresh_picks_up_edits_and_is_throttled(self):
+        (self.proj / "m.py").write_text("def so_no_x():\n    return 1\n\ndef recem_criada():\n    return 9\n", encoding="utf-8")
+        result = await self.service.refresh_workspace(self.ws, min_interval=0)
+        self.assertEqual(result["files_indexed"], 1)
+        hits, _l, _s = await self.service.search_scoped("recem_criada", self.ws)
+        self.assertTrue(any("recem_criada" in h.content for h in hits))
+        self.assertIsNone(await self.service.refresh_workspace(self.ws, min_interval=60))  # trava de intervalo
+        self.assertIsNone(await self.service.refresh_workspace(str(self.other.parent), min_interval=0))  # não indexado
+
+    async def test_refresh_detects_removed_file(self):
+        os.remove(self.proj / "m.py")
+        (self.proj / "n.py").write_text("def nova():\n    pass\n", encoding="utf-8")
+        result = await self.service.refresh_workspace(self.ws, min_interval=0)
+        self.assertEqual((result["files_indexed"], result["files_removed"]), (1, 1))
+
+
+class ScopeInfoTests(ScopeAndRefreshTests):
+    async def test_scope_info_for_active_project(self):
+        zip_id = (await self.service._source_by_name("meu-zip"))["id"]
+        await self.service.set_links(self.ws, [zip_id])
+        info = await self.service.scope_info(self.ws)
+        self.assertEqual(info["own"]["name"], "projeto_x")
+        self.assertEqual(info["linked_ids"], [zip_id])
+        self.assertEqual([s["name"] for s in info["sources"]], ["meu-zip", "projeto_x", "projeto_y"])
+        self.assertTrue(all({"id", "name", "kind", "files", "chunks"} <= set(s) for s in info["sources"]))
+
+    async def test_scope_info_without_project(self):
+        for empty in ("", "   ", None):
+            info = await self.service.scope_info(empty)
+            self.assertIsNone(info["own"])
+            self.assertEqual(info["linked_ids"], [])
+            self.assertEqual(len(info["sources"]), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

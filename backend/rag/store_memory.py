@@ -25,6 +25,7 @@ class MemoryStore:
         self.files: dict[tuple[int, str], dict] = {}
         self.chunks: list[dict] = []
         self.jobs: dict[int, dict] = {}
+        self.links: dict[str, list[int]] = {}
         self._next_source = 1
         self._next_chunk = 1
         self._next_job = 1
@@ -62,6 +63,7 @@ class MemoryStore:
         self.files = {k: v for k, v in self.files.items() if k[0] != source_id}
         self.chunks = [c for c in self.chunks if c["source_id"] != source_id]
         self.jobs = {k: v for k, v in self.jobs.items() if v["source_id"] != source_id}
+        self.links = {r: [i for i in ids if i != source_id] for r, ids in self.links.items()}
 
     async def file_hashes(self, source_id):
         return {p: f["sha1"] for (sid, p), f in self.files.items() if sid == source_id}
@@ -144,3 +146,10 @@ class MemoryStore:
                 j.update(status="interrupted", error="Servidor reiniciado durante a ingestão.", finished_at=_now())
                 n += 1
         return n
+
+
+    async def set_workspace_links(self, root, source_ids):
+        self.links[root] = list(dict.fromkeys(int(i) for i in source_ids))
+
+    async def get_workspace_links(self, root):
+        return list(self.links.get(root, []))
