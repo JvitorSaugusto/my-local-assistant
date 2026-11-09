@@ -33,6 +33,9 @@ Indexa repositórios inteiros em PostgreSQL + pgvector e devolve ao agente só o
 | `RAG_EMBED_MODEL` | `nomic-embed-text` | modelo de embedding |
 | `RAG_EMBED_DIM` | `768` | dimensão do modelo (tem de bater) |
 | `RAG_SUMMARY_MODEL` | vazio | modelo que escreve os resumos; vazio = heurístico |
+| `RAG_SUMMARY_THINK` | vazio | esforço de raciocínio do modelo de resumo (`low`, `medium`, `high`, `true`, `off`); vazio = automático (`low` no gpt-oss) |
+| `RAG_SUMMARY_TIMEOUT` | `180` | segundos por resumo |
+| `RAG_SUMMARY_CONCURRENCY` | `2` | resumos em paralelo (ajuste junto com `OLLAMA_NUM_PARALLEL`) |
 | `RAG_MAX_FILE_BYTES` | `400000` | arquivos maiores são ignorados |
 | `RAG_MAX_CHUNK_LINES` | `200` | chunks maiores são divididos em partes |
 | `RAG_ZIP_MAX_BYTES` / `RAG_ZIP_MAX_FILES` | 500 MB / 20000 | limites do zip |
