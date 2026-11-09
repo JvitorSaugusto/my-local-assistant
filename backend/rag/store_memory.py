@@ -73,9 +73,17 @@ class MemoryStore:
             self.files.pop((source_id, p), None)
         self.chunks = [c for c in self.chunks if not (c["source_id"] == source_id and c["path"] in set(paths))]
 
-    async def get_summaries(self, hashes):
+    async def get_summaries(self, hashes, kind=None):
+        """{hash: (resumo, tipo)}. Com kind de IA, só aceita resumos desse tipo; heurístico aceita qualquer um."""
         wanted = set(hashes)
-        return {c["content_hash"]: c["summary"] for c in self.chunks if c["content_hash"] in wanted and c.get("summary")}
+        found = {}
+        for c in self.chunks:
+            if c["content_hash"] not in wanted or not c.get("summary"):
+                continue
+            stored = c.get("summary_kind") or "heuristic"
+            if kind in (None, "heuristic") or stored == kind:
+                found[c["content_hash"]] = (c["summary"], stored)
+        return found
 
     async def replace_file_chunks(self, source_id, path, sha1, language, rows):
         self.chunks = [c for c in self.chunks if not (c["source_id"] == source_id and c["path"] == path)]
@@ -153,3 +161,18 @@ class MemoryStore:
 
     async def get_workspace_links(self, root):
         return list(self.links.get(root, []))
+
+
+    async def paths_with_other_summaries(self, source_id, kind):
+        return sorted({
+            c["path"] for c in self.chunks
+            if c["source_id"] == source_id and (c.get("summary_kind") or "heuristic") != kind
+        })
+
+    async def summary_counts(self, source_id):
+        counts: dict[str, int] = {}
+        for c in self.chunks:
+            if c["source_id"] == source_id:
+                kind = c.get("summary_kind") or "heuristic"
+                counts[kind] = counts.get(kind, 0) + 1
+        return counts

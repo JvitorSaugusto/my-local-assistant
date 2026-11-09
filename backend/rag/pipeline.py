@@ -46,7 +46,9 @@ async def ingest(
     max_file_bytes: int = 400_000,
     max_chunk_lines: int = 200,
     embed_batch: int = 16,
+    summary_concurrency: int = 2,
     force: bool = False,
+    resummarize: bool = False,
     on_progress: Callable[[Progress], Awaitable[None] | None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> dict:
@@ -63,11 +65,18 @@ async def ingest(
     if removed:
         await store.delete_files(source_id, removed)
 
-    todo = [f for f in files if known.get(f.path) != f.sha1]
+    stale: set[str] = set()
+    ai_kind = getattr(summarizer, "kind", "heuristic")
+    if resummarize and not force and ai_kind != "heuristic":
+        stale = set(await store.paths_with_other_summaries(source_id, ai_kind))
+    todo = [f for f in files if known.get(f.path) != f.sha1 or f.path in stale]
+    resummarized = [f.path for f in todo if f.path in stale and known.get(f.path) == f.sha1]
     progress.phase = "index"
     progress.files_total = len(todo)
     await _notify(on_progress, progress)
 
+    summarizer_kind = getattr(summarizer, "kind", "heuristic")
+    stats = {"new": 0, "cached": 0, "llm": 0, "fallback": 0}
     chunks_total = 0
     for info in todo:
         if is_cancelled and is_cancelled():
@@ -78,13 +87,30 @@ async def ingest(
         text = await asyncio.to_thread(read_text, info.abs_path)
         chunks = chunk_file(info.path, text, info.language, max_chunk_lines)
 
-        cached = await store.get_summaries([c.content_hash for c in chunks])
+        # Resumo: reaproveita o que já existe do tipo atual (heurístico ou IA) e gera só o que falta,
+        # com alguns resumos em paralelo. Um símbolo dividido em partes é resumido uma única vez.
+        resolved: dict[str, tuple[str, str]] = dict(
+            await store.get_summaries(list(dict.fromkeys(c.content_hash for c in chunks)), summarizer_kind)
+        )
+        stats["cached"] += len(resolved)
+        missing = {c.content_hash: c for c in chunks if c.content_hash not in resolved}
+        if missing:
+            gate = asyncio.Semaphore(max(1, summary_concurrency))
+
+            async def summarize_one(digest: str, chunk) -> None:
+                async with gate:
+                    text = await asyncio.to_thread(summarizer.summarize, chunk)
+                    resolved[digest] = (str(text), getattr(text, "kind", summarizer_kind))
+
+            await asyncio.gather(*(summarize_one(h, c) for h, c in missing.items()))
+            for digest in missing:
+                stats["new"] += 1
+                if resolved[digest][1].startswith("llm:"):
+                    stats["llm"] += 1
+                elif summarizer_kind != "heuristic":
+                    stats["fallback"] += 1
         for chunk in chunks:
-            summary = cached.get(chunk.content_hash)
-            if not summary:
-                summary = await asyncio.to_thread(summarizer.summarize, chunk)
-                cached[chunk.content_hash] = summary
-            chunk.summary = summary
+            chunk.summary = resolved[chunk.content_hash][0]
 
         vectors: list[list[float]] = []
         for i in range(0, len(chunks), embed_batch):
@@ -96,7 +122,8 @@ async def ingest(
                 "path": c.path, "language": c.language, "kind": c.kind, "qualname": c.qualname,
                 "parent": c.parent, "start_line": c.start_line, "end_line": c.end_line,
                 "part": c.part, "parts": c.parts, "content": c.code, "content_hash": c.content_hash,
-                "summary": c.summary, "tag": c.tag(), "embedding": vec,
+                "summary": c.summary, "summary_kind": resolved[c.content_hash][1],
+                "tag": c.tag(), "embedding": vec,
             }
             for c, vec in zip(chunks, vectors)
         ]
@@ -115,5 +142,24 @@ async def ingest(
         "files_removed": len(removed),
         "chunks": chunks_total,
         "skipped": skipped,
+        "summaries": {
+            "kind": summarizer_kind, **stats, "resummarized_files": len(resummarized),
+            "last_error": getattr(summarizer, "last_error", "") if stats["fallback"] else "",
+        },
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+
+def format_summary_note(info: dict) -> str:
+    """Mensagem curta sobre os resumos de uma ingestão (aparece no job)."""
+    text = f"Resumos ({info.get('kind', 'heuristic')}): {info.get('new', 0)} novos, {info.get('cached', 0)} reaproveitados."
+    if info.get("llm"):
+        text += f" {info['llm']} escritos pela IA."
+    if info.get("resummarized_files"):
+        text += f" {info['resummarized_files']} arquivo(s) sem alteração foram refeitos porque os resumos não eram da IA."
+    if info.get("fallback"):
+        text += f" ATENÇÃO: {info['fallback']} caíram para o resumo heurístico porque a IA falhou."
+        if info.get("last_error"):
+            text += f" Último erro: {info['last_error']}"
+    return text[:900]

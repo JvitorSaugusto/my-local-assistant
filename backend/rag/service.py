@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import RagConfig, load_config
 from .entities import SearchHit
-from .pipeline import IngestCancelled, Progress, ingest
+from .pipeline import IngestCancelled, Progress, format_summary_note, ingest
 from .providers import Embedder, HeuristicSummarizer, OllamaEmbedder, OllamaSummarizer, Summarizer
 from .repo_map import build_repo_map
 from .search import format_hits, hybrid_search
@@ -67,7 +67,9 @@ class RagService:
     def summarizer(self) -> Summarizer:
         if self._summarizer is None:
             self._summarizer = (
-                OllamaSummarizer(self.cfg.ollama_url, self.cfg.summary_model)
+                OllamaSummarizer(
+                    self.cfg.ollama_url, self.cfg.summary_model, self.cfg.summary_timeout, self.cfg.summary_think
+                )
                 if self.cfg.summary_model
                 else HeuristicSummarizer()
             )
@@ -79,6 +81,11 @@ class RagService:
         stale = await self.store.fail_stale_jobs()
         if stale:
             print(f"ℹ️ [RAG] {stale} ingestão(ões) interrompida(s) por reinício do servidor.")
+        info = await self.summarizer_info()
+        if info["mode"] == "ia":
+            print(f"ℹ️ [RAG] resumos escritos por IA: {info['kind']} (think={info.get('think')})")
+        else:
+            print("ℹ️ [RAG] resumos HEURÍSTICOS (RAG_SUMMARY_MODEL vazio: sem IA)")
         return True
 
     async def _ensure_ready(self) -> None:
@@ -141,13 +148,22 @@ class RagService:
 
         try:
             await store.update_job(job_id, status="running", phase="scan")
-            await ingest(
+            warning = await self._probe_summarizer()
+            if warning:
+                await store.update_job(job_id, note=warning)
+            result = await ingest(
                 store, self.embedder, self.summarizer, source_id, root,
                 max_file_bytes=self.cfg.max_file_bytes, max_chunk_lines=self.cfg.max_chunk_lines,
-                embed_batch=self.cfg.embed_batch, force=force, on_progress=on_progress,
+                embed_batch=self.cfg.embed_batch, summary_concurrency=self.cfg.summary_concurrency,
+                force=force, resummarize=True, on_progress=on_progress,
                 is_cancelled=lambda: self._cancel.get(job_id, False),
             )
-            await store.update_job(job_id, status="done", phase="done", current_file="", error=None)
+            note = format_summary_note(result["summaries"])
+            if warning:
+                note = f"{warning} {note}"
+            if result["summaries"].get("fallback") or warning:
+                print(f"⚠️ [RAG] {note}")
+            await store.update_job(job_id, status="done", phase="done", current_file="", error=None, note=note)
         except IngestCancelled:
             await store.update_job(job_id, status="cancelled", current_file="")
         except Exception as exc:  # noqa: BLE001
@@ -158,6 +174,43 @@ class RagService:
             if cleanup:
                 cleanup()
 
+    async def _probe_summarizer(self) -> str:
+        """Antes de ingerir: se a IA de resumos está configurada mas não responde, avisa e a desliga nesta rodada."""
+        summarizer = self.summarizer
+        reset = getattr(summarizer, "reset", None)
+        if reset:
+            reset()
+        probe = getattr(summarizer, "probe", None)
+        if not probe:
+            return ""
+        ok, message = await asyncio.to_thread(probe)
+        if ok:
+            return ""
+        summarizer.disabled = True  # type: ignore[attr-defined]
+        return (
+            f"⚠️ IA de resumos indisponível ({message}). Esta ingestão usou o resumo heurístico; "
+            "corrija a configuração e clique em Reindexar."
+        )
+
+    async def summarizer_info(self) -> dict:
+        summarizer = self.summarizer
+        describe = getattr(summarizer, "describe", None)
+        info = describe() if describe else {"kind": getattr(summarizer, "kind", "heuristic")}
+        info["mode"] = "ia" if str(info.get("kind", "")).startswith("llm:") else "heuristico"
+        return info
+
+    async def test_summarizer(self) -> dict:
+        """Teste ao vivo do resumidor (usado pelo botão 'Testar resumidor')."""
+        info = await self.summarizer_info()
+        if info["mode"] != "ia":
+            info["ok"] = False
+            info["message"] = "RAG_SUMMARY_MODEL está vazio: só o resumo heurístico é usado. Defina a variável no .env e reinicie o servidor."
+            return info
+        ok, message = await asyncio.to_thread(self.summarizer.probe)  # type: ignore[attr-defined]
+        info["ok"] = ok
+        info["message"] = "A IA respondeu normalmente." if ok else message
+        return info
+
     async def cancel(self, job_id: int) -> bool:
         job = await self.store.get_job(job_id)
         if not job or job["status"] not in ACTIVE:
@@ -166,9 +219,13 @@ class RagService:
         return True
 
     # ── consulta ─────────────────────────────────────────────────────────
-    async def list_sources(self) -> list[dict]:
+    async def list_sources(self, with_summaries: bool = False) -> list[dict]:
         await self._ensure_ready()
-        return await self.store.list_sources()
+        sources = await self.store.list_sources()
+        if with_summaries:
+            for source in sources:
+                source["summaries"] = await self.store.summary_counts(source["id"])
+        return sources
 
     async def status(self, source_id: int) -> dict | None:
         await self._ensure_ready()
@@ -332,7 +389,7 @@ class RagService:
                     ingest(
                         self.store, self.embedder, self.summarizer, source["id"], root,
                         max_file_bytes=self.cfg.max_file_bytes, max_chunk_lines=self.cfg.max_chunk_lines,
-                        embed_batch=self.cfg.embed_batch,
+                        embed_batch=self.cfg.embed_batch, summary_concurrency=self.cfg.summary_concurrency,
                     ),
                     timeout,
                 )

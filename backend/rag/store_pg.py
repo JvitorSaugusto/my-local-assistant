@@ -12,7 +12,7 @@ from sqlalchemy.pool import NullPool
 
 from .entities import SearchHit
 
-_JOB_FIELDS = {"status", "phase", "files_total", "files_done", "chunks_done", "current_file", "error"}
+_JOB_FIELDS = {"status", "phase", "files_total", "files_done", "chunks_done", "current_file", "error", "note"}
 _JOB_DONE = {"done", "failed", "cancelled", "interrupted"}
 _SELECT_HIT = "id, path, kind, qualname, start_line, end_line, coalesce(summary, '') AS summary, content"
 
@@ -84,6 +84,8 @@ class PgVectorStore:
                 workspace_root TEXT NOT NULL,
                 source_id INT NOT NULL REFERENCES rag.sources(id) ON DELETE CASCADE,
                 PRIMARY KEY (workspace_root, source_id))""",
+            "ALTER TABLE rag.chunks ADD COLUMN IF NOT EXISTS summary_kind TEXT",
+            "ALTER TABLE rag.jobs ADD COLUMN IF NOT EXISTS note TEXT",
         ]
         async with self.engine.begin() as conn:
             for statement in ddl:
@@ -148,21 +150,27 @@ class PgVectorStore:
             await conn.execute(text("DELETE FROM rag.chunks WHERE source_id = :s AND path = ANY(:p)"), {"s": source_id, "p": list(paths)})
             await conn.execute(text("DELETE FROM rag.files WHERE source_id = :s AND path = ANY(:p)"), {"s": source_id, "p": list(paths)})
 
-    async def get_summaries(self, hashes):
+    async def get_summaries(self, hashes, kind=None):
         if not hashes:
             return {}
-        sql = """SELECT DISTINCT ON (content_hash) content_hash, summary FROM rag.chunks
+        sql = """SELECT DISTINCT ON (content_hash) content_hash, summary, coalesce(summary_kind, 'heuristic') AS kind
+                 FROM rag.chunks
                  WHERE content_hash = ANY(:h) AND summary IS NOT NULL AND summary <> ''"""
+        params: dict = {"h": list(set(hashes))}
+        if kind and kind != "heuristic":
+            sql += " AND coalesce(summary_kind, 'heuristic') = :k"
+            params["k"] = kind
+        sql += " ORDER BY content_hash"
         async with self.engine.connect() as conn:
-            rows = (await conn.execute(text(sql), {"h": list(set(hashes))})).all()
-        return {r[0]: r[1] for r in rows}
+            rows = (await conn.execute(text(sql), params)).all()
+        return {r[0]: (r[1], r[2]) for r in rows}
 
     async def replace_file_chunks(self, source_id, path, sha1, language, rows):
         insert = text(
             """INSERT INTO rag.chunks (source_id, path, language, kind, qualname, parent, start_line, end_line,
-                   part, parts, content, content_hash, summary, tag, embedding)
+                   part, parts, content, content_hash, summary, summary_kind, tag, embedding)
                VALUES (:source_id, :path, :language, :kind, :qualname, :parent, :start_line, :end_line,
-                   :part, :parts, :content, :content_hash, :summary, :tag, CAST(CAST(:embedding AS text) AS vector))"""
+                   :part, :parts, :content, :content_hash, :summary, :summary_kind, :tag, CAST(CAST(:embedding AS text) AS vector))"""
         )
         params = []
         for row in rows:
@@ -284,3 +292,18 @@ class PgVectorStore:
         async with self.engine.connect() as conn:
             rows = (await conn.execute(text(sql), {"r": root})).all()
         return [r[0] for r in rows]
+
+
+    async def paths_with_other_summaries(self, source_id, kind):
+        sql = """SELECT DISTINCT path FROM rag.chunks
+                 WHERE source_id = :s AND coalesce(summary_kind, 'heuristic') <> :k ORDER BY path"""
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(text(sql), {"s": source_id, "k": kind})).all()
+        return [r[0] for r in rows]
+
+    async def summary_counts(self, source_id):
+        sql = """SELECT coalesce(summary_kind, 'heuristic') AS kind, count(*) FROM rag.chunks
+                 WHERE source_id = :s GROUP BY 1"""
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(text(sql), {"s": source_id})).all()
+        return {r[0]: int(r[1]) for r in rows}

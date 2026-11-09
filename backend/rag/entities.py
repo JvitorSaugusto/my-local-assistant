@@ -34,6 +34,7 @@ class Chunk:
     part: int = 1
     parts: int = 1
     summary: str = ""
+    symbol_code: str = ""  # código do símbolo INTEIRO (quando o chunk é só uma parte dele)
     content_hash: str = field(default="")
 
     def __post_init__(self) -> None:

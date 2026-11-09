@@ -64,6 +64,14 @@ def _span(node: ast.AST) -> tuple[int, int]:
 
 
 # ── Python ───────────────────────────────────────────────────────────────
+BIG_CONST_LINES = 12  # atribuição de módulo com tantas linhas (ex.: um prompt gigante) vira chunk próprio
+
+
+def _assign_name(node: ast.AST) -> str:
+    target = node.targets[0] if isinstance(node, ast.Assign) else node.target  # type: ignore[attr-defined]
+    return target.id if isinstance(target, ast.Name) else "<atribuição>"
+
+
 def _python_chunks(path: str, text: str) -> list[Chunk]:
     tree = ast.parse(text)
     lines = text.split("\n")
@@ -76,18 +84,27 @@ def _python_chunks(path: str, text: str) -> list[Chunk]:
             first_def_start = _span(node)[0]
             break
 
+    assigns = [n for n in tree.body if isinstance(n, (ast.Assign, ast.AnnAssign))]
+    big = [n for n in assigns if _span(n)[1] - _span(n)[0] + 1 >= BIG_CONST_LINES]
+    covered = {i for n in big for i in range(_span(n)[0], _span(n)[1] + 1)}
+
+    # Cabeçalho: tudo antes da 1ª função/classe, SEM limite de tamanho (partes grandes são divididas depois)
+    # e sem as atribuições gigantes, que ganham chunk próprio com o nome da variável.
     header_end = (first_def_start - 1) if first_def_start else len(lines)
-    header_end = min(header_end, HEADER_MAX_LINES)
-    if header_end >= 1 and _numbered_slice(lines, 1, header_end).strip():
-        chunks.append(_make(path, "python", "header", "<cabeçalho do módulo>", "", 1, header_end,
-                            _numbered_slice(lines, 1, header_end)))
+    header_code = "\n".join(lines[i - 1] for i in range(1, header_end + 1) if i not in covered)
+    if header_code.strip():
+        chunks.append(_make(path, "python", "header", "<cabeçalho do módulo>", "", 1, header_end, header_code))
 
     if first_def_start:
-        late = [n for n in tree.body if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.lineno > first_def_start]
+        late = [n for n in assigns if n.lineno > first_def_start and n not in big]
         if late:
             parts = [f"# linha {n.lineno}\n{_numbered_slice(lines, *_span(n))}" for n in late]
             chunks.append(_make(path, "python", "constants", "<constantes do módulo>", "",
                                 late[0].lineno, late[-1].end_lineno or late[-1].lineno, "\n\n".join(parts)))
+
+    for node in big:
+        s, e = _span(node)
+        chunks.append(_make(path, "python", "constant", _assign_name(node), "", s, e, _numbered_slice(lines, s, e)))
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -206,5 +223,8 @@ def _split_long(chunk: Chunk, max_lines: int) -> list[Chunk]:
             path=chunk.path, language=chunk.language, kind=chunk.kind, qualname=chunk.qualname,
             parent=chunk.parent, start_line=chunk.start_line + a, end_line=chunk.start_line + b - 1,
             code="\n".join(lines[a:b]), part=number, parts=parts,
+            # O resumo descreve o SÍMBOLO inteiro (uma parte solta nem é código Python válido) e todas as
+            # partes compartilham o mesmo hash, então o resumo é gerado e guardado uma única vez.
+            symbol_code=chunk.code, content_hash=chunk.content_hash,
         ))
     return out
