@@ -35,7 +35,7 @@ def _http(exc: Exception) -> HTTPException:
 @rag_router.get("/sources")
 async def list_sources():
     try:
-        return await get_service().list_sources()
+        return await get_service().list_sources(True)
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from exc
 
@@ -150,5 +150,24 @@ async def scope(path: str = ""):
     """Fonte do projeto + vínculos + todas as fontes (alimenta o seletor de fontes do chat)."""
     try:
         return await get_service().scope_info(path)
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from exc
+
+
+
+@rag_router.get("/summarizer")
+async def summarizer_info():
+    """Qual resumidor está ativo (IA ou heurístico), modelo e parâmetros."""
+    try:
+        return await get_service().summarizer_info()
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from exc
+
+
+@rag_router.post("/summarizer/test")
+async def summarizer_test():
+    """Teste ao vivo da IA de resumos (pode levar alguns segundos)."""
+    try:
+        return await get_service().test_summarizer()
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from exc
