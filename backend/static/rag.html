@@ -38,6 +38,12 @@
   <div id="msg" class="muted"></div>
 
   <section class="card">
+    <h2>Resumos dos trechos</h2>
+    <div id="summ-info" class="muted">Carregando…</div>
+    <div class="row" style="margin-top:8px"><button id="summ-test">Testar resumidor</button><span id="summ-result" class="muted"></span></div>
+  </section>
+
+  <section class="card">
     <h2>Indexar uma pasta do computador</h2>
     <div class="row">
       <input id="ws-path" type="text" placeholder="Caminho da pasta (ex.: C:\projetos\meu_app)" />
@@ -52,6 +58,7 @@
     <div class="row">
       <input id="zip-file" type="file" accept=".zip" />
       <input id="zip-name" type="text" placeholder="Nome da fonte" style="flex:0 1 180px" />
+      <label class="muted"><input type="checkbox" id="zip-force"> Regerar resumos</label>
       <button class="primary" id="zip-go">Enviar e indexar</button>
     </div>
   </section>
@@ -111,8 +118,31 @@ function stateCell(job) {
   } else if (job.error) {
     html += `<div class="muted">${esc(job.error)}</div>`;
   }
+  if (job.note) html += `<div class="muted">${esc(job.note)}</div>`;
   return html;
 }
+
+async function loadSummarizer() {
+  try {
+    const info = await api("/api/rag/summarizer");
+    $("summ-info").innerHTML = info.mode === "ia"
+      ? `Resumos escritos por <b>IA</b>: modelo <b>${esc(info.model)}</b> (think: ${esc(info.think ?? "desligado")}).`
+      : "Resumos <b>heurísticos</b> (sem IA). Para usar IA, defina <code>RAG_SUMMARY_MODEL</code> no .env e reinicie o servidor.";
+  } catch (error) { $("summ-info").textContent = error.message; }
+}
+
+$("summ-test").onclick = async () => {
+  $("summ-result").textContent = "Testando…";
+  try {
+    const r = await api("/api/rag/summarizer/test", { method: "POST" });
+    $("summ-result").textContent = (r.ok ? "OK: " : "FALHOU: ") + r.message;
+  } catch (error) { $("summ-result").textContent = "FALHOU: " + error.message; }
+};
+
+const fmtSummaries = (counts) => {
+  const entries = Object.entries(counts || {});
+  return entries.length ? entries.map(([kind, n]) => `${n} ${kind.startsWith("llm:") ? "IA" : "heurístico"}`).join(" · ") : "sem resumos";
+};
 
 async function loadSources() {
   try {
@@ -120,11 +150,11 @@ async function loadSources() {
     const infos = await Promise.all(sources.map((s) => api(`/api/rag/sources/${s.id}`).catch(() => ({ job: null }))));
     const rows = sources.map((s, i) => `
       <tr>
-        <td><b>${esc(s.name)}</b></td>
+        <td><b>${esc(s.name)}</b><div class="muted">resumos: ${esc(fmtSummaries(s.summaries))}</div></td>
         <td><span class="pill">${esc(s.kind)}</span><div class="muted">${esc(s.root_path || "")}</div></td>
         <td>${s.files}</td><td>${s.chunks}</td>
         <td>${stateCell(infos[i].job)}</td>
-        <td class="row"><button data-map="${s.id}" data-name="${esc(s.name)}">Mapa</button><button data-reindex="${s.id}" data-path="${esc(s.root_path || "")}" ${s.root_path ? "" : "disabled title='Zip: envie de novo'"}>Reindexar</button><button class="danger" data-del="${s.id}" data-name="${esc(s.name)}">Apagar</button></td>
+        <td class="row"><button data-map="${s.id}" data-name="${esc(s.name)}">Mapa</button><button data-reindex="${s.id}" data-path="${esc(s.root_path || "")}" ${s.root_path ? "" : "disabled title='Zip: envie de novo'"}>Reindexar</button><button data-resum="${s.id}" data-path="${esc(s.root_path || "")}" ${s.root_path ? "" : "disabled title='Zip: envie de novo marcando Regerar resumos'"} title="Reprocessa tudo; refaz só os resumos que não foram escritos pela IA">Regerar resumos</button><button class="danger" data-del="${s.id}" data-name="${esc(s.name)}">Apagar</button></td>
       </tr>`);
     $("sources").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">Nenhuma fonte indexada ainda.</td></tr>';
     renderLinks(sources);
@@ -147,6 +177,7 @@ $("zip-go").onclick = async () => {
   const form = new FormData();
   form.append("file", file);
   form.append("name", $("zip-name").value.trim());
+  form.append("force", $("zip-force").checked ? "true" : "false");
   say("Enviando…");
   try { await api("/api/rag/sources/zip", { method: "POST", body: form }); say("Ingestão iniciada."); loadSources(); }
   catch (error) { say(error.message, true); }
@@ -158,6 +189,7 @@ $("sources").onclick = async (event) => {
   try {
     if (b.dataset.del) { if (confirm(`Apagar a fonte "${b.dataset.name}" e todos os seus chunks?`)) { await api(`/api/rag/sources/${b.dataset.del}`, { method: "DELETE" }); say("Fonte apagada."); loadSources(); } }
     else if (b.dataset.cancel) { await api(`/api/rag/jobs/${b.dataset.cancel}/cancel`, { method: "POST" }); say("Cancelando…"); }
+    else if (b.dataset.resum) { await api("/api/rag/sources/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: b.dataset.path, force: true }) }); say("Regerando resumos…"); loadSources(); }
     else if (b.dataset.reindex) { await api("/api/rag/sources/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: b.dataset.path }) }); say("Reindexação iniciada."); loadSources(); }
     else if (b.dataset.map) { const r = await api(`/api/rag/sources/${b.dataset.map}/map`); $("map-title").textContent = `Mapa: ${b.dataset.name}`; $("map").textContent = r.map || "(vazio)"; $("map-card").hidden = false; $("map-card").scrollIntoView({ behavior: "smooth" }); }
   } catch (error) { say(error.message, true); }
@@ -203,6 +235,7 @@ $("links-save").onclick = async () => {
   } catch (error) { say(error.message, true); }
 };
 
+loadSummarizer();
 loadSources();
 </script>
 </body>

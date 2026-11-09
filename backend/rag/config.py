@@ -13,6 +13,9 @@ class RagConfig:
     embed_model: str
     embed_dim: int
     summary_model: str  # vazio = resumo heurístico (rápido, sem LLM)
+    summary_think: str
+    summary_timeout: float
+    summary_concurrency: int
     embed_batch: int
     max_file_bytes: int
     max_chunk_lines: int
@@ -29,6 +32,9 @@ def load_config() -> RagConfig:
         embed_model=os.getenv("RAG_EMBED_MODEL", "nomic-embed-text"),
         embed_dim=int(os.getenv("RAG_EMBED_DIM", "768")),
         summary_model=os.getenv("RAG_SUMMARY_MODEL", "").strip(),
+        summary_think=os.getenv("RAG_SUMMARY_THINK", "").strip(),
+        summary_timeout=float(os.getenv("RAG_SUMMARY_TIMEOUT", "180")),
+        summary_concurrency=int(os.getenv("RAG_SUMMARY_CONCURRENCY", "2")),
         embed_batch=int(os.getenv("RAG_EMBED_BATCH", "16")),
         max_file_bytes=int(os.getenv("RAG_MAX_FILE_BYTES", "400000")),
         max_chunk_lines=int(os.getenv("RAG_MAX_CHUNK_LINES", "200")),
