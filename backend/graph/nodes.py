@@ -496,15 +496,6 @@ async def _generate_node_impl(state: State):
                 + "### Trechos relacionados do repositório (RAG)\n"
                 + rag_text
             )
-        rag_text = await rag_context(workspace, f"{task.title}\n{(task.description or '')[:600]}")
-        if rag_text:
-            dossier_report["rag_chars"] = len(rag_text)
-            header = "" if dossier_text else "## DOSSIÊ DE CONTEXTO (montado pelo sistema)\n"
-            dossier_text = (
-                (dossier_text + "\n\n" if dossier_text else header)
-                + "### Trechos relacionados do repositório (RAG)\n"
-                + rag_text
-            )
 
     context = [
         build_system_context(
@@ -994,6 +985,26 @@ def note_refine_node(state: State) -> State:
     return {"messages": [final_response]}
 
 
+def _previous_turns(messages: list, before_idx: int, max_messages: int = 6, max_chars: int = 1500) -> list:
+    """Últimas mensagens de conversa (humano/IA, só texto) ANTES de before_idx.
+    Serve para perguntas de acompanhamento não perderem o assunto."""
+    picked = []
+    for msg in messages[:before_idx]:
+        if msg.type not in ("human", "ai"):
+            continue
+        if getattr(msg, "tool_calls", None):
+            continue
+        kwargs = getattr(msg, "additional_kwargs", None) or {}
+        if kwargs.get("message_tag") in ("internal_thought_gatherer", "internal_task_instruction"):
+            continue
+        text = msg.content.strip() if isinstance(msg.content, str) else ""
+        if not text:
+            continue
+        cls = HumanMessage if msg.type == "human" else AIMessage
+        picked.append(cls(content=text[:max_chars]))
+    return picked[-max_messages:]
+
+
 def context_gatherer_node(state: State):
     actual_summary = state.get("summary", "")
 
@@ -1031,6 +1042,7 @@ def context_gatherer_node(state: State):
         )
     ]
 
+    context.extend(_previous_turns(state["messages"], last_human_idx))
     context.extend(recent_messages)
 
     response = context_gatherer_llm_with_tools.invoke(context)
@@ -1124,6 +1136,11 @@ async def heavy_analyzer_node(
     ]
 
     if user_request:
+        user_idx = next(
+            (i for i in range(len(state["messages"]) - 1, -1, -1) if state["messages"][i] is user_request),
+            len(state["messages"]),
+        )
+        context.extend(_previous_turns(state["messages"], user_idx))
         context.append(user_request)
 
     print(f"\n[⏳ AGUARDE] DeepSeek R1 processando {len(context)} mensagens...")
