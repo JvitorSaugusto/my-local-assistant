@@ -34,6 +34,10 @@ class State(TypedDict):
     
     heavy_context: str | None
     gatherer_tool_trace: list[dict]
+    repo_map_raw: NotRequired[str | None]
+    project_stack: NotRequired[str | None]
+    repo_map_raw: NotRequired[str | None]
+    project_stack: NotRequired[str | None]
     
     active_generate_task: GenerateTaskSchema | None
     generate_start_idx: NotRequired[int | None]
