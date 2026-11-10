@@ -1,4 +1,5 @@
 
+import os
 from langchain_ollama import ChatOllama
 from langgraph.graph import add_messages
 from pydantic import BaseModel
@@ -77,26 +78,49 @@ def load_llm() -> BaseChatModel:
     return model
 
 
-router_structured = load_llm().with_structured_output(RouteDecision).with_config(config={"configurable": { "model": "qwen3:4b", "temperature": 0.0, "max_tokens": 100,}})
-standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=131072)
+# ---------------------------------------------------------------------------
+# Janelas de contexto (Fase E)
+# ---------------------------------------------------------------------------
+# O Ollama RECARREGA o modelo quando o num_ctx muda entre duas chamadas. Antes havia 3 valores
+# diferentes (131072 / 49152 / 131072) para o MESMO qwen3-coder:30b, então cada troca de nó
+# (gatherer -> heavy -> generate) custava uma recarga. Agora há UM valor por modelo.
+# Ajuste por variável de ambiente (.env) sem mexer no código.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "") or default)
+    except ValueError:
+        return default
 
-code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=131072)
+
+# qwen3-coder:30b: context_gatherer, heavy e generate compartilham o mesmo valor.
+CODER_NUM_CTX = _env_int("CODER_NUM_CTX", 49152)
+# gpt-oss:20b (standard e code): KV cache pequeno, 65536 custa ~1.6 GB.
+GPT_OSS_NUM_CTX = _env_int("GPT_OSS_NUM_CTX", 65536)
+# Qwen3-30B-A3B-Thinking (notas): modelo diferente, então valor próprio.
+NOTE_NUM_CTX = _env_int("NOTE_NUM_CTX", 65536)
+# Quanto tempo o Ollama mantém o modelo na memória depois da última chamada.
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE_APP", "15m")
+
+router_structured = load_llm().with_structured_output(RouteDecision).with_config(config={"configurable": { "model": "qwen3:4b", "temperature": 0.0, "max_tokens": 100,}})
+standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=GPT_OSS_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
+
+code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=GPT_OSS_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 # Janela de contexto do agente Generate. O Ollama CORTA o excesso do prompt sem avisar;
 # o sistema estima o tamanho do prompt e avisa quando chegar perto deste valor.
-GENERATE_NUM_CTX = 131072
+GENERATE_NUM_CTX = CODER_NUM_CTX
 # Quantas vezes o agente pode corrigir o próprio resultado quando a verificação automática falha.
 MAX_VERIFY_RETRIES = 2
 # True: tarefas em modo livre terminam em 'review' e só viram 'completed' após aprovação no painel.
 REVIEW_FREE_TASKS = True
 
-generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=GENERATE_NUM_CTX)
+generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=GENERATE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
-note_llm_draft = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=8192, num_ctx=65536)
-note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=24576, num_ctx=65536)
+note_llm_draft = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=8192, num_ctx=NOTE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
+note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=24576, num_ctx=NOTE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
-context_gatherer_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=131072,)
+context_gatherer_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=CODER_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
-heavy_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.3, num_predict=16384, num_ctx=49152)
+heavy_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.3, num_predict=16384, num_ctx=CODER_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
 heavy_llm_structured = heavy_llm.with_structured_output(HeavyAnalysisSchema)
 
