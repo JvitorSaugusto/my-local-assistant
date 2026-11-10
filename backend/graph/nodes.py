@@ -2,6 +2,7 @@ import asyncio
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 from langchain_core.messages import (
@@ -17,6 +18,7 @@ from backend.database.config import async_session_env
 from backend.database.models import TaskModel
 
 from .config import (
+    CODER_NUM_CTX,
     GENERATE_NUM_CTX,
     MAX_VERIFY_RETRIES,
     REVIEW_FREE_TASKS,
@@ -50,8 +52,20 @@ from .node_helpers import (
     _parse_xml_tool_fallback,
     build_security_report,
     build_system_context,
+    detect_project_stack,
+    extract_repo_map_output,
     format_task_description,
+    ground_dossier,
+    mentions_internal_pipeline,
+    needs_task_split,
     now_iso,
+    number_generated_tasks,
+    pick_map_dir,
+    render_project_tree,
+    starts_with_echo,
+    validate_generated_tasks,
+    wants_project_map,
+    wants_tasks,
     stamp_message,
 )
 from .executor import execute_task, missing_listed_files, run_checks, workspace_summary
@@ -1026,11 +1040,20 @@ def context_gatherer_node(state: State):
                 break
 
     workspace = state.get("workspace_path")
+    stack = detect_project_stack(workspace)
 
     context = [
         build_system_context(
             CONTEXT_GATHERER_PROMPT,
             (f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None),
+            (
+                "ESTRUTURA REAL DO WORKSPACE (verificada no disco):\n"
+                f"{stack}\n"
+                "Só existem as pastas listadas acima. NUNCA presuma pastas como "
+                "`backend/`, `app/` ou `src/`: use apenas o que o mapa mostrar."
+            )
+            if stack
+            else None,
             (
                 "Ao usar 'list_directory_files' ou 'read_file_content', envie SEMPRE "
                 "caminhos relativos à raiz do projeto (ex: 'tasks.py', 'backend/main.py'). "
@@ -1045,7 +1068,33 @@ def context_gatherer_node(state: State):
     context.extend(_previous_turns(state["messages"], last_human_idx))
     context.extend(recent_messages)
 
+    prompt_chars = sum(len(str(getattr(m, "content", ""))) for m in context)
+    est_tokens = prompt_chars // 3 + 1
+    if est_tokens > CODER_NUM_CTX * 0.8:
+        print(
+            f"[⚠️ GATHERER] Prompt ≈ {est_tokens} tokens de {CODER_NUM_CTX}: o Ollama pode "
+            "cortar o INÍCIO (as instruções). Aumente CODER_NUM_CTX ou reduza as leituras."
+        )
+
     response = context_gatherer_llm_with_tools.invoke(context)
+
+    ran_tools = any(m.type == "tool" for m in state["messages"][last_human_idx + 1 :])
+    if workspace and not response.tool_calls and not ran_tools:
+        print(
+            "[GATHERER] ⚠️ O modelo respondeu sem ler nada do projeto (dossiê inventado). "
+            "Forçando generate_repo_map('.')."
+        )
+        response = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "generate_repo_map",
+                    "args": {"dir_path": "."},
+                    "id": f"auto-{uuid.uuid4().hex[:8]}",
+                    "type": "tool_call",
+                }
+            ],
+        )
 
     response.name = "Qwen3-Coder (Context Gatherer)"
     response.additional_kwargs["message_tag"] = "internal_thought_gatherer"
@@ -1072,6 +1121,16 @@ def context_gatherer_node(state: State):
         last_human_idx,
     )
 
+    repo_map_raw = extract_repo_map_output(state["messages"], last_human_idx, _last_human_text(state))
+
+    dossier_text, ungrounded = ground_dossier(response.content or "", workspace)
+    if ungrounded:
+        print(f"[GATHERER] ⚠️ Arquivos citados que NÃO existem no projeto (removidos do dossiê): {ungrounded}")
+        dossier_text += (
+            "\n\nVERIFICAÇÃO AUTOMÁTICA: estes caminhos foram citados mas NÃO existem no projeto "
+            "e foram descartados: " + ", ".join(f"`{p}`" for p in ungrounded) + "."
+        )
+
     messages_to_remove = [
         RemoveMessage(id=msg.id)
         for msg in state["messages"][last_human_idx + 1 :]
@@ -1088,11 +1147,74 @@ def context_gatherer_node(state: State):
 
     return {
         "messages": messages_to_remove,
-        "heavy_context": response.content,
+        "heavy_context": dossier_text,
+        "repo_map_raw": repo_map_raw,
+        "project_stack": stack,
         "gatherer_tool_trace": gatherer_tool_trace,
         "active_node": "context_gatherer_node",
         "enhanced_prompt": None,
     }
+
+
+def _heavy_result_dict(result) -> dict:
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    if isinstance(result, dict):
+        return result
+    return {}
+
+
+def _heavy_problems(data: dict, user_text: str, workspace: str | None, stack: str | None) -> list[str]:
+    """Defeitos objetivos da resposta do Heavy (checados por código, não pelo modelo)."""
+    problems: list[str] = []
+    analysis = str(data.get("analysis") or "")
+    if mentions_internal_pipeline(analysis) or starts_with_echo(analysis):
+        problems.append(
+            "O texto cita 'dossiê'/'coletor'/'tool calls' ou repete o pedido do usuário. "
+            "Responda direto, começando pela resposta, citando arquivos e funções reais do projeto."
+        )
+
+    if wants_tasks(user_text):
+        tasks = data.get("tasks") or []
+        valid, discarded = validate_generated_tasks(tasks, workspace, stack)
+        if not tasks:
+            problems.append("O usuário pediu tasks, mas a lista `tasks` veio vazia. Gere as tasks.")
+        problems.extend(discarded)
+        if tasks and needs_task_split(user_text) and len(valid) < 4:
+            problems.append(
+                "Funcionalidade grande demais para poucas tasks: gere de 6 a 10 tasks pequenas, "
+                "uma por responsabilidade (config, serializer, cada endpoint, rotas, proteção, teste), "
+                "em ordem de execução, usando só arquivos e pastas que existem na estrutura real."
+            )
+    return problems
+
+
+async def _review_heavy_result(result, context, user_text: str, workspace: str | None, stack: str | None):
+    """Reprova a resposta com defeitos objetivos e pede UMA nova tentativa com o motivo."""
+    data = _heavy_result_dict(result)
+    problems = _heavy_problems(data, user_text, workspace, stack)
+    if not problems:
+        return result
+
+    print("\n[HEAVY] ⚠️ Revisão automática reprovou a resposta:")
+    for problem in problems:
+        print(f"  - {problem}")
+
+    feedback = HumanMessage(
+        content=(
+            "REVISÃO AUTOMÁTICA: a resposta anterior foi reprovada pelos motivos abaixo. "
+            "Refaça a resposta COMPLETA (`analysis` e `tasks`) corrigindo cada ponto, "
+            "sem mencionar esta revisão.\n"
+            + "\n".join(f"- {problem}" for problem in problems)
+            + f"\n\nPedido original do usuário: {user_text}"
+        )
+    )
+    retry = await heavy_llm_structured.ainvoke([*context, feedback])
+    retry_problems = _heavy_problems(_heavy_result_dict(retry), user_text, workspace, stack)
+    print(f"[HEAVY] Segunda tentativa: {len(retry_problems)} problema(s) restante(s).")
+    return retry if len(retry_problems) <= len(problems) else result
 
 
 async def heavy_analyzer_node(
@@ -1102,6 +1224,9 @@ async def heavy_analyzer_node(
     actual_summary = state.get("summary", "")
     dossier = state.get("heavy_context", "")
     gatherer_tool_trace = state.get("gatherer_tool_trace", [])
+    repo_map_raw = state.get("repo_map_raw") or ""
+    stack = state.get("project_stack") or ""
+    workspace = state.get("workspace_path")
 
     configurable = config.get("configurable") or {}
     thread_id = configurable.get(
@@ -1116,21 +1241,27 @@ async def heavy_analyzer_node(
             user_request = message
             break
 
+    user_text = (
+        user_request.content if user_request is not None and isinstance(user_request.content, str) else ""
+    )
+
     context = [
         build_system_context(
             HEAVY_NODE_PROMPT,
             f"RESUMO DA CONVERSA:\n{actual_summary}" if actual_summary else None,
             (
-                "--- TOOL CALLS REALIZADAS PELO CONTEXT GATHERER ---\n"
-                f"{gatherer_tool_trace}\n"
-                "---------------------------------------------------\n\n"
-                "--- DOSSIÊ TÉCNICO (DADOS COLETADOS DO SISTEMA) ---\n"
+                "--- FATOS VERIFICADOS DO PROJETO (uso interno) ---\n"
+                f"{stack or 'Stack não detectada.'}\n\n"
+                + (f"ESTRUTURA REAL DE PASTAS E ARQUIVOS:\n{repo_map_raw}\n\n" if repo_map_raw else "")
+                + "ARQUIVOS LIDOS E TRECHOS REAIS:\n"
                 f"{dossier}\n"
                 "---------------------------------------------------\n"
-                "O Dossiê acima contém as evidências reais coletadas durante "
-                "a investigação. Use essas evidências como fonte primária."
+                "Esses fatos vêm do projeto real do usuário: use-os como fonte primária. "
+                "NUNCA mencione 'dossiê', 'coletor', 'tool calls' ou 'contexto fornecido' na resposta: "
+                "fale direto com o usuário, como quem leu o projeto pessoalmente. "
+                "Só existem os arquivos e pastas listados acima; não cite nenhum outro caminho."
             )
-            if dossier and dossier.strip()
+            if (dossier and dossier.strip()) or repo_map_raw
             else None,
         )
     ]
@@ -1143,16 +1274,27 @@ async def heavy_analyzer_node(
         context.extend(_previous_turns(state["messages"], user_idx))
         context.append(user_request)
 
-    print(f"\n[⏳ AGUARDE] DeepSeek R1 processando {len(context)} mensagens...")
-    print(f"[📄 HEAVY] Tamanho do dossiê: {len(dossier or '')} caracteres")
-    print(f"[🧰 HEAVY] Tool calls recebidas: {len(gatherer_tool_trace)}")
+    prompt_chars = sum(len(str(getattr(m, "content", ""))) for m in context)
+    est_tokens = prompt_chars // 3 + 1
+    print(f"\n[⏳ AGUARDE] Heavy (Qwen3-Coder) processando {len(context)} mensagens...")
+    print(
+        f"[📄 HEAVY] Dossiê: {len(dossier or '')} chars | mapa bruto: {len(repo_map_raw)} chars | "
+        f"stack: {stack.splitlines()[0] if stack else 'n/d'}"
+    )
+    print(f"[📏 HEAVY] Prompt ≈ {est_tokens} tokens de {CODER_NUM_CTX} (num_ctx)")
+    if est_tokens > CODER_NUM_CTX * 0.8:
+        print(
+            "[⚠️ HEAVY] Prompt perto do num_ctx: o Ollama corta o INÍCIO (as instruções). "
+            "Aumente CODER_NUM_CTX no .env ou reduza o contexto."
+        )
 
     start_time = time.time()
 
     result = await heavy_llm_structured.ainvoke(context)
+    result = await _review_heavy_result(result, context, user_text, workspace, stack)
 
     elapsed_time = time.time() - start_time
-    print(f"TEMPO DE RESPOSTA DO R1: {elapsed_time:.2f} segundos")
+    print(f"TEMPO DE RESPOSTA DO HEAVY: {elapsed_time:.2f} segundos")
 
     try:
         if hasattr(result, "model_dump"):
@@ -1190,7 +1332,24 @@ async def heavy_analyzer_node(
         )
         data = {}
 
-    tasks_data = data.get("tasks", [])
+    tasks_data = data.get("tasks", []) or []
+
+    if tasks_data:
+        tasks_data, discarded = validate_generated_tasks(tasks_data, workspace, stack)
+        if discarded:
+            final_analysis_content += (
+                "\n\n⚠️ Descartei estas tasks porque apontavam para algo que não existe no projeto "
+                "ou estavam genéricas:\n" + "\n".join(f"- {item}" for item in discarded)
+            )
+        tasks_data = number_generated_tasks(tasks_data)
+
+    if wants_project_map(user_text) and not tasks_data:
+        tree_dir = pick_map_dir(workspace, gatherer_tool_trace, user_text)
+        tree_text = render_project_tree(tree_dir) if tree_dir else ""
+        if tree_text:
+            final_analysis_content = (
+                f"{final_analysis_content.strip()}\n\n**Mapa visual:**\n\n```text\n{tree_text}\n```"
+            )
 
     if tasks_data:
         async with async_session_env() as db:
@@ -1242,6 +1401,8 @@ async def heavy_analyzer_node(
     return {
         "messages": [response],
         "heavy_context": None,
+        "repo_map_raw": None,
+        "project_stack": None,
         "gatherer_tool_trace": [],
         "enhanced_prompt": None,
         "active_node": "heavy_analyzer_node",
