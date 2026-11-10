@@ -294,6 +294,15 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
         ".py", ".js", ".ts", ".jsx", ".tsx", ".php", ".md"
     }
 
+    # Aparecem no mapa só pelo nome (sem assinaturas): templates, estilos, configs.
+    LISTED_EXTENSIONS = {
+        ".html", ".css", ".scss", ".json", ".yml", ".yaml", ".toml", ".txt",
+        ".sql", ".ini", ".cfg", ".sh", ".vue", ".svelte",
+    }
+
+    # Limite de caracteres da saída: mapas gigantes estouram o num_ctx do gatherer.
+    MAX_MAP_CHARS = 24000
+
     IGNORED_DIRS = {
         ".git",
         "__pycache__",
@@ -306,6 +315,16 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
         "build",
         "out",
         ".expo",
+        ".idea",
+        ".vscode",
+        "staticfiles",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "site-packages",
+        "coverage",
+        "htmlcov",
+        "target",
     }
 
     REGEX_FALLBACK = re.compile(
@@ -366,7 +385,7 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
         for file_name in sorted(files):
             ext = Path(file_name).suffix.lower()
 
-            if ext not in CODE_EXTENSIONS:
+            if ext not in CODE_EXTENSIONS and ext not in LISTED_EXTENSIONS:
                 continue
 
             file_path = Path(root) / file_name
@@ -377,6 +396,9 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
             repo_map.append(
                 f"{sub_indent}📄 {file_name}"
             )
+
+            if ext in LISTED_EXTENSIONS:
+                continue
 
             try:
                 content = file_path.read_text(
@@ -407,7 +429,14 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
                     f"(Erro ao ler arquivo: {error})"
                 )
 
-    return "\n".join(repo_map)
+    output = "\n".join(repo_map)
+    if len(output) > MAX_MAP_CHARS:
+        output = output[:MAX_MAP_CHARS].rsplit("\n", 1)[0] + (
+            "\n\n[MAPA TRUNCADO: a pasta é grande demais. "
+            "Chame generate_repo_map de novo com um dir_path mais específico.]"
+        )
+    print(f"[REPO MAP] saída: {len(output)} caracteres, {len(repo_map)} linhas")
+    return output
 
 # ──────────────────────────────────────────────────────────────────────────
 # HELPERS INTERNOS (não são tools — não ficam visíveis pro LLM)
