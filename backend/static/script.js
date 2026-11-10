@@ -14,6 +14,7 @@ const API = {
   retryTask: (taskId) => `/api/tasks/${taskId}/retry`,
   taskDiff: (taskId) => `/api/tasks/${taskId}/diff`,
   bulkDeleteTasks: "/api/tasks/bulk/delete",
+  handoffPlan: "/api/handoff/plan",
   ragScope: "/api/rag/scope",
   ragLinks: "/api/rag/links",
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
@@ -98,6 +99,12 @@ const el = {
   workspacePath: document.getElementById("workspace-path"),
   btnAddWorkspace: document.getElementById("btn-add-workspace"),
   workspaceList: document.getElementById("workspace-list"),
+  btnBrowseWorkspace: document.getElementById("btn-browse-workspace"),
+  workspaceBrowser: document.getElementById("workspace-browser"),
+  wbPath: document.getElementById("wb-path"),
+  wbList: document.getElementById("wb-list"),
+  wbUse: document.getElementById("wb-use"),
+  wbClose: document.getElementById("wb-close"),
   
   // Elementos do Modal de Tarefas
   taskModal: document.getElementById("task-modal"),
@@ -379,6 +386,57 @@ function removeWorkspace(workspace) {
   if (state.workspacePath === workspace) state.workspacePath = state.workspaces[0] || "";
   saveWorkspaces();
   renderWorkspaces();
+}
+
+// ============================================================
+// NAVEGADOR DE PASTAS DO SERVIDOR
+// O caminho do workspace vale no PC onde o backend roda; aqui você escolhe a pasta lá, de qualquer aparelho.
+// ============================================================
+
+const WB = { current: null };
+
+function renderWorkspaceBrowser() {
+  const data = WB.current;
+  if (!data) return;
+  el.wbPath.textContent = data.roots ? "Pastas raiz do servidor" : data.path;
+  const items = [];
+  if (data.parent !== null) {
+    items.push(`<button type="button" class="wb-item" data-path="${escapeHtml(data.parent)}">↩ Voltar</button>`);
+  }
+  data.dirs.forEach((dir) => {
+    items.push(
+      `<button type="button" class="wb-item" data-path="${escapeHtml(dir.path)}">📁 ${escapeHtml(dir.name)}` +
+        `${dir.is_repo ? '<span class="wb-badge">git</span>' : ""}</button>`
+    );
+  });
+  el.wbList.innerHTML = items.join("") || `<div class="wb-empty">Nenhuma subpasta aqui.</div>`;
+  el.wbUse.classList.toggle("hidden", !!data.roots);
+}
+
+async function loadWorkspaceBrowser(path = "") {
+  el.wbList.innerHTML = `<div class="wb-empty">Carregando…</div>`;
+  try {
+    WB.current = await api(`/api/workspaces/browse?path=${encodeURIComponent(path)}`);
+    renderWorkspaceBrowser();
+  } catch (error) {
+    WB.current = null;
+    el.wbPath.textContent = "";
+    el.wbUse.classList.add("hidden");
+    el.wbList.innerHTML = `<div class="wb-empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function toggleWorkspaceBrowser(open) {
+  const show = open ?? el.workspaceBrowser.classList.contains("hidden");
+  el.workspaceBrowser.classList.toggle("hidden", !show);
+  if (show) loadWorkspaceBrowser("");
+}
+
+function useBrowsedWorkspace() {
+  if (!WB.current || WB.current.roots || !WB.current.path) return;
+  el.workspacePath.value = WB.current.path;
+  addWorkspace();
+  toggleWorkspaceBrowser(false);
 }
 
 // ============================================================
@@ -690,6 +748,7 @@ function renderTasks(tasks) {
     const desc = normalizeTaskDescription(task.description);
     const snippet = String(task.code_snippet || "").trim();
     const long = desc.length > 320;
+    const canPlan = task.status === "pending" || failed;
     const steps = Array.isArray(task.steps) ? task.steps : [];
     const stepsText = steps
       .map((step, i) => `${i + 1}. ${step.op}${step.path ? " " + step.path : ""}${step.branch ? " " + step.branch : ""}`)
@@ -722,6 +781,7 @@ function renderTasks(tasks) {
       <div class="task-card-footer">
         <span class="task-meta"><span class="task-priority p-${escapeHtml(task.priority || "medium")}">${escapeHtml(PRIORITY_LABEL[task.priority || "medium"] || task.priority)}</span><span class="task-mode">${steps.length ? "determinística" : "modo livre"}</span></span>
         <span class="task-footer-right">
+          ${canPlan ? `<button type="button" class="btn btn-ghost btn-sm btn-plan-task" data-task-id="${task.id}" title="O modelo local indica as linhas e o sistema monta e valida os passos">${steps.length ? "Replanejar" : "Planejar"}</button>` : ""}
           ${failed ? `<button type="button" class="btn btn-ghost btn-sm btn-retry-task" data-task-id="${task.id}">Reiniciar</button>` : ""}
           ${inReview ? `<button type="button" class="btn btn-ghost btn-sm btn-diff-task" data-task-id="${task.id}">Ver alterações</button><button type="button" class="btn btn-primary btn-sm btn-approve-task" data-task-id="${task.id}">Aprovar</button><button type="button" class="btn btn-ghost btn-sm btn-reject-task" data-task-id="${task.id}">Reprovar</button>` : ""}
         </span>
@@ -1758,6 +1818,15 @@ document.addEventListener("change", (event) => {
   updateTaskToolbar(state.currentTasks, applyTaskFilters(state.currentTasks, state.taskFilters));
 });
 el.btnAddWorkspace.addEventListener("click", addWorkspace);
+if (el.btnBrowseWorkspace) {
+  el.btnBrowseWorkspace.addEventListener("click", () => toggleWorkspaceBrowser());
+  el.wbClose.addEventListener("click", () => toggleWorkspaceBrowser(false));
+  el.wbUse.addEventListener("click", useBrowsedWorkspace);
+  el.wbList.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-path]");
+    if (item) loadWorkspaceBrowser(item.dataset.path);
+  });
+}
 el.workspacePath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); addWorkspace(); }
 });
@@ -1796,6 +1865,50 @@ if (el.taskForm) {
   });
 }
 
+// Planejador local: o modelo indica linhas e texto novo, o sistema monta os passos (old exato) e valida por dry-run.
+async function planTaskAction(taskId, button) {
+  const task = state.currentTasks.find((t) => t.id === taskId);
+  if (!task) return;
+  if (!state.workspacePath) {
+    alert("Escolha um projeto na aba Projeto antes de planejar.");
+    return;
+  }
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Planejando…";
+  try {
+    const result = await api(API.handoffPlan, {
+      method: "POST",
+      body: JSON.stringify({
+        path: state.workspacePath,
+        task: {
+          title: task.title,
+          description: task.description,
+          reason: task.reason || "",
+          files: task.files || [],
+          priority: task.priority || "medium",
+        },
+        task_id: task.id,
+        save: true,
+      }),
+    });
+    if (result.ok && result.saved) {
+      alert(`Plano pronto (${result.attempts} tentativa(s)): ${result.task.steps.length} passo(s) validados no dry-run. A tarefa agora é determinística; execute normalmente.`);
+    } else if (result.ok) {
+      alert("O plano passou no dry-run, mas não foi salvo (a tarefa mudou de estado). Atualize a lista e tente de novo.");
+    } else {
+      const reason = String(result.error || result.report || "O planejador não conseguiu montar um plano.");
+      alert(`Não foi possível planejar (${result.attempts} tentativa(s)):\n\n${reason.slice(0, 1200)}`);
+    }
+    await loadTasks();
+  } catch (error) {
+    alert("Erro ao planejar: " + error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
 // Delegar cliques de edição e exclusão dentro da lista de tasks
 document.addEventListener('click', (event) => {
   const btnEdit = event.target.closest('.btn-edit-task');
@@ -1806,6 +1919,13 @@ document.addEventListener('click', (event) => {
     return;
   }
   
+  const btnPlan = event.target.closest('.btn-plan-task');
+  if (btnPlan) {
+    const taskId = parseInt(btnPlan.getAttribute('data-task-id'));
+    if (taskId) planTaskAction(taskId, btnPlan);
+    return;
+  }
+
   const btnRetry = event.target.closest('.btn-retry-task');
   if (btnRetry) {
     const taskId = parseInt(btnRetry.getAttribute('data-task-id'));

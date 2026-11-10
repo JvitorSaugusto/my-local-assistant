@@ -222,6 +222,15 @@
                 <input id="workspace-path" class="workspace-input" type="text" placeholder="C:\Users\...\meu-projeto" autocomplete="off" />
                 <button id="btn-add-workspace" class="btn btn-secondary" type="button">Adicionar</button>
               </div>
+              <button id="btn-browse-workspace" class="btn btn-secondary" type="button">Procurar pastas no servidor</button>
+              <div id="workspace-browser" class="workspace-browser hidden">
+                <div id="wb-path" class="wb-path"></div>
+                <div id="wb-list" class="wb-list"></div>
+                <div class="wb-actions">
+                  <button id="wb-use" class="btn btn-primary hidden" type="button">Usar esta pasta</button>
+                  <button id="wb-close" class="btn btn-ghost" type="button">Fechar</button>
+                </div>
+              </div>
               <div id="workspace-list" class="workspace-list"></div>
             </div>
             <a class="rag-card" href="/static/rag.html" target="_blank" rel="noopener">
