@@ -4,13 +4,15 @@ from backend.api.controllers.chat_controller import chat_router
 from backend.api.controllers.ai_controller import ai_router
 from backend.api.controllers.tasks_controller import task_router
 from backend.api.controllers.upload_controller import upload_router
+from backend.api.controllers.workspaces_controller import workspaces_router
 from backend.rag import rag_startup
 from backend.rag.api import rag_router
+from backend.handoff.api import handoff_router
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pathlib import Path
 import os
 from dotenv import load_dotenv
@@ -47,12 +49,21 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/")
 async def serve_index():
     index_path = STATIC_DIR / "index.html"
+    html = index_path.read_text(encoding="utf-8")
 
-    return FileResponse(index_path)
+    # Injeta o script de alertas (notify.js) sem precisar mexer no index.html.
+    tag = '<script src="/static/notify.js"></script>'
+    if "notify.js" not in html:
+        pos = html.lower().rfind("</body>")
+        html = html[:pos] + tag + html[pos:] if pos != -1 else html + tag
+
+    return HTMLResponse(html)
 
 app.include_router(ai_router, prefix="/api/ai", tags=["InteligenciaArtificial"])
 app.include_router(chat_router, prefix="/api/chats", tags=["ChatInteligenciaArtificial"])
 app.include_router(task_router, prefix="/api/tasks", tags=["Tarefas"])
 app.include_router(upload_router, prefix="/api/uploads", tags=["Uploads"])
+app.include_router(workspaces_router, prefix="/api/workspaces", tags=["Workspaces"])
 
 app.include_router(rag_router, prefix="/api/rag", tags=["RAG"])
+app.include_router(handoff_router, prefix="/api/handoff", tags=["Handoff"])
