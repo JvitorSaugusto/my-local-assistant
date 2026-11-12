@@ -124,7 +124,7 @@ note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGU
 
 context_gatherer_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=CODER_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
-heavy_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.3, num_predict=16384, num_ctx=CODER_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
+heavy_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.3, num_predict=16384, num_ctx=CODER_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE, repeat_penalty=float(os.getenv("HEAVY_REPEAT_PENALTY", "") or 1.05))
 
 heavy_llm_structured = heavy_llm.with_structured_output(HeavyAnalysisSchema)
 

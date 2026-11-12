@@ -1,6 +1,7 @@
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from .config import State
+from .ops_node import ops_node
 from .nodes import (
     after_enhancer_route,
     context_gatherer_node,
@@ -56,6 +57,7 @@ def build_graph():
     builder.add_node("context_gatherer_node", context_gatherer_node)
     builder.add_node("heavy_analyzer_node", heavy_analyzer_node)
     builder.add_node("summarize_node", summarize_node)
+    builder.add_node("ops_node", ops_node)
     builder.add_node("enhancer_node", enhancer_node)
     
     builder.add_conditional_edges(
@@ -80,6 +82,7 @@ def build_graph():
             "note_draft_node": "note_draft_node",
             "heavy_analyzer_node": "heavy_analyzer_node",
             "context_gatherer_node": "context_gatherer_node",
+            "ops_node": "ops_node",
             "enhancer_node": "enhancer_node",
         }
     )
@@ -151,6 +154,7 @@ def build_graph():
     )
     
     builder.add_edge("heavy_analyzer_node", END)
+    builder.add_edge("ops_node", END)
 
     builder.add_edge("note_refine_node", END)
     builder.add_edge("standard_node_20b", END)

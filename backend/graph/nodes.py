@@ -42,6 +42,9 @@ from .prompts import (
     ROUTER_NODE_PROMPT,
     STANDARD_NODE_PROMPT,
 )
+from .task_journal import begin_journal, journal_end, journal_rollback, syntax_problems_for_paths
+from .task_commit import capture_originals, commit_task
+from .ops_core import detect_ops_intent
 from .node_helpers import (
     _check_python_syntax,
     _extract_edited_python_files,
@@ -72,7 +75,11 @@ from .executor import execute_task, missing_listed_files, run_checks, workspace_
 from .context_builder import build_task_dossier, estimate_tokens, format_report
 from .grounding import auto_check_documents
 from .rag_bridge import rag_context
-from .rag_bridge import rag_context
+from .answer_guard import build_answer_corpus, detect_repetition, finalize_answer, wants_raw_output
+from .checklist import gatherer_coverage_part
+from .heavy_rules import HEAVY_OUTPUT_RULES
+from .snippet_validator import validate_snippets
+from .supported_formats import READ_SUPPORT_FACTS, asks_about_read_support
 from .utils import ATTACHMENT_MARKER, detect_explicit_route, strip_leading_tags
 
 
@@ -93,6 +100,13 @@ def router_node(state: State):
             )
         else:
             last_msg = str(raw_content)
+
+    ops_text = None if (state.get("enhanced_prompt") or state.get("active_generate_task")) else detect_ops_intent(last_msg, state["messages"])
+    if ops_text is not None:
+        if isinstance(state["messages"][-1].content, str) and ops_text != last_msg:
+            state["messages"][-1].content = ops_text
+        print("🔀 [ROUTER] Rota: 'OPS' (git/pacote pelo chat)")
+        return {"actual_route": "OPS", "enhance_before_heavy": False}
 
     explicit_route = detect_explicit_route(last_msg)
 
@@ -350,6 +364,7 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                 task.last_error = None
                 await db.commit()
 
+                pre_state = capture_originals(workspace_path, task.steps)
                 run = await execute_task(
                     {"steps": task.steps, "verify": task.verify or []},
                     workspace_path,
@@ -365,6 +380,9 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                     report_lines.append(
                         f"✅ #{task.id} {task.title} — {applied} passo(s) aplicado(s){extra}."
                     )
+                    commit_note = await asyncio.to_thread(commit_task, workspace_path, task.id, task.title, pre_state)
+                    if commit_note:
+                        report_lines.append(commit_note)
                     absent = missing_listed_files(task.files, workspace_path)
                     if absent:
                         report_lines.append(
@@ -531,6 +549,7 @@ async def _generate_node_impl(state: State):
     context_notice = None
     first_call = not any(getattr(m, "type", "") == "ai" for m in _messages_of_current_task(recent_messages))
     if task and first_call:
+        begin_journal(workspace, task.id)
         context_notice = AIMessage(
             content=format_report(dossier_report, GENERATE_NUM_CTX, prompt_tokens),
             name="Qwen3-Coder (Generate)",
@@ -692,6 +711,7 @@ async def _generate_node_impl(state: State):
             problems: list[str] = []
 
             syntax_errors = _check_python_syntax(_extract_edited_python_files(task_messages), workspace)
+            syntax_errors = syntax_errors + syntax_problems_for_paths(workspace, _extract_written_files(task_messages))
             if syntax_errors:
                 problems.append(
                     "Erro de sintaxe após as edições:\n" + "\n".join(f"- {err}" for err in syntax_errors)
@@ -783,6 +803,16 @@ async def _generate_node_impl(state: State):
                     )
                 )
 
+            if final_status == "failed":
+                restored = journal_rollback(workspace, task.id)
+                if restored:
+                    last_error = (
+                        (last_error or "")
+                        + f"\n\nAs alterações desta execução foram DESFEITAS automaticamente ({len(restored)} arquivo(s)). "
+                        "Use 'Ver alterações' para ver o que a IA tentou."
+                    ).strip()
+            journal_end(workspace)
+
             if final_status == "completed" and REVIEW_FREE_TASKS:
                 final_status = "review"
                 messages_to_return.append(
@@ -838,6 +868,8 @@ async def generate_node(state: State):
     except Exception as exc:
         task = state.get("active_generate_task")
         if task:
+            journal_rollback(state.get("workspace_path"), task.id)
+            journal_end(state.get("workspace_path"))
             await _mark_task_failed(task.id, f"Erro durante a execução: {exc}")
         raise
 
@@ -1065,6 +1097,10 @@ def context_gatherer_node(state: State):
         )
     ]
 
+    coverage = gatherer_coverage_part(_last_human_text(state))
+    if coverage:
+        context[0] = SystemMessage(content=str(context[0].content) + "\n\n" + coverage)
+
     context.extend(_previous_turns(state["messages"], last_human_idx))
     context.extend(recent_messages)
 
@@ -1136,6 +1172,10 @@ def context_gatherer_node(state: State):
         for msg in state["messages"][last_human_idx + 1 :]
         if getattr(msg, "id", None)
     ]
+
+    dossier_text, bad_snippets = validate_snippets(dossier_text, workspace)
+    if bad_snippets:
+        print(f"[GATHERER] ⚠️ Trechos do dossiê que NÃO existem no arquivo real (removidos): {bad_snippets}")
 
     print("\n===== LIMPEZA DO GATHERER =====")
     print(f"[🧹] Mensagens internas removidas: {len(messages_to_remove)}")
@@ -1217,6 +1257,22 @@ async def _review_heavy_result(result, context, user_text: str, workspace: str |
     return retry if len(retry_problems) <= len(problems) else result
 
 
+async def _retry_if_degenerate(result, context, user_text: str):
+    """Se a resposta saiu em loop (itens repetidos), refaz UMA vez com limite explícito."""
+    data = _heavy_result_dict(result)
+    if not detect_repetition(str(data.get("analysis") or "")):
+        return result
+    print("[HEAVY] ⚠️ Resposta repetitiva (loop de geração). Refazendo uma vez.")
+    feedback = HumanMessage(
+        content=(
+            "REVISÃO AUTOMÁTICA: a resposta anterior entrou em loop e repetiu itens. Refaça `analysis` curto, "
+            "sem repetir nenhum item e com no máximo 40 itens por lista, citando só o que existe nos fatos verificados, "
+            "sem mencionar esta revisão.\n\nPedido original do usuário: " + user_text
+        )
+    )
+    return await heavy_llm_structured.ainvoke([*context, feedback])
+
+
 async def heavy_analyzer_node(
     state: State,
     config: RunnableConfig,
@@ -1266,6 +1322,11 @@ async def heavy_analyzer_node(
         )
     ]
 
+    extra_rules = [HEAVY_OUTPUT_RULES]
+    if asks_about_read_support(user_text):
+        extra_rules.append(READ_SUPPORT_FACTS)
+    context[0] = SystemMessage(content=str(context[0].content) + "\n\n" + "\n\n".join(extra_rules))
+
     if user_request:
         user_idx = next(
             (i for i in range(len(state["messages"]) - 1, -1, -1) if state["messages"][i] is user_request),
@@ -1292,6 +1353,7 @@ async def heavy_analyzer_node(
 
     result = await heavy_llm_structured.ainvoke(context)
     result = await _review_heavy_result(result, context, user_text, workspace, stack)
+    result = await _retry_if_degenerate(result, context, user_text)
 
     elapsed_time = time.time() - start_time
     print(f"TEMPO DE RESPOSTA DO HEAVY: {elapsed_time:.2f} segundos")
@@ -1315,6 +1377,22 @@ async def heavy_analyzer_node(
 
         if real_findings:
             final_analysis_content += build_security_report(real_findings)
+
+        if not wants_raw_output(user_text):
+            guarded = finalize_answer(
+                final_analysis_content,
+                build_answer_corpus(dossier, repo_map_raw, stack, state["messages"], gatherer_tool_trace),
+                check_names=bool((dossier or "").strip()),
+            )
+            if guarded["invalid"]:
+                print(f"[HEAVY] ⚠️ Nomes citados sem confirmação no código: {guarded['invalid']}")
+            if guarded["degenerate"]:
+                print("[HEAVY] ⚠️ Resposta ainda repetitiva depois da nova tentativa: descartada.")
+                guarded["text"] = (
+                    "Minha resposta saiu repetitiva e foi descartada. "
+                    "Peça um item por vez ou diga qual arquivo quer ver."
+                )
+            final_analysis_content = guarded["text"]
 
         if not final_analysis_content.strip():
             final_analysis_content = (
@@ -1427,6 +1505,8 @@ def route_decision(state: State):
             print("🔀 [EDGE] Rota HEAVY sem tools. Indo para: heavy_analyzer_node")
             return "heavy_analyzer_node"
 
+    elif destiny == "OPS":
+        return "ops_node"
     elif destiny == "NOTES":
         return "note_draft_node"
     elif destiny == "ENHANCER":

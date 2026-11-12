@@ -11,6 +11,8 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
 from .file_readers import read_text_for_tools
+from .task_journal import record_write
+from .task_guards import js_edit_error
 
 
 MAX_READS_PER_GENERATE_TASK = 50
@@ -668,6 +670,7 @@ def _read_text_keep_newline(path: Path) -> tuple[str, str]:
 def _write_text_atomic(path: Path, text: str, newline: str = "\n") -> None:
     """Grava via arquivo temporário + os.replace: nunca deixa o arquivo
     pela metade se algo falhar no meio da escrita."""
+    record_write(path)
     data = text.replace("\n", newline) if newline != "\n" else text
     fd, tmp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
@@ -1192,6 +1195,7 @@ def create_new_file(file_path: str, content: str, runtime: ToolRuntime) -> str:
 
     try:
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        record_write(resolved_path)
         resolved_path.write_text(content, encoding="utf-8")
     except OSError as error:
         return f"ERRO ao criar o arquivo '{file_path}': {error}"
@@ -1980,6 +1984,10 @@ def apply_replace_text(
 
     updated = original.replace(old, new) if replace_all else original.replace(old, new, 1)
 
+    js_error = js_edit_error(resolved.suffix, original, updated)
+    if js_error:
+        return js_error
+
     if resolved.suffix == ".py":
         py_error, _warning = _validate_python_edit(original, updated)
         if py_error:
@@ -2071,6 +2079,7 @@ def apply_create_pdf(
 
     try:
         resolved.parent.mkdir(parents=True, exist_ok=True)
+        record_write(resolved)
         fd, tmp_name = tempfile.mkstemp(dir=str(resolved.parent), prefix=f".{resolved.name}.", suffix=".tmp")
         with os.fdopen(fd, "wb") as tmp:
             tmp.write(data)

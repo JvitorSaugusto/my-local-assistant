@@ -100,7 +100,13 @@ def _extract_cached(path_str: str, mtime_ns: int, size: int) -> str:
     elif suffix == ".docx":
         text = _extract_docx(path)
     else:
-        return path.read_text(encoding="utf-8")
+        data = path.read_bytes()
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1", errors="replace")
 
     if len(text) > MAX_EXTRACTED_CHARS:
         text = text[:MAX_EXTRACTED_CHARS] + "\n[... texto truncado]"
