@@ -116,5 +116,24 @@ class PytestTests(unittest.TestCase):
                 self.assertIn("não está instalado", ok[0])
 
 
+class ProjectPythonTests(unittest.TestCase):
+    def test_returns_none_without_venv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(tg.find_project_python(tmp))
+
+    def test_finds_venv_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, ".venv/Scripts/python.exe", "")
+            found = tg.find_project_python(tmp)
+            self.assertIsNotNone(found)
+            self.assertTrue(found.endswith("python.exe"))
+
+    def test_prefers_dot_venv_over_venv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(tmp, "venv/Scripts/python.exe", "")
+            _write(tmp, ".venv/Scripts/python.exe", "")
+            self.assertIn(".venv", tg.find_project_python(tmp))
+
+
 if __name__ == "__main__":
     unittest.main()
