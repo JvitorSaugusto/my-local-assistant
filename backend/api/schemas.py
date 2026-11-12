@@ -142,6 +142,11 @@ class CheckPythonSyntax(_PathMixin):
     type: Literal["python_syntax"]
 
 
+class CheckPytest(_PathMixin):
+    """Roda o arquivo de teste `path` com pytest; falha se algum teste falhar."""
+    type: Literal["pytest"]
+
+
 class CheckLiteralsGrounded(_PathMixin):
     """Confere, sem LLM, se valores citados no documento `path` existem nas `sources`."""
     type: Literal["literals_grounded"]
@@ -150,7 +155,7 @@ class CheckLiteralsGrounded(_PathMixin):
 
 
 TaskCheck = Annotated[
-    Union[CheckFileExists, CheckContains, CheckNotContains, CheckPythonSyntax, CheckLiteralsGrounded],
+    Union[CheckFileExists, CheckContains, CheckNotContains, CheckPythonSyntax, CheckLiteralsGrounded, CheckPytest],
     Field(discriminator="type"),
 ]
 

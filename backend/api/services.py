@@ -138,6 +138,28 @@ class TaskService:
         if "status" in updates and updates["status"] not in self.VALID_STATUSES:
             raise ValueError(f"Status inválido: {updates['status']!r}.")
 
+        if updates.get("status") == "completed":
+            try:
+                from backend.graph.task_journal import discard_journal
+
+                import asyncio
+
+                from backend.graph.task_commit import commit_from_journal
+
+                note = await asyncio.to_thread(commit_from_journal, task_id, task.title)
+                if note:
+                    print(f"[COMMIT] {note}")
+                import asyncio
+
+                from backend.graph.task_commit import commit_from_journal
+
+                note = await asyncio.to_thread(commit_from_journal, task_id, task.title)
+                if note:
+                    print(f"[COMMIT] {note}")
+                discard_journal(task_id)
+            except Exception:  # noqa: BLE001 - o diário é opcional
+                pass
+
         for key, value in updates.items():
             if key in self.UPDATABLE_FIELDS:
                 setattr(task, key, value)
