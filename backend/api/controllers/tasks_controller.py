@@ -7,6 +7,7 @@ from backend.api.services import TaskService
 from backend.api.schemas import TaskBulkDeleteSchema, TaskCreateSchema, TaskResponseSchema
 from backend.database.config import get_db
 from backend.graph.context_builder import task_changes
+from backend.graph.task_journal import journal_diff, journal_revert
 
 
 task_router = APIRouter()
@@ -78,4 +79,24 @@ async def task_diff(task_id: int, workspace: str, service: TaskServiceDep):
         raise HTTPException(status_code=404, detail="Tarefa não encontrada")
     if not workspace.strip():
         raise HTTPException(status_code=400, detail="Informe o diretório de trabalho (workspace).")
+    from_journal = await asyncio.to_thread(journal_diff, workspace, task_id)
+    if from_journal is not None:
+        return from_journal
     return await asyncio.to_thread(task_changes, workspace, list(task.files or []))
+
+
+@task_router.post("/{task_id}/revert")
+async def revert_task(task_id: int, workspace: str, service: TaskServiceDep):
+    """Desfaz no disco as alterações feitas por uma task em modo dinâmico (usa o diário de alterações)."""
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada")
+    if not workspace.strip():
+        raise HTTPException(status_code=400, detail="Informe o diretório de trabalho (workspace).")
+    outcome = await asyncio.to_thread(journal_revert, workspace, task_id)
+    if outcome is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Não há diário de alterações para esta tarefa (não rodou em modo dinâmico, já foi aprovada ou já foi desfeita).",
+        )
+    return outcome
