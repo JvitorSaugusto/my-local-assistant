@@ -149,11 +149,28 @@ def extra_syntax_problems(workspace, steps):
     return problems
 
 
+def find_project_python(workspace):
+    """Devolve o python do venv do repositório-alvo (.venv ou venv), ou None."""
+    from pathlib import Path
+
+    root = Path(workspace)
+    candidates = [
+        root / ".venv" / "Scripts" / "python.exe",
+        root / "venv" / "Scripts" / "python.exe",
+        root / ".venv" / "bin" / "python",
+        root / "venv" / "bin" / "python",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def run_pytest(workspace, rel, timeout=120):
     """Roda um arquivo de teste com o pytest do mesmo Python do backend. Devolve a lista de falhas."""
     try:
         done = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-x", "--no-header", "-p", "no:cacheprovider", rel],
+            [find_project_python(workspace) or sys.executable, "-m", "pytest", "-q", "-x", "--no-header", "-p", "no:cacheprovider", rel],
             cwd=str(workspace),
             capture_output=True,
             text=True,
