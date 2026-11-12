@@ -148,8 +148,9 @@ A regra geral: **um chunk = uma classe ou uma função/método inteiro**, nunca 
 
 | Parte do arquivo | Chunk gerado (`kind`) |
 |---|---|
-| Linhas antes da primeira função/classe (imports, constantes, configuração; até 200 linhas) | `header` |
+| Linhas antes da primeira função/classe (imports, constantes pequenas, configuração; sem limite, divididas em partes se passarem de 200 linhas) | `header` |
 | Constantes de módulo definidas **depois** da primeira função | `constants` |
+| Atribuições de módulo com 12+ linhas (ex.: um prompt gigante) | `constant` (um chunk por variável, com o nome dela como símbolo) |
 | Cada função de nível superior (com decoradores) | `function` |
 | Classe com até 80 linhas | `class` (a classe inteira, em um chunk) |
 | Classe com mais de 80 linhas | `class_skeleton` (linha da classe, docstring, atributos e as assinaturas dos métodos com `...`) **mais** um chunk `method` por método |
@@ -196,6 +197,16 @@ Por padrão **não há LLM no resumo**: `RAG_SUMMARY_MODEL` vem vazio e o sistem
 | Classe sem docstring | Nome e até 6 métodos | `Classe Parser com métodos read, validate, dump.` |
 | Função/método sem docstring | Nome, parâmetros (sem `self`/`cls`) e até 6 nomes de funções que ele chama | `Função enviar_item(item). Usa: append, notify.` (para método: `Método Fila.enviar(item). ...`) |
 | Qualquer outro (JS, markdown, CSS...) | Tipo, nome e a primeira linha não vazia (até 100 caracteres) | `section Uso: # Uso` |
+
+### Como saber se a IA escreveu os resumos
+
+- No mapa e na busca, resumo de IA é uma **frase corrida** ("Valida o tipo de cadastro e devolve 400 se for inválido"). Resumo heurístico segue sempre o padrão `Função nome(args). Usa: ...` / `Classe X com campos ...`.
+- Em `/static/rag.html`, a nota do job diz o que aconteceu, por exemplo: `Resumos (llm:gpt-oss:20b): 340 novos, 12 reaproveitados. 335 escritos pela IA. ATENÇÃO: 5 caíram para o resumo heurístico porque a IA falhou. Último erro: ...`.
+- Para diagnosticar: `python -m backend.rag.check_summarizer` faz uma chamada crua ao Ollama e mostra se a resposta vem vazia.
+- **Modelos de raciocínio** (gpt-oss, qwen3...) gastam tokens "pensando". O sistema usa `think=low` no gpt-oss automaticamente (ajuste com `RAG_SUMMARY_THINK`). Para resumos de uma frase, um modelo pequeno sem raciocínio costuma ser mais rápido e igualmente bom.
+- Cada resumo guarda quem o escreveu (`heuristic` ou `llm:<modelo>`). **Trocou o modelo ou ligou a IA em uma fonte já indexada? Basta clicar em Reindexar**: arquivos sem alteração, mas com resumos que não são da IA, são refeitos (só esses resumos). Resumos que caíram no heurístico por falha também são refeitos na próxima vez. **Regerar resumos** reprocessa tudo do zero (chunks e embeddings também).
+- Em `/static/rag.html` o cartão **Resumos dos trechos** mostra se a IA está ativa e o botão **Testar resumidor** faz uma chamada ao vivo, mostrando o motivo se falhar. Cada fonte mostra `resumos: N IA · M heurístico`.
+- Antes de cada ingestão a IA é testada: se estiver fora do ar ou com o nome do modelo errado, a nota do job avisa na hora e a ingestão usa o heurístico sem esperar timeouts. Após 5 falhas seguidas a IA é desligada até o fim da ingestão.
 
 **Se você quiser resumos escritos por IA**, defina `RAG_SUMMARY_MODEL` (ex.: um modelo pequeno do Ollama). O prompt pede **uma frase curta** (até 25 palavras, em português), citando nomes reais e sem inventar. Se a chamada falhar, o sistema volta sozinho para o resumo heurístico, então a ingestão nunca trava. Isso é mais lento: é uma chamada por chunk novo ou alterado.
 
@@ -274,3 +285,5 @@ As variáveis (`RAG_EMBED_MODEL`, `RAG_EMBED_DIM`, `RAG_SUMMARY_MODEL`...) estã
 | "Dimensão do embedding difere de RAG_EMBED_DIM" | O modelo de embedding não tem a dimensão configurada. Ajuste `RAG_EMBED_DIM`; ao trocar de modelo, recrie o schema (`DROP SCHEMA rag CASCADE;`). |
 | Zip nunca aparece nas respostas | Zip não é padrão: vincule ao projeto ou peça pelo nome (seção 4). |
 | Resposta com trecho desatualizado | Aguarde a próxima consulta (atualização automática) ou use **Reindexar**. |
+| Resumos continuam heurísticos mesmo com `RAG_SUMMARY_MODEL` | (1) o servidor precisa ser **reiniciado** depois de mudar o `.env`; (2) confira o cartão **Resumos dos trechos** (deve dizer "IA") e use **Testar resumidor**; (3) clique em **Reindexar**; (4) veja a nota do job: ela traz o último erro (ex.: `404` = modelo não baixado, rode `ollama pull <modelo>`). |
+| Nota diz "IA de resumos indisponível" | O Ollama não respondeu ao teste prévio. Veja o motivo na própria nota; `404` é nome de modelo errado ou não baixado, "resposta vazia" é modelo de raciocínio gastando tokens (use `RAG_SUMMARY_THINK=low` ou um modelo sem raciocínio, como `qwen2.5-coder:7b`). |
