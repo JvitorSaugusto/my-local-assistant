@@ -44,6 +44,7 @@ from .tools import (
     create_new_file,
 )
 from .grounding import check_literals_grounded
+from .task_guards import FileSnapshot, extra_syntax_problems, run_pytest
 
 _STEPS_ADAPTER = TypeAdapter(list[TaskStep])
 _CHECKS_ADAPTER = TypeAdapter(list[TaskCheck])
@@ -433,6 +434,31 @@ def _step_extract_zip(workspace: str, thread_id: str | None, step) -> tuple[str,
     return ("ok" if (created or updated) else "skipped"), detail
 
 
+def _heal_replace(workspace: str, step, original_result: str):
+    """Se o `old` não bateu só por espaços/indentação, usa o ÚNICO bloco equivalente do arquivo (sem LLM)."""
+    if os.getenv("TASK_HEAL_WHITESPACE", "1") != "1" or step.occurrences == "all":
+        return None
+    if "não foi encontrado" not in original_result:
+        return None
+    try:
+        from backend.handoff.repair import repair_steps
+
+        fixed, notes = repair_steps(
+            workspace, [{"op": "replace_text", "path": step.path, "old": step.old, "new": step.new}]
+        )
+    except Exception:  # noqa: BLE001 - o reparo é um extra: nunca derruba a tarefa
+        return None
+    if not notes:
+        return None
+    healed = apply_replace_text(
+        workspace, step.path, fixed[0]["old"], fixed[0]["new"], replace_all=False, strip_numbers=False
+    )
+    status = _classify(healed)
+    if status == "failed":
+        return None
+    return status, healed + " (âncora ajustada: só espaços/indentação diferiam; bloco único equivalente.)"
+
+
 def _run_step(
     workspace: str, step, later_steps: list[Any], thread_id: str | None = None
 ) -> tuple[str, str]:
@@ -449,7 +475,12 @@ def _run_step(
             replace_all=(step.occurrences == "all"),
             strip_numbers=False,
         )
-        return _classify(result), result
+        status = _classify(result)
+        if status == "failed":
+            healed = _heal_replace(workspace, step, result)
+            if healed is not None:
+                return healed
+        return status, result
     if step.op == "append":
         return _step_append(workspace, step.path, step.content)
     if step.op == "write_markdown":
@@ -513,6 +544,10 @@ def run_checks(checks: list[Any], workspace: str) -> list[str]:
                 failures.append(problem)
             continue
 
+        if check.type == "pytest":
+            failures.extend(run_pytest(workspace, check.path))
+            continue
+
         if check.type == "literals_grounded":
             failures.extend(check_literals_grounded(check.path, check.sources, workspace, check.allow))
             continue
@@ -556,6 +591,7 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
         return TaskRunResult(ok=False, error="A tarefa não possui passos (steps) para executar.")
 
     result = TaskRunResult(ok=True)
+    snapshot = FileSnapshot(workspace)
     touched_python: list[str] = []
 
     with _lock_for(workspace):
@@ -563,6 +599,7 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
 
         for index, step in enumerate(steps, start=1):
             try:
+                snapshot.touch_step(step)
                 status, detail = _run_step(workspace, step, steps[index:], thread_id)
             except Exception as exc:  # um bug de passo nunca derruba o worker
                 status, detail = "failed", f"exceção inesperada: {type(exc).__name__}: {exc}"
@@ -573,11 +610,16 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
 
             if status == "failed":
                 applied = [i["index"] for i in result.log if i["status"] == "ok"]
+                rolled_back = snapshot.restore()
                 result.ok = False
                 result.failed_step = index
                 result.error = (
                     f"Passo {index}/{total} ({_label(step)}) falhou:\n{detail}\n\n"
-                    + (f"Passos já aplicados: {applied}. " if applied else "Nenhum passo foi aplicado antes. ")
+                    + (
+                        "Rollback feito: os arquivos voltaram ao estado anterior à tarefa. "
+                        if rolled_back
+                        else (f"Passos já aplicados: {applied}. " if applied else "Nenhum passo foi aplicado antes. ")
+                    )
                     + "Reiniciar é seguro: o que já foi feito é detectado e pulado."
                 )
                 return result
@@ -588,6 +630,7 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
 
         # Revisão automática: todo .py tocado precisa ter sintaxe válida.
         problems: list[str] = []
+        problems.extend(extra_syntax_problems(workspace, steps))
         for rel in touched_python:
             resolved, error = _confined_path(rel, workspace)
             if resolved is not None and resolved.is_file():
@@ -598,9 +641,11 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
         problems.extend(run_checks(task.get("verify") or [], workspace))
 
     if problems:
+        with _lock_for(workspace):
+            rolled_back = snapshot.restore()
         result.ok = False
         result.error = (
-            "Os passos foram aplicados, mas a verificação final falhou:\n"
+            ("Os passos foram DESFEITOS (rollback), pois a verificação final falhou:\n" if rolled_back else "Os passos foram aplicados, mas a verificação final falhou:\n")
             + "\n".join(f"- {p}" for p in problems)
         )
 
