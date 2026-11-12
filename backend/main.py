@@ -4,6 +4,7 @@ from backend.api.controllers.chat_controller import chat_router
 from backend.api.controllers.ai_controller import ai_router
 from backend.api.controllers.tasks_controller import task_router
 from backend.api.controllers.upload_controller import upload_router
+from backend.api.controllers.pins_controller import pins_router
 from backend.api.controllers.workspaces_controller import workspaces_router
 from backend.rag import rag_startup
 from backend.rag.api import rag_router
@@ -44,7 +45,16 @@ async def lifespan(app: FastAPI):
         
 app = FastAPI(lifespan=lifespan)
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+class NoCacheStaticFiles(StaticFiles):
+    """Arquivos do front sempre revalidados (ETag): o navegador não reaproveita CSS/JS velho depois de uma edição."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 async def serve_index():
@@ -63,6 +73,7 @@ app.include_router(ai_router, prefix="/api/ai", tags=["InteligenciaArtificial"])
 app.include_router(chat_router, prefix="/api/chats", tags=["ChatInteligenciaArtificial"])
 app.include_router(task_router, prefix="/api/tasks", tags=["Tarefas"])
 app.include_router(upload_router, prefix="/api/uploads", tags=["Uploads"])
+app.include_router(pins_router, prefix="/api/pins", tags=["Pins"])
 app.include_router(workspaces_router, prefix="/api/workspaces", tags=["Workspaces"])
 
 app.include_router(rag_router, prefix="/api/rag", tags=["RAG"])
