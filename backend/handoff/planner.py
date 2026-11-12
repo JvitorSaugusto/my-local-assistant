@@ -9,6 +9,7 @@ O modelo nunca escreve `old`, que é onde modelos locais mais erram. Só o texto
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -16,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .dryrun import dry_run_tasks
+from .repair import repair_steps
 from .pack import _dossier_body
 
 MAX_RETRIES = 2
@@ -175,7 +177,8 @@ def build_steps(workspace: str, plan: Plan, allowed: set[str], title: str = "") 
     if not _BRANCH_RE.match(branch) or ".." in branch or branch in {"main", "master"}:
         branch = _slug(title)
     if steps:
-        steps.insert(0, {"op": "create_branch", "branch": branch})
+        if os.getenv("HANDOFF_PLAN_CREATE_BRANCH", "") == "1":
+            steps.insert(0, {"op": "create_branch", "branch": branch})
     return steps, verify, errors
 
 
@@ -183,6 +186,21 @@ def _default_llm():
     from backend.graph.config import generate_llm  # mesmo modelo/ctx do Generate: sem recarga no Ollama
 
     return generate_llm.with_structured_output(Plan)
+
+
+async def _try_repair(workspace: str, task: dict, runner: Any | None, thread_id: str | None) -> dict | None:
+    """Antes de chamar o LLM: se a task já tem steps, conserta por código os `old` que não batem."""
+    steps = task.get("steps") or []
+    if not steps:
+        return None
+    fixed, notes = repair_steps(workspace, steps)
+    if not notes:
+        return None
+    candidate = {**task, "steps": fixed, "verify": task.get("verify") or []}
+    dry = await dry_run_tasks(workspace, [candidate], runner=runner, thread_id=thread_id)
+    if not dry["ok"]:
+        return None
+    return {"ok": True, "attempts": 0, "task": candidate, "report": dry["report"], "error": "", "repaired": notes}
 
 
 async def plan_and_check(
@@ -203,6 +221,9 @@ async def plan_and_check(
     if not title or not str(task.get("description") or "").strip():
         raise ValueError("A task precisa de title e description.")
     files = [str(f).strip().replace("\\", "/") for f in (task.get("files") or []) if str(f).strip()]
+    repaired = await _try_repair(str(root), task, runner, thread_id)
+    if repaired is not None:
+        return repaired
     model = llm or _default_llm()
 
     dossier, _report = await asyncio.to_thread(build_task_dossier, str(root), files, 36_000, 14_000, 8_000)
