@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pacote para IA externa</title>
+<style>
+  :root { --bg:#fff; --card:#f6f7f9; --text:#1c1f24; --muted:#6b7280; --border:#d9dde3; --accent:#3b6df0; --danger:#d64545; --ok:#2e9e5b; --warn:#b7791f; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161a; --card:#1d2026; --text:#e6e8ec; --muted:#8b93a1; --border:#2d323b; --accent:#6c93ff; --danger:#ef756c; --ok:#4cc38a; --warn:#e0a84a; } }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; display:grid; gap:16px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 10px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; }
+  .row:first-child { margin-top:0; }
+  input[type=text], input[type=number], textarea { width:100%; padding:8px 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font:inherit; font-size:16px; }
+  input[type=text] { flex:1 1 240px; width:auto; height:38px; }
+  input[type=number] { width:130px; height:38px; }
+  textarea { resize:vertical; min-height:70px; }
+  button { min-height:38px; padding:0 14px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.link { min-height:0; border:none; background:none; color:var(--accent); padding:0 4px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .lbl { display:block; margin:12px 0 4px; font-weight:500; }
+  .muted { color:var(--muted); font-size:12px; }
+  .pill { display:inline-block; padding:1px 8px; margin:2px 2px 2px 0; border-radius:99px; font-size:12px; border:1px solid var(--border); word-break:break-all; }
+  .pill.ok { color:var(--ok); } .pill.fail { color:var(--danger); } .pill.blocked { color:var(--warn); }
+  .stats { display:grid; gap:6px; margin-top:12px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:8px; }
+  .bar { height:6px; background:var(--border); border-radius:99px; overflow:hidden; margin-top:4px; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  .warn { color:var(--warn); }
+  pre { margin:10px 0 0; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; overflow:auto; max-height:380px; font-size:12px; white-space:pre-wrap; word-break:break-word; }
+  #msg { min-height:20px; } #msg.err { color:var(--danger); }
+</style>
+</head>
+<body>
+<main>
+  <div class="row"><h1>Pacote para IA externa</h1><a href="/" style="margin-left:auto">← voltar ao chat</a></div>
+  <div id="msg" class="muted"></div>
+
+  <section class="card">
+    <h2>Projeto</h2>
+    <div class="row">
+      <input id="path" type="text" placeholder="Caminho da pasta no PC (ex.: C:\projetos\meu_app)" autocomplete="off" />
+      <button id="path-active" type="button">Usar o projeto ativo do chat</button>
+    </div>
+    <p class="muted">É o caminho da pasta no computador onde o backend roda. No celular, escolha o projeto no chat (aba Projeto) e toque no botão acima.</p>
+  </section>
+
+  <section class="card">
+    <h2>1. Gerar o pacote para colar no Claude/GPT</h2>
+    <label class="lbl" for="problem">Problema <span class="muted">(quanto mais nomes de arquivos, funções e a mensagem de erro exata, melhor)</span></label>
+    <textarea id="problem" rows="5" placeholder="Ex.: providers.py: OllamaSummarizer._call devolve 404 sem mostrar o motivo. Quero exibir a mensagem do Ollama e uma dica de 'ollama pull'."></textarea>
+    <label class="lbl" for="files">Arquivos <span class="muted">(um por linha; vazio = o sistema escolhe até 4 pelo RAG)</span></label>
+    <textarea id="files" rows="3" placeholder="backend/rag/providers.py"></textarea>
+    <div class="row">
+      <label for="budget">Orçamento (tokens)</label>
+      <input id="budget" type="number" min="4000" max="120000" step="1000" value="25000" />
+    </div>
+    <label class="lbl" for="instructions">Instruções para a IA externa <button id="instr-reset" class="link" type="button">restaurar padrão</button></label>
+    <textarea id="instructions" rows="7"></textarea>
+    <div class="row">
+      <button class="primary" id="pack-go" type="button">Gerar pacote</button>
+      <button id="primer-go" type="button">Só o primer do projeto</button>
+    </div>
+    <div id="stats" class="stats" hidden></div>
+    <div class="row" id="pack-actions" hidden>
+      <button class="primary" id="pack-copy" type="button">Copiar</button>
+      <button id="pack-download" type="button">Baixar .md</button>
+    </div>
+    <pre id="preview" hidden></pre>
+  </section>
+
+  <section class="card">
+    <h2>2. Validar o JSON que o Claude devolveu (dry-run)</h2>
+    <p class="muted" style="margin-top:0">Simula as tarefas numa cópia temporária, sem tocar no projeto, e mostra o que falharia. Aceita o JSON com ou sem as cercas ```json.</p>
+    <textarea id="json-in" rows="8" placeholder='[ { "title": "..." } ]'></textarea>
+    <div class="row">
+      <button class="primary" id="val-go" type="button">Validar</button>
+      <button id="val-copy" type="button" hidden>Copiar relatório</button>
+    </div>
+    <div id="val-sum" class="row"></div>
+    <pre id="val-report" hidden></pre>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const LS = { path: "pack_path", problem: "pack_problem", files: "pack_files", budget: "pack_budget", instr: "pack_instructions" };
+const DEFAULT_INSTRUCTIONS =
+  "Responda SOMENTE com um array JSON de microtasks, sem prosa, FORMATADO (2 espaços, uma propriedade por linha) e dentro de UM único bloco ```json. Cada tarefa tem title, description, reason, files, priority, steps, verify. " +
+  "Ops: create_file, replace_text (old copiado EXATAMENTE do trecho enviado, único, com \\n nas quebras de linha), append, write_markdown. " +
+  "Verify: file_exists, contains, not_contains, python_syntax. Não use create_branch. " +
+  "Use âncoras mínimas de 3 a 8 linhas e uma mudança pequena por tarefa. " +
+  "Se faltar trecho, peça arquivo + função pelo nome em UMA frase, sem chutar. " +
+  "Textos e comentários em PT-BR; arquivos .py são CRLF, mas escreva \\n.";
+let lastMarkdown = "";
+let lastName = "pacote";
+let lastReport = "";
+
+function store(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* sem storage */ } }
+function load(key, fallback = "") { try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; } }
+function say(text, error = false) { const el = $("msg"); el.textContent = text || ""; el.className = "muted" + (error ? " err" : ""); }
+const list = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+
+async function api(url, options = {}) {
+  const response = await fetch(url, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const d = body.detail;
+    const text = Array.isArray(d) ? d.map((x) => x.msg || JSON.stringify(x)).join("; ") : typeof d === "string" ? d : "";
+    throw new Error(text || `Erro ${response.status}`);
+  }
+  return body;
+}
+
+// navigator.clipboard só existe em HTTPS/localhost; pelo IP do Tailscale (HTTP) usamos o plano B.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) { /* cai no plano B */ }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  try { area.setSelectionRange(0, text.length); } catch (e) { /* ignora */ }
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  area.remove();
+  return ok;
+}
+
+async function copyWithFeedback(button, text) {
+  const old = button.dataset.label || button.textContent;
+  button.dataset.label = old;
+  const ok = await copyText(text);
+  button.textContent = ok ? "Copiado ✓" : "Não consegui copiar";
+  setTimeout(() => { button.textContent = old; }, 1600);
+}
+
+function saveFields() {
+  store(LS.path, $("path").value.trim());
+  store(LS.problem, $("problem").value);
+  store(LS.files, $("files").value);
+  store(LS.budget, $("budget").value);
+  store(LS.instr, $("instructions").value);
+}
+
+function showPack(r, budget, name) {
+  lastMarkdown = String(r.markdown || "");
+  lastName = name;
+  const tokens = r.est_tokens ?? Math.ceil(lastMarkdown.length / 3);
+  const limit = r.budget_tokens ?? budget;
+  const pct = Math.min(100, Math.round((100 * tokens) / (limit || 1)));
+  const files = list(r.files);
+  const auto = list(r.auto_files);
+  const omitted = list(r.omitted);
+  const masked = Array.isArray(r.masked) ? r.masked.length : Number(r.masked) || 0;
+  let html = `<div><b>~${tokens.toLocaleString("pt-BR")}</b> tokens de ${Number(limit).toLocaleString("pt-BR")}<div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  if (files.length) html += `<div>Arquivos no pacote: ${files.map((f) => `<span class="pill">${esc(f)}</span>`).join(" ")}</div>`;
+  if (auto.length) html += `<div class="muted">Escolhidos automaticamente: ${esc(auto.join(", "))}</div>`;
+  if (omitted.length) html += `<details><summary>${omitted.length} item(ns) fora do pacote</summary><div class="muted">${omitted.map(esc).join("<br>")}</div></details>`;
+  if (masked) html += `<div class="muted">🔒 ${masked} segredo(s) mascarado(s)</div>`;
+  if (r.warning) html += `<div class="warn">⚠️ ${esc(r.warning)}</div>`;
+  $("stats").innerHTML = html;
+  $("stats").hidden = false;
+  $("pack-actions").hidden = false;
+  $("preview").textContent = lastMarkdown;
+  $("preview").hidden = false;
+}
+
+function setBusy(busy) { ["pack-go", "primer-go", "val-go"].forEach((id) => { $(id).disabled = busy; }); }
+
+function readProject() {
+  const path = $("path").value.trim();
+  if (!path) { say("Informe o caminho do projeto.", true); return null; }
+  return path;
+}
+
+$("path-active").onclick = () => {
+  const active = load("assistant_workspace_active");
+  if (!active) return say("Nenhum projeto ativo no chat. Escolha um na aba Projeto.", true);
+  $("path").value = active;
+  saveFields();
+  say("Projeto ativo aplicado.");
+};
+
+$("instr-reset").onclick = () => { $("instructions").value = DEFAULT_INSTRUCTIONS; saveFields(); };
+
+$("pack-go").onclick = async () => {
+  const path = readProject();
+  if (!path) return;
+  const problem = $("problem").value.trim();
+  if (!problem) return say("Descreva o problema.", true);
+  saveFields();
+  const files = $("files").value.split("\n").map((s) => s.trim().replace(/\\/g, "/")).filter(Boolean);
+  const budget = Math.min(120000, Math.max(4000, parseInt($("budget").value, 10) || 25000));
+  const body = { path, problem, budget_tokens: budget, instructions: $("instructions").value.trim() || null };
+  if (files.length) body.files = files;
+  setBusy(true);
+  say("Montando o pacote…");
+  try {
+    const r = await api("/api/handoff/pack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    showPack(r, budget, "pacote");
+    say("Pacote pronto. Copie e cole no chat da IA externa.");
+  } catch (error) { say(error.message, true); }
+  finally { setBusy(false); }
+};
+
+$("primer-go").onclick = async () => {
+  const path = readProject();
+  if (!path) return;
+  saveFields();
+  setBusy(true);
+  say("Gerando o primer…");
+  try {
+    const r = await api(`/api/handoff/primer?path=${encodeURIComponent(path)}&max_tokens=2500`);
+    showPack(r, 2500, "primer");
+    say("Primer pronto: cole na 1ª mensagem de um chat novo.");
+  } catch (error) { say(error.message, true); }
+  finally { setBusy(false); }
+};
+
+$("pack-copy").onclick = (event) => copyWithFeedback(event.currentTarget, lastMarkdown);
+
+$("pack-download").onclick = () => {
+  const blob = new Blob([lastMarkdown], { type: "text/markdown;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${lastName}_${Date.now()}.md`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+};
+
+function parseTasks(raw) {
+  let text = String(raw || "").trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  const firstArray = text.indexOf("[");
+  const firstObject = text.indexOf("{");
+  let data;
+  if (firstArray !== -1 && (firstObject === -1 || firstArray < firstObject)) {
+    data = JSON.parse(text.slice(firstArray, text.lastIndexOf("]") + 1));
+  } else if (firstObject !== -1) {
+    data = JSON.parse(text.slice(firstObject, text.lastIndexOf("}") + 1));
+  } else {
+    throw new Error("Não encontrei JSON: o texto deve começar com [ .");
+  }
+  return (Array.isArray(data) ? data : [data]).filter((t) => t && typeof t === "object");
+}
+
+$("val-go").onclick = async () => {
+  const path = readProject();
+  if (!path) return;
+  let tasks;
+  try { tasks = parseTasks($("json-in").value); }
+  catch (error) { return say("JSON inválido: " + error.message, true); }
+  if (!tasks.length) return say("O JSON não tem nenhuma tarefa.", true);
+  saveFields();
+  setBusy(true);
+  say("Validando em uma cópia temporária…");
+  try {
+    const r = await api("/api/handoff/dryrun", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, tasks }) });
+    const s = r.summary || {};
+    $("val-sum").innerHTML =
+      `<span class="pill ok">✓ ${s.ok ?? 0} ok</span><span class="pill fail">✗ ${s.failed ?? 0} falhou</span><span class="pill blocked">⏸ ${s.blocked ?? 0} bloqueada(s)</span>`;
+    lastReport = String(r.report || "");
+    $("val-report").textContent = lastReport || "(sem relatório)";
+    $("val-report").hidden = false;
+    $("val-copy").hidden = !lastReport;
+    say(r.ok ? "Tudo certo: pode colar em Importar JSON no painel de tarefas." : "Há problemas. Copie o relatório e mande só ele para a IA que gerou o JSON.", !r.ok);
+  } catch (error) { say(error.message, true); }
+  finally { setBusy(false); }
+};
+
+$("val-copy").onclick = (event) => copyWithFeedback(event.currentTarget, lastReport);
+
+(function init() {
+  $("path").value = load(LS.path) || load("assistant_workspace_active");
+  $("problem").value = load(LS.problem);
+  $("files").value = load(LS.files);
+  $("budget").value = load(LS.budget, "25000");
+  $("instructions").value = load(LS.instr) || DEFAULT_INSTRUCTIONS;
+})();
+</script>
+</body>
+</html>

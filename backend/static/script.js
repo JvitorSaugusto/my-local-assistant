@@ -13,8 +13,10 @@ const API = {
   deleteTask: (taskId) => `/api/tasks/${taskId}`,
   retryTask: (taskId) => `/api/tasks/${taskId}/retry`,
   taskDiff: (taskId) => `/api/tasks/${taskId}/diff`,
+  revertTask: (taskId) => `/api/tasks/${taskId}/revert`,
   bulkDeleteTasks: "/api/tasks/bulk/delete",
   handoffPlan: "/api/handoff/plan",
+  handoffDryrun: "/api/handoff/dryrun",
   ragScope: "/api/rag/scope",
   ragLinks: "/api/rag/links",
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
@@ -341,6 +343,7 @@ function loadWorkspaces() {
 function saveWorkspaces() {
   localStorage.setItem("assistant_workspaces", JSON.stringify(state.workspaces));
   localStorage.setItem("assistant_workspace_active", state.workspacePath);
+  schedulePinSave();
 }
 
 function renderWorkspaces() {
@@ -622,6 +625,8 @@ async function createChat() {
 }
 
 async function deleteChat(id) {
+  const doomed = state.chats.find((chat) => chat.id === id);
+  if (doomed?.thread_id) api(pinUrl(doomed.thread_id), { method: "DELETE" }).catch(() => {});
   try { await api(API.chat(id), { method: "DELETE" }); } catch (err) {}
   state.chats = state.chats.filter((chat) => chat.id !== id);
   if (state.activeId === id) { state.activeId = null; showWelcome(); }
@@ -1002,6 +1007,14 @@ async function rejectTask(taskId) {
   const note = prompt("O que precisa ser corrigido? (será anexado à descrição e a tarefa volta para pendente)");
   if (note === null) return;
   const extra = note.trim() || "Reprovada na revisão, sem comentário.";
+  if (confirm("Desfazer também as alterações que essa task fez nos arquivos?\n\nOK = desfazer tudo (volta ao estado de antes da task)\nCancelar = manter as alterações e só pedir o ajuste")) {
+    try {
+      const undone = await api(`${API.revertTask(taskId)}?workspace=${encodeURIComponent(state.workspacePath || "")}`, { method: "POST" });
+      if (undone?.conflicts?.length) alert("Estes arquivos mudaram depois da task e NÃO foram desfeitos:\n" + undone.conflicts.join("\n"));
+    } catch (error) {
+      alert("Não foi possível desfazer: " + error.message);
+    }
+  }
   try {
     await api(API.updateTask(taskId), {
       method: "PUT",
@@ -1097,6 +1110,7 @@ async function openChat(id) {
   el.messages.innerHTML = "";
   const chat = state.chats.find((item) => item.id === id);
   el.chatTitle.textContent = chat?.title || "Conversa";
+  applyChatPin(chat);
 
   if (isMobile()) closeSidebar();
 
@@ -1130,6 +1144,7 @@ function showWelcome() {
   el.chatView.classList.add("hidden");
   el.welcome.classList.remove("hidden");
   el.btnToggleTasks.classList.add("hidden");
+  document.getElementById("btn-pin")?.classList.add("hidden");
   el.chatTitle.textContent = "Assistente Local";
   closeDrawer();
 }
@@ -1637,7 +1652,9 @@ function renderSources() {
 
   const project = ragProjectName();
   el.sourcesNote.innerHTML = project
-    ? `Vale para o projeto <b>${escapeHtml(project)}</b>, em todas as conversas dele. Você também pode pedir uma fonte pelo nome na pergunta.`
+    ? (state.pin
+      ? `📌 Fixado nesta conversa: projeto <b>${escapeHtml(project)}</b> e estas fontes. Mudar aqui atualiza o que está fixado.`
+      : `Vale para o projeto <b>${escapeHtml(project)}</b>, em todas as conversas dele. Você também pode pedir uma fonte pelo nome na pergunta.`)
     : "Selecione um projeto na aba Projeto para escolher as fontes.";
 
   const html = [];
@@ -1672,6 +1689,7 @@ async function toggleSourceLink(id, checked) {
       body: JSON.stringify({ path: RAG.workspace, source_ids: [...next] }),
     });
     RAG.linked = new Set(result.source_ids || []);
+    schedulePinSave();
   } catch (error) {
     RAG.linked = previous;
     alert("Não foi possível salvar as fontes: " + error.message);
@@ -1690,6 +1708,112 @@ function closeSourcesMenu() {
   el.sourcesMenu.classList.add("hidden");
   el.btnSources.setAttribute("aria-expanded", "false");
 }
+
+// ============================================================
+// FIXAR PROJETO E FONTES NA CONVERSA (📌)
+// Cada conversa pode lembrar o projeto e as fontes do RAG. O vínculo fica no servidor,
+// então vale no PC e no celular: ao reabrir a conversa, o projeto e as fontes voltam sozinhos.
+// ============================================================
+
+state.pin = null; // vínculo da conversa aberta (null = não fixada)
+let pinTimer = null;
+let pinRestoring = false;
+
+const pinUrl = (threadId) => `/api/pins/${encodeURIComponent(threadId)}`;
+
+function pinThreadId() {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  return chat?.thread_id || null;
+}
+
+function syncPinButton() {
+  const button = document.getElementById("btn-pin");
+  if (button) {
+    const pinned = !!state.pin;
+    button.classList.toggle("hidden", state.activeId == null);
+    button.classList.toggle("active", pinned);
+    button.setAttribute("aria-pressed", String(pinned));
+    button.title = pinned
+      ? `Fixado nesta conversa: ${state.pin.workspace_path}. Toque para soltar.`
+      : "Fixar o projeto e as fontes atuais nesta conversa";
+  }
+  try { renderSources(); } catch (error) { /* o menu de fontes ainda não existe */ }
+}
+
+// Ao abrir uma conversa fixada, traz de volta o projeto e as fontes dela.
+async function applyChatPin(chat) {
+  state.pin = null;
+  syncPinButton();
+  if (!chat?.thread_id) return;
+  let pin;
+  try { pin = await api(pinUrl(chat.thread_id)); } catch (error) { return; }
+  if (state.activeId !== chat.id || !pin?.pinned) return; // trocou de conversa enquanto carregava
+  state.pin = pin;
+  pinRestoring = true;
+  try {
+    if (pin.workspace_path) {
+      if (!state.workspaces.includes(pin.workspace_path)) state.workspaces.push(pin.workspace_path);
+      if (state.workspacePath !== pin.workspace_path) {
+        state.workspacePath = pin.workspace_path;
+        saveWorkspaces();
+        renderWorkspaces();
+      }
+      await loadRagScope();
+      if (state.activeId !== chat.id) return;
+      const wanted = [...(pin.source_ids || [])].sort((a, b) => a - b);
+      const current = [...RAG.linked].sort((a, b) => a - b);
+      if (RAG.ok && JSON.stringify(wanted) !== JSON.stringify(current)) {
+        const result = await api(API.ragLinks, { method: "PUT", body: JSON.stringify({ path: pin.workspace_path, source_ids: wanted }) });
+        RAG.linked = new Set(result?.source_ids || []);
+      }
+    }
+  } catch (error) {
+    console.warn("Não foi possível restaurar o que estava fixado:", error);
+  } finally {
+    pinRestoring = false;
+    syncPinButton();
+  }
+}
+
+async function togglePin() {
+  const threadId = pinThreadId();
+  if (!threadId) return;
+  if (state.pin) {
+    try { await api(pinUrl(threadId), { method: "DELETE" }); }
+    catch (error) { alert("Não foi possível soltar: " + error.message); return; }
+    state.pin = null;
+    syncPinButton();
+    return;
+  }
+  if (!state.workspacePath) { alert("Escolha um projeto na aba Projeto antes de fixar."); return; }
+  try {
+    state.pin = await api(pinUrl(threadId), {
+      method: "PUT",
+      body: JSON.stringify({ workspace_path: state.workspacePath, source_ids: [...RAG.linked] }),
+    });
+  } catch (error) { alert("Não foi possível fixar: " + error.message); }
+  syncPinButton();
+}
+
+// Com a conversa fixada, trocar de projeto ou de fontes atualiza o que está fixado.
+function schedulePinSave() {
+  if (!state.pin || pinRestoring) return;
+  const threadId = pinThreadId();
+  if (!threadId) return;
+  clearTimeout(pinTimer);
+  pinTimer = setTimeout(async () => {
+    if (pinThreadId() !== threadId || !state.workspacePath) return;
+    try {
+      state.pin = await api(pinUrl(threadId), {
+        method: "PUT",
+        body: JSON.stringify({ workspace_path: state.workspacePath, source_ids: [...RAG.linked] }),
+      });
+      syncPinButton();
+    } catch (error) { console.warn("Não foi possível atualizar o que está fixado:", error); }
+  }, 500);
+}
+
+document.getElementById("btn-pin")?.addEventListener("click", togglePin);
 
 function syncWorkspaceChip() {
   if (!el.workspaceChipLabel) return;
@@ -1887,13 +2011,15 @@ async function planTaskAction(taskId, button) {
           reason: task.reason || "",
           files: task.files || [],
           priority: task.priority || "medium",
+          steps: task.steps || [],
+          verify: task.verify || [],
         },
         task_id: task.id,
         save: true,
       }),
     });
     if (result.ok && result.saved) {
-      alert(`Plano pronto (${result.attempts} tentativa(s)): ${result.task.steps.length} passo(s) validados no dry-run. A tarefa agora é determinística; execute normalmente.`);
+      alert(`Plano pronto (${result.repaired && result.repaired.length ? "âncoras reparadas por código" : result.attempts + " tentativa(s)"}): ${result.task.steps.length} passo(s) validados no dry-run. A tarefa agora é determinística; execute normalmente.`);
     } else if (result.ok) {
       alert("O plano passou no dry-run, mas não foi salvo (a tarefa mudou de estado). Atualize a lista e tente de novo.");
     } else {
@@ -1977,7 +2103,7 @@ startPolling();
 // ANEXOS DAS TAREFAS + PROMPT PARA GERAR MICROTASKS
 // ============================================================
 
-const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele possui dois modos de execução: DETERMINÍSTICO (padrão) e DINÂMICO (via LLM).\n\nREGRAS DE OURO PARA MODO DETERMINÍSTICO (Edições e Operações de Arquivo)\n- Na maioria das vezes, ele executa as tarefas de forma determinística: aplica exatamente o que você escrever e roda as verificações. Ele não interpreta nem corrige. Cada passo precisa ter o texto/código FINAL e EXATO.\n- Para alterar um arquivo existente (replace_text), preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Não existe operação de apagar arquivos.\n\nREGRAS PARA MODO DINÂMICO / LLM (Documentação, Refatoração, Análise)\n- O assistente TEM capacidade de leitura, interpretação e geração de código/texto por conta própria.\n- Se a tarefa exigir análise de arquivos que acabaram de ser modificados, geração de documentação, ou refatoração complexa onde um \"replace_text\" determinístico seria inviável, DEIXE O ARRAY \"steps\" VAZIO: \"steps\": [].\n- Quando \"steps\" estiver vazio, o assistente usará o texto que você colocar no campo \"description\" como um prompt para executar a tarefa usando sua própria inteligência (LLM). Descreva EXATAMENTE o que ele deve ler e o que deve gerar.\n- DOCUMENTAÇÃO QUE VAI PARA OUTRA PESSOA: prefira o modo determinístico com write_markdown e o texto FINAL escrito por você a partir do código real que eu colei. Se usar o modo dinâmico, liste em \"files\" TODOS os arquivos-fonte e inclua em \"verify\" a checagem literals_grounded.\n- O modo dinâmico monta o contexto sozinho (git diff, arquivos, constantes referenciadas) e confere por código se os valores citados existem nas fontes.\n\nFORMATO DO JSON\n- Responda SOMENTE com um array JSON válido (sem comentários, sem Markdown fora do JSON).\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n- Formato de cada objeto no array:\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz (se for dinâmica, seja extremamente detalhista aqui)\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados/lidos)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações (ou vazio [] para tarefas dinâmicas)... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\" - USE APENAS EM MODO DETERMINÍSTICO)\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" }\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\n- literals_grounded: { \"type\": \"literals_grounded\", \"path\": \"doc.md\", \"sources\": [\"app/views.py\"], \"allow\": [] } (confere por código se valores entre aspas, headers e códigos HTTP do documento existem nas fontes)\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLOS\n\nTarefa Determinística (Edição exata):\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" }\n    ]\n  }\n]\n\nTarefa Dinâmica (Análise/Geração usando IA do assistente):\n[\n  {\n    \"title\": \"Documentar API\",\n    \"description\": \"Leia o arquivo app/views.py e crie um arquivo README.md detalhando os endpoints encontrados, métodos HTTP, payloads e retornos.\",\n    \"reason\": \"Facilitar o consumo da API pelo frontend.\",\n    \"files\": [\"app/views.py\", \"README.md\"],\n    \"priority\": \"medium\",\n    \"steps\": [],\n    \"verify\": [\n      { \"type\": \"file_exists\", \"path\": \"README.md\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
+const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele possui dois modos de execução: DETERMINÍSTICO (padrão) e DINÂMICO (via LLM).\n\nREGRAS DE OURO PARA MODO DETERMINÍSTICO (Edições e Operações de Arquivo)\n- Na maioria das vezes, ele executa as tarefas de forma determinística: aplica exatamente o que você escrever e roda as verificações. Ele não interpreta nem corrige. Cada passo precisa ter o texto/código FINAL e EXATO.\n- Para alterar um arquivo existente (replace_text), preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Não existe operação de apagar arquivos.\n\nREGRAS PARA MODO DINÂMICO / LLM (Documentação, Refatoração, Análise)\n- O assistente TEM capacidade de leitura, interpretação e geração de código/texto por conta própria.\n- Se a tarefa exigir análise de arquivos que acabaram de ser modificados, geração de documentação, ou refatoração complexa onde um \"replace_text\" determinístico seria inviável, DEIXE O ARRAY \"steps\" VAZIO: \"steps\": [].\n- Quando \"steps\" estiver vazio, o assistente usará o texto que você colocar no campo \"description\" como um prompt para executar a tarefa usando sua própria inteligência (LLM). Descreva EXATAMENTE o que ele deve ler e o que deve gerar.\n- DOCUMENTAÇÃO QUE VAI PARA OUTRA PESSOA: prefira o modo determinístico com write_markdown e o texto FINAL escrito por você a partir do código real que eu colei. Se usar o modo dinâmico, liste em \"files\" TODOS os arquivos-fonte e inclua em \"verify\" a checagem literals_grounded.\n- O modo dinâmico monta o contexto sozinho (git diff, arquivos, constantes referenciadas) e confere por código se os valores citados existem nas fontes.\n\nFORMATO DO JSON\n- Responda SOMENTE com um array JSON válido (sem comentários e sem texto fora do JSON). Entregue-o FORMATADO e legível: indentado com 2 espaços, uma propriedade por linha e um objeto por tarefa, dentro de UM único bloco de código ```json (nunca em uma linha só, sem prosa antes ou depois do bloco).\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n- Formato de cada objeto no array:\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz (se for dinâmica, seja extremamente detalhista aqui)\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados/lidos)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações (ou vazio [] para tarefas dinâmicas)... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\" - USE APENAS EM MODO DETERMINÍSTICO)\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" }\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\n- pytest: { \"type\": \"pytest\", \"path\": \"tests/test_x.py\" } (roda o arquivo de teste; use quando a task criar ou alterar testes)\n- literals_grounded: { \"type\": \"literals_grounded\", \"path\": \"doc.md\", \"sources\": [\"app/views.py\"], \"allow\": [] } (confere por código se valores entre aspas, headers e códigos HTTP do documento existem nas fontes)\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLOS\n\nTarefa Determinística (Edição exata):\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" }\n    ]\n  }\n]\n\nTarefa Dinâmica (Análise/Geração usando IA do assistente):\n[\n  {\n    \"title\": \"Documentar API\",\n    \"description\": \"Leia o arquivo app/views.py e crie um arquivo README.md detalhando os endpoints encontrados, métodos HTTP, payloads e retornos.\",\n    \"reason\": \"Facilitar o consumo da API pelo frontend.\",\n    \"files\": [\"app/views.py\", \"README.md\"],\n    \"priority\": \"medium\",\n    \"steps\": [],\n    \"verify\": [\n      { \"type\": \"file_exists\", \"path\": \"README.md\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
 
 const TASK_ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".zip", ".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx"];
 state.taskUploads = [];
@@ -2096,10 +2222,38 @@ el.btnImportTasks.addEventListener('click', () => {
   refreshTaskUploads();
 });
 
+async function dryRunImportedTasks(tasks, threadId) {
+  // Valida as tasks recém-importadas numa cópia temporária (executor real) e avisa o que vai falhar.
+  if (!state.workspacePath) return;
+  const runnable = (tasks || []).filter((t) => Array.isArray(t.steps) && t.steps.length);
+  if (!runnable.length) return;
+  try {
+    const result = await api(API.handoffDryrun, {
+      method: "POST",
+      body: JSON.stringify({ path: state.workspacePath, tasks: runnable, thread_id: threadId }),
+    });
+    if (!result.ok) {
+      alert(`Dry-run das tasks importadas: ${result.summary.failed} com falha e ${result.summary.blocked} bloqueada(s).\n\n${String(result.report || "").slice(0, 1500)}`);
+    }
+  } catch (error) {
+    console.warn("Dry-run após importar falhou:", error);
+  }
+}
+
 el.btnCancelImport.addEventListener('click', () => {
   // Fecha o modal
   el.importTasksModal.close();
 });
+
+function extractJsonText(raw) {
+  // Aceita JSON colado dentro de bloco ```json e com texto antes/depois: pega do primeiro [ ou { ao último ] ou }.
+  const text = String(raw || "").trim();
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = (fenced ? fenced[1] : text).trim();
+  const start = body.search(/[\[{]/);
+  const end = Math.max(body.lastIndexOf("]"), body.lastIndexOf("}"));
+  return start >= 0 && end > start ? body.slice(start, end + 1) : body;
+}
 
 el.importTasksForm.addEventListener('submit', async (event) => {
   // Previne o envio padrão do formulário
@@ -2107,7 +2261,7 @@ el.importTasksForm.addEventListener('submit', async (event) => {
   
   try {
     // Tenta fazer o parse do JSON
-    const parsed = JSON.parse(el.inputImportJson.value);
+    const parsed = JSON.parse(extractJsonText(el.inputImportJson.value));
     
     // Garante que seja um array
     const tasksArray = Array.isArray(parsed) ? parsed : [parsed];
@@ -2134,6 +2288,7 @@ el.importTasksForm.addEventListener('submit', async (event) => {
       loadTasks(chat.thread_id);
       // Fecha o modal
       el.importTasksModal.close();
+      dryRunImportedTasks(tasksArray, chat.thread_id);
     } else {
       let detail = '';
       try {

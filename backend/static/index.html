@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;550;600;680&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=2">
 
   <!-- Markdown -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -27,7 +27,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
   <!-- Seu app, sempre por último e com defer para rodar depois das libs acima -->
-  <script src="/static/script.js" defer></script>
+  <script src="/static/script.js?v=2" defer></script>
 </head>
 <body>
   <div class="app" id="app">
@@ -72,6 +72,7 @@
         <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Alternar barra lateral" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
         <h2 id="chat-title" class="topbar-title">Assistente Local</h2>
         <div class="topbar-actions">
+          <button id="btn-pin" class="top-btn hidden" type="button" aria-pressed="false" aria-label="Fixar projeto nesta conversa" title="Fixar o projeto e as fontes atuais nesta conversa"><span aria-hidden="true">📌</span></button>
           <button id="btn-toggle-tasks" class="top-btn hidden" type="button" aria-label="Abrir painel de tarefas">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/></svg><span class="top-btn-label">Tarefas</span><span id="tasks-badge" class="badge hidden">0</span>
           </button>
@@ -132,6 +133,13 @@
                   <div id="sources-list" class="sources-list"></div>
                   <a class="sources-foot" href="/static/rag.html" target="_blank" rel="noopener">Gerenciar indexação…</a>
                 </div>
+              </div>
+
+              <div class="tips-wrap">
+                <button type="button" id="btn-tips" class="src-btn" aria-haspopup="true" aria-expanded="false" title="Dicas de pedidos e atalhos">
+                  <span aria-hidden="true">💡</span><span class="src-text">Dicas</span>
+                </button>
+                <div id="tips-menu" class="tips-menu hidden" role="dialog" aria-label="Dicas de pedidos"></div>
               </div>
 
               <span class="bar-spacer"></span>
@@ -302,5 +310,6 @@
     </div>
   </form>
 </dialog>
+<script src="/static/tips.js?v=2" defer></script>
 </body>
 </html>
