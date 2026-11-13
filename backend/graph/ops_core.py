@@ -22,10 +22,22 @@ _COMMIT_VERB = re.compile(
     r"|d[êe]\s+(um\s+)?commit|(quero|preciso)\s+(de\s+)?(um\s+)?commit)\b",
     re.I,
 )
-_QUESTION_START = re.compile(r"^\s(como|o que|por que|porque|qual|quais|onde|quando)\b", re.I)
+_QUESTION_START = re.compile(r"^\s*(como|o que|por que|porque|qual|quais|onde|quando)\b", re.I)
 _PACK_WHAT = re.compile(r"\b(md|markdown|\.md|pacote|primer)\b", re.I)
 _PACK_TO = re.compile(r"\b(claude|ia externa|outra ia|chatgpt|gpt)\b", re.I)
 _PACK_VERB = re.compile(r"\b(gera|gere|gerar|monta|monte|montar|cria|crie|criar|prepara|prepare|faz|fa[çc]a|manda|quero|preciso|me d[áa])\b", re.I)
+# Resposta curta a uma pergunta do Ops: "todos", "2,7,8", "grupo 2 - a.py, b.py", "sim"...
+_SELECTION = re.compile(
+    r"^\s*(?:(?:todos|todas|tudo|sim|ok|isso|pode|manda|n[ãa]o|nenhum|cancela\w*)\b|grupos?\s*\d|\d+(?:\s*(?:,|e|-)\s*\d+)*\s*$)",
+    re.I,
+)
+_ASKS_CHOICE = re.compile(r"responda com|quais (?:grupos|arquivos)|me diga|escolha|indique", re.I)
+
+
+def _ops_awaits_answer(content):
+    """True se a última mensagem do Ops ficou esperando uma resposta do usuário."""
+    full = str(content or "")
+    return "?" in full[-300:] or bool(_ASKS_CHOICE.search(full))
 
 
 def detect_ops_intent(text, messages):
@@ -44,8 +56,9 @@ def detect_ops_intent(text, messages):
         previous = msg
         break
     if previous is not None and getattr(previous, "type", "") == "ai" and getattr(previous, "name", None) == OPS_NAME:
-        tail = str(previous.content)[-300:]
-        if "?" in tail:
+        # Antes só continuava no Ops se o fim da mensagem tivesse "?". A lista de grupos termina num aviso,
+        # sem "?", então o "todos" seguinte caía no CODE (GPT-OSS), que nunca commitou nada.
+        if _ops_awaits_answer(previous.content) or _SELECTION.match(text):
             return text
     if re.match(r"\s*@\w+", text):
         return None
