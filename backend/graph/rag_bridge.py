@@ -7,6 +7,7 @@ continua funcionando normalmente (as funções devolvem texto vazio / mensagem c
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 _CACHE: dict[tuple[str, str], tuple[float, str]] = {}
@@ -14,6 +15,34 @@ _CACHE_TTL = 300.0
 _CACHE_MAX = 32
 _OFF_SECONDS = 60.0
 _off_until = 0.0
+
+# A atualização do índice não pode rodar a cada consulta: no máximo 1x por intervalo
+# e sem bloquear o agente além do timeout (ela continua em segundo plano).
+_REFRESH_EVERY = 120.0
+_REFRESH_TIMEOUT = 8.0
+_last_refresh: dict[str, float] = {}
+
+
+def _swallow(task) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+async def _refresh_throttled(service, workspace: str):
+    now = time.monotonic()
+    if now - _last_refresh.get(workspace, -1e9) < _REFRESH_EVERY:
+        return None
+    _last_refresh[workspace] = now
+    task = asyncio.ensure_future(service.refresh_workspace(workspace))
+    task.add_done_callback(_swallow)
+    try:
+        refreshed = await asyncio.wait_for(asyncio.shield(task), timeout=_REFRESH_TIMEOUT)
+    except asyncio.TimeoutError:
+        print(f"ℹ️ [RAG] atualização do índice passou de {_REFRESH_TIMEOUT:.0f}s; seguindo com o índice atual.")
+        return None
+    if refreshed and (refreshed.get("files_indexed") or refreshed.get("files_removed")):
+        _CACHE.clear()
+    return refreshed
 
 
 async def rag_context(workspace: str | None, query: str, limit: int = 6, max_chars: int = 6000) -> str:
@@ -27,9 +56,7 @@ async def rag_context(workspace: str | None, query: str, limit: int = 6, max_cha
         from backend.rag import get_service
 
         service = get_service()
-        refreshed = await service.refresh_workspace(workspace)  # só o que mudou; com trava de intervalo
-        if refreshed and (refreshed.get("files_indexed") or refreshed.get("files_removed")):
-            _CACHE.clear()
+        await _refresh_throttled(service, workspace)
 
         key = (workspace, query[:400])
         cached = _CACHE.get(key)
@@ -68,9 +95,7 @@ async def rag_search_for_tool(
 
         service = get_service()
         if workspace:
-            refreshed = await service.refresh_workspace(workspace)
-            if refreshed and (refreshed.get("files_indexed") or refreshed.get("files_removed")):
-                _CACHE.clear()
+            await _refresh_throttled(service, workspace)
         hits, label, sources = await service.search_scoped(query, workspace, source, limit, path_prefix)
         if not sources:
             overview = await service.overview(workspace)
