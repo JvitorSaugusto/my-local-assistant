@@ -522,6 +522,30 @@ def _compact_old_tool_results(messages, keep_last: int = 5):
     return out
 
 
+def _compact_to_budget(messages, budget_tokens: int, min_keep: int = 2):
+    """Só para o PROMPT: mantém COMPLETOS os resultados de tools mais recentes que cabem no orçamento
+    de tokens; os mais antigos (a partir do primeiro que não coube) são encurtados."""
+    tool_idx = [i for i, m in enumerate(messages) if getattr(m, "type", "") == "tool"]
+    keep, used, overflow = set(), 0, False
+    for rank, i in enumerate(reversed(tool_idx)):
+        cost = estimate_tokens(str(getattr(messages[i], "content", "") or ""))
+        if not overflow and (rank < min_keep or used + cost <= budget_tokens):
+            keep.add(i)
+            used += cost
+        else:
+            overflow = True
+    out = []
+    for i, m in enumerate(messages):
+        content = getattr(m, "content", None)
+        if i in tool_idx and i not in keep and isinstance(content, str) and len(content) > OLD_TOOL_RESULT_CHARS:
+            m = m.model_copy(update={
+                "content": content[:OLD_TOOL_RESULT_CHARS]
+                + "\n[... resultado antigo encurtado pelo sistema para caber no contexto; releia o trecho se precisar]"
+            })
+        out.append(m)
+    return out
+
+
 async def _abort_task(task, workspace, reason: str):
     """Encerra a task como 'failed' (com rollback do diário) e termina o grafo."""
     print(f"⛔ [GENERATE] Task {task.id} abortada: {reason}")
@@ -666,15 +690,18 @@ async def _generate_node_impl(state: State):
         )
     ]
 
-    context.extend(
-        _compact_old_tool_results(
-            [
-                # Em task: só as mensagens DESTA task (o thread guarda o histórico de tasks anteriores).
-                m for m in (_task_msgs if task else recent_messages)
-                if (getattr(m, "additional_kwargs", None) or {}).get("message_tag") != "internal_context_report"
-            ]
-        )
+    _history = [
+        # Em task: só as mensagens DESTA task (o thread guarda o histórico de tasks anteriores).
+        m for m in (_task_msgs if task else recent_messages)
+        if (getattr(m, "additional_kwargs", None) or {}).get("message_tag") != "internal_context_report"
+    ]
+    # Orçamento dinâmico: resultados de leitura ficam completos enquanto couberem no num_ctx
+    # (reserva de 3000 tokens para a resposta), em vez de um número fixo de resultados.
+    _fixed_tokens = estimate_tokens(str(context[0].content)) + estimate_tokens(
+        "\n".join(str(getattr(m, "content", "")) for m in _history if getattr(m, "type", "") != "tool")
     )
+    _tool_budget = max(int(0.82 * GENERATE_NUM_CTX) - _fixed_tokens - 3000, 2000)
+    context.extend(_compact_to_budget(_history, _tool_budget))
     if dup_calls:
         context.append(
             HumanMessage(
