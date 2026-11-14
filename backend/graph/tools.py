@@ -2234,6 +2234,72 @@ def create_pdf_file(
     return apply_create_pdf(runtime.state.get("workspace_path"), file_path, content, title, overwrite)
 
 
+_TEST_OUTPUT_MAX_CHARS = 7000
+_VENV_PYTHONS = (
+    ".venv/Scripts/python.exe", "venv/Scripts/python.exe", ".venv/bin/python", "venv/bin/python",
+)
+
+
+@tool
+def run_tests(path: str, runtime: ToolRuntime) -> str:
+    """
+    Roda o pytest do projeto e devolve o resultado (falhas e resumo final). Use para descobrir
+    QUAIS testes quebram antes de editar e para CONFIRMAR a correção depois de cada edição, em vez de
+    adivinhar lendo todos os arquivos de teste.
+
+    Args:
+        path (str): Pasta, arquivo ou teste a rodar, relativo à raiz do projeto
+            (ex.: "tests", "tests/test_x.py" ou "tests/test_x.py::test_nome").
+
+    Returns:
+        str: Saída do pytest (as últimas linhas, onde ficam os erros e o resumo) e o código de saída.
+    """
+    workspace_path = runtime.state.get("workspace_path")
+    target = (path or "tests").strip()
+    if target.startswith("-"):
+        return "ERRO: informe uma pasta, arquivo ou teste, não uma opção do pytest."
+
+    file_part = target.split("::", 1)[0]
+    resolved, path_error = _confined_path(file_part, workspace_path)
+    if path_error:
+        return path_error
+    if resolved is None or not resolved.exists():
+        return f"ERRO: '{file_part}' não existe no projeto."
+
+    root = Path(str(workspace_path)).resolve()
+    python = sys.executable
+    for candidate in _VENV_PYTHONS:
+        if (root / candidate).is_file():
+            python = str(root / candidate)
+            break
+
+    command = [python, "-m", "pytest", target, "-q", "--tb=short", "--no-header", "--maxfail=20", "-p", "no:cacheprovider"]
+    print(f"[TESTES] {' '.join(command)}")
+    try:
+        done = subprocess.run(
+            command,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=int(os.getenv("RUN_TESTS_TIMEOUT", "") or 180),
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        return "ERRO: os testes passaram do tempo limite e foram interrompidos."
+    except OSError as error:
+        return f"ERRO ao executar o pytest: {error}"
+
+    output = ((done.stdout or "") + ("\n" + done.stderr if done.stderr else "")).strip()
+    if len(output) > _TEST_OUTPUT_MAX_CHARS:
+        output = "[... saída anterior omitida ...]\n" + output[-_TEST_OUTPUT_MAX_CHARS:]
+    status = {0: "todos os testes passaram", 1: "há testes FALHANDO", 5: "nenhum teste foi coletado"}.get(
+        done.returncode, f"pytest terminou com erro (código {done.returncode})"
+    )
+    return f"{status} (código de saída {done.returncode}).\n\n{output}"
+
+
 @tool
 async def search_codebase(
     query: str, runtime: ToolRuntime, source: str = "", path_prefix: str = "", limit: int = 6
