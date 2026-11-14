@@ -101,12 +101,15 @@ def _extract_cached(path_str: str, mtime_ns: int, size: int) -> str:
         text = _extract_docx(path)
     else:
         data = path.read_bytes()
-    for encoding in ("utf-8-sig", "cp1252"):
-        try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return data.decode("latin-1", errors="replace")
+        text = None
+        for encoding in ("utf-8-sig", "cp1252"):
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            text = data.decode("latin-1", errors="replace")
 
     if len(text) > MAX_EXTRACTED_CHARS:
         text = text[:MAX_EXTRACTED_CHARS] + "\n[... texto truncado]"
