@@ -15,7 +15,7 @@ _STOP = set(
 )
 _BAD_EXT = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".zip", ".rar", ".lock", ".pyc", ".woff", ".woff2")
 
-_TAG = re.compile(r"^\s*@(ops|commit|pack|primer)(?!\S)[:\s]", re.I)
+_TAG = re.compile(r"^\s*@(ops|commit|pack|primer|zip)(?!\S)[:\s]", re.I)
 _OTHER_TAG = re.compile(r"(?<!\S)@(heavy|enhance|generate)(?!\S)", re.I)
 _COMMIT_VERB = re.compile(
     r"\b(commita|commite|commitar|comitar|comita|comite|fa[çc]a?\s+(um\s+)?commit|faz(er)?\s+(um\s+)?commit"
@@ -32,6 +32,23 @@ _SELECTION = re.compile(
     re.I,
 )
 _ASKS_CHOICE = re.compile(r"responda com|quais (?:grupos|arquivos)|me diga|escolha|indique", re.I)
+_ZIP_WORD = re.compile(r"\b(zip\w*|compact(?:a|e|ar)\w*|empacot\w*)\b", re.I)
+_DELIVER_VERB = re.compile(r"\b(entreg\w+|devolv\w+|baix\w+|me\s+(?:mand|envi)\w+)\b", re.I)
+_FILES_NOUN = re.compile(r"\b(arquivos?|pastas?|diret[óo]rios?)\b", re.I)
+
+
+def _wants_zip(text):
+    # True se o usuário pede para receber arquivos ou pastas do projeto (em zip) no chat.
+    text = text or ""
+    if (_QUESTION_START.match(text) and "?" in text) or re.search(r"#\d+|autocommit", text, re.I):
+        return False
+    if _COMMIT_VERB.search(text):
+        return False
+    has_files = bool(_FILES_NOUN.search(text))
+    has_deliver = bool(_DELIVER_VERB.search(text))
+    if _ZIP_WORD.search(text):
+        return has_files or has_deliver
+    return has_files and has_deliver
 
 
 def _ops_awaits_answer(content):
@@ -62,6 +79,8 @@ def detect_ops_intent(text, messages):
             return text
     if re.match(r"\s*@\w+", text):
         return None
+    if _wants_zip(text):
+        return text
     low = text.lower()
     if "autocommit" in low or re.search(r"#\d+", text) or "task" in low:
         return None
