@@ -669,7 +669,8 @@ async def _generate_node_impl(state: State):
     context.extend(
         _compact_old_tool_results(
             [
-                m for m in recent_messages
+                # Em task: só as mensagens DESTA task (o thread guarda o histórico de tasks anteriores).
+                m for m in (_task_msgs if task else recent_messages)
                 if (getattr(m, "additional_kwargs", None) or {}).get("message_tag") != "internal_context_report"
             ]
         )
@@ -691,7 +692,7 @@ async def _generate_node_impl(state: State):
         def _tok(value) -> int:
             return estimate_tokens(str(value or ""))
 
-        _msgs_text = "\n".join(str(getattr(m, "content", "")) for m in recent_messages)
+        _msgs_text = "\n".join(str(getattr(m, "content", "")) for m in (_task_msgs if task else recent_messages))
         print(
             "📏 [GENERATE] tokens por parte: "
             f"prompt_base={_tok(GENERATE_NODE_PROMPT)} resumo={_tok(actual_summary)} "
