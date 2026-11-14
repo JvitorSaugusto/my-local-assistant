@@ -25,6 +25,10 @@ def _link(path):
     return f"[{path.name}](/api/handoff/packs/{path.name})"
 
 
+def _zip_link(path):
+    return f"[{path.name}](/api/handoff/zips/{path.name})"
+
+
 @tool
 def git_changes_overview() -> str:
     """Lista os arquivos com alterações NÃO commitadas do projeto (modificados, novos, removidos) com linhas +/-. Use antes de qualquer commit."""
@@ -115,6 +119,26 @@ async def build_primer_file() -> str:
 
 
 @tool
+def build_zip_files(names: list[str]) -> str:
+    """Empacota arquivos e/ou pastas inteiras do projeto em UM .zip e devolve o link para baixar. Aceita nome simples (script.js), sufixo de caminho (static/script.js), caminho completo ou nome de pasta (rag), inclusive de pastas diferentes no mesmo zip. Deixa de fora segredos (.env, chaves). Limite de 500 arquivos e 50 MB."""
+    root = _root()
+    if not root:
+        return "ERRO: nenhum diretório de trabalho selecionado."
+    try:
+        result = core.build_zip(root, names or [])
+    except Exception as exc:  # noqa: BLE001
+        return f"ERRO ao montar o zip: {exc}"
+    if isinstance(result, str):
+        return result
+    files = result["files"]
+    shown = "\n".join(f"- {p}" for p in files[:40])
+    more = f"\n... e mais {len(files) - 40}" if len(files) > 40 else ""
+    left = ("\nFicaram de fora: " + "; ".join(result["skipped"][:6])) if result["skipped"] else ""
+    size = result["bytes"] / (1024 * 1024)
+    return f"Zip pronto: {_zip_link(result['path'])} ({len(files)} arquivo(s), {size:.1f} MB).\n{shown}{more}{left}"
+
+
+@tool
 def git_group_overview() -> str:
     '''Agrupa os arquivos com alterações NÃO commitadas em grupos coerentes (mesma pasta/assunto, testes junto do código, docs à parte). Use primeiro no fluxo de commit.'''
     root = _root()
@@ -145,4 +169,5 @@ OPS_TOOLS = [
     suggest_files_for_problem,
     build_context_pack,
     build_primer_file,
+    build_zip_files,
 ]
