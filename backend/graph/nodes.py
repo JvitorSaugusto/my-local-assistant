@@ -761,13 +761,14 @@ async def _generate_node_impl(state: State):
     if task and is_final_response:
         all_messages_this_run = recent_messages + messages_to_return
 
-        wrote_something = _has_write_call(all_messages_this_run)
+        wrote_something = _has_write_call(_messages_of_current_task(all_messages_this_run))
 
         content_str = str(response.content).strip().upper() if response.content else ""
 
         reported_ambiguous = content_str.startswith("TAREFA AMBÍGUA")
+        reported_no_change = _says_no_change(content_str)
 
-        if not wrote_something and not reported_ambiguous:
+        if not wrote_something and not reported_ambiguous and not reported_no_change:
             print("⚠️ [GENERATE] Tentativa de finalizar sem ação. Aplicando Nudge...")
 
             nudge = HumanMessage(
@@ -791,7 +792,10 @@ async def _generate_node_impl(state: State):
                     "ferramenta.\n\n"
                     "Se a tarefa não puder ser concluída com segurança, "
                     "responda começando EXATAMENTE com "
-                    "'TAREFA AMBÍGUA:' e explique o motivo."
+                    "'TAREFA AMBÍGUA:' e explique o motivo.\n\n"
+                    "Se a tarefa manda não alterar nada quando uma condição não ocorre e "
+                    "você já verificou que ela não ocorre, responda começando EXATAMENTE "
+                    "com 'SEM_ALTERACOES:' e o motivo."
                 )
             )
 
@@ -835,13 +839,14 @@ async def _generate_node_impl(state: State):
 
             all_messages_this_run = recent_messages + messages_to_return
 
-            wrote_something = _has_write_call(all_messages_this_run)
+            wrote_something = _has_write_call(_messages_of_current_task(all_messages_this_run))
 
             content_str2 = (
                 str(response2.content).strip().upper() if response2.content else ""
             )
 
             reported_ambiguous = content_str2.startswith("TAREFA AMBÍGUA")
+            reported_no_change = _says_no_change(content_str2)
 
         if is_final_response:
             final_status = "completed"
@@ -851,7 +856,12 @@ async def _generate_node_impl(state: State):
             task_messages = _messages_of_current_task(all_messages_this_run)
             wrote_something = _has_write_call(task_messages)
 
-            if not wrote_something:
+            no_change_done = False
+            if not wrote_something and reported_no_change and not reported_ambiguous:
+                # Conclusão válida: a condição da task não ocorreu, então não há o que alterar/revisar.
+                no_change_done = True
+                print("✅ [GENERATE] Task concluída sem alterações (SEM_ALTERACOES).")
+            elif not wrote_something:
                 final_status = "failed"
                 last_error = (
                     str(response_text_for_error(messages_to_return))
@@ -965,7 +975,7 @@ async def _generate_node_impl(state: State):
                     ).strip()
             journal_end(workspace)
 
-            if final_status == "completed" and REVIEW_FREE_TASKS:
+            if final_status == "completed" and REVIEW_FREE_TASKS and not no_change_done:
                 final_status = "review"
                 messages_to_return.append(
                     AIMessage(
