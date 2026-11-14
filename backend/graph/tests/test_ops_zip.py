@@ -114,6 +114,10 @@ class ZipBuildTests(unittest.TestCase):
         finally:
             oc.ZIP_MAX_BYTES = old
 
+    def test_brackets_from_tips_placeholder_are_ignored(self):
+        result = oc.build_zip(self.root, ["<a.py>", "<rag>"])
+        self.assertEqual(names_in(result["path"]), ["a.py", "backend/rag/x.py", "backend/rag/y.py"])
+
     def test_empty_request(self):
         self.assertIn("nenhum arquivo", oc.build_zip(self.root, []))
 

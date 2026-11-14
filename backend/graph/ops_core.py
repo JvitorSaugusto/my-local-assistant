@@ -387,7 +387,7 @@ def resolve_zip_targets(root, names):
     selected, skipped, ambiguous, missing = [], [], {}, []
     wanted = 0
     for raw in names or []:
-        name = str(raw).strip().replace("\\", "/").strip("'\"").rstrip("/")
+        name = str(raw).strip().replace("\\", "/").strip("'\"<>").rstrip("/")
         if name.startswith("./"):
             name = name[2:]
         if not name:
