@@ -3,6 +3,7 @@
 Rode na raiz do projeto:  python -m unittest backend.graph.tests.test_ops_node -v
 """
 import asyncio
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -84,6 +85,27 @@ class OpsNodeTests(unittest.TestCase):
     def test_without_workspace(self):
         answer = asyncio.run(run_ops([HumanMessage(content="commita")], "", None, llm=FakeLLM([])))
         self.assertIn("diretório de trabalho", answer)
+
+    def test_zip_tool_result_goes_straight_to_the_user(self):
+        with tempfile.TemporaryDirectory() as packs:
+            os.environ["TASK_PACK_DIR"] = packs
+            try:
+                llm = FakeLLM([call("build_zip_files", {"names": ["a.py", "b.py"]}, "1"), AIMessage(content="nunca usado")])
+                answer = self.run_ops(llm, [HumanMessage(content="me entregue os arquivos a.py e b.py")])
+            finally:
+                os.environ.pop("TASK_PACK_DIR", None)
+        self.assertTrue(answer.startswith("Zip pronto"))
+        self.assertIn("/api/handoff/zips/arquivos_", answer)
+        self.assertIn("- a.py", answer)
+        self.assertIn("- b.py", answer)
+        self.assertEqual(len(llm.seen), 1)
+
+    def test_invented_zip_link_is_rejected(self):
+        fake = "Pronto! [x.zip](/api/handoff/zips/arquivos_inventado.zip)"
+        llm = FakeLLM([AIMessage(content=fake), AIMessage(content=fake)])
+        answer = self.run_ops(llm, [HumanMessage(content="me entregue o a.py")])
+        self.assertIn("Não consegui gerar o zip", answer)
+        self.assertIn("SISTEMA", llm.seen[1][-1].content)
 
     def test_history_keeps_only_human_and_plain_ai(self):
         class M:
