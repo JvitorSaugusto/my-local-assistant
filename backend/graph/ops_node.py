@@ -11,6 +11,24 @@ MAX_ROUNDS = 12
 MAX_HISTORY = 8
 
 COMMIT_TOOLS = {"git_commit_groups", "git_commit_files"}
+ZIP_TOOL = "build_zip_files"
+_ZIP_LINK = re.compile(r"/api/handoff/zips/[\w.-]+\.zip")
+_CLAIMS_ZIP = re.compile(r"\bzip\s+(?:pronto|criado|gerado|montado)", re.I)
+NO_ZIP_MADE = "Não consegui gerar o zip desta vez. Peça de novo dizendo os nomes dos arquivos ou da pasta."
+ZIP_RETRY = (
+    "SISTEMA: você disse que gerou um zip, mas a ferramenta build_zip_files não rodou. "
+    "Chame build_zip_files com os nomes pedidos. Não escreva links; o sistema mostra o resultado real."
+)
+
+
+def _invented_zip_report(text, outputs):
+    """True se o texto cita link ou diz que gerou um zip sem a ferramenta ter produzido isso."""
+    known = "\n".join(outputs)
+    if any(link not in known for link in _ZIP_LINK.findall(text)):
+        return True
+    return bool(_CLAIMS_ZIP.search(text)) and "Zip pronto" not in known
+
+
 # hash curto/longo do git (precisa ter pelo menos um dígito, para não confundir com palavras como "defaced")
 _HASH = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b")
 _CLAIMS_COMMIT = re.compile(r"commits?\s+(?:realizados?|feitos?|criados?|conclu[ií]dos?)", re.I)
@@ -44,7 +62,12 @@ PACOTE .md PARA OUTRA IA (o usuário quer mandar um problema para o Claude ou ou
 3. Chame build_context_pack com o problema (uma frase mais os detalhes que ele deu) e os arquivos. Responda com o link EXATAMENTE como a ferramenta devolveu, os tokens e o que ficou de fora.
 Pedido só do resumo do projeto/primer: chame build_primer_file.
 
-Se o pedido não for sobre git nem pacote, diga isso em uma frase."""
+ZIP DE ARQUIVOS (o usuário quer receber arquivos ou pastas do projeto no chat, ex.: 'me entregue os arquivos x, y, z'):
+1. Chame build_zip_files UMA vez com os nomes exatamente como o usuário escreveu: nome simples (script.js), caminho parcial, caminho completo ou nome de pasta (rag). Pastas inteiras e arquivos de pastas diferentes podem ir juntos no mesmo zip.
+2. Se a ferramenta devolver ERRO de nome ambíguo ou não encontrado, pergunte ao usuário o caminho completo (uma pergunta só). Nunca adivinhe e nunca troque por outro arquivo.
+3. O resultado com o link é enviado direto ao usuário. NUNCA escreva links de download nem diga que o zip está pronto sem ter chamado a ferramenta. Segredos (.env, chaves) ficam sempre de fora.
+
+Se o pedido não for sobre git, pacote nem zip, diga isso em uma frase."""
 
 
 def _text(content):
@@ -87,6 +110,13 @@ async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_R
             if not text:
                 return "Não consegui responder. Reformule o pedido."
             # O modelo não pode relatar commits que nenhuma ferramenta fez (antes ele inventava hashes e arquivos).
+            if _invented_zip_report(text, outputs):
+                if warned:
+                    return NO_ZIP_MADE
+                warned = True
+                messages.append(reply)
+                messages.append(HumanMessage(content=ZIP_RETRY))
+                continue
             if _invented_commit_report(text, outputs):
                 if warned:
                     return NO_COMMIT_MADE
@@ -105,6 +135,7 @@ async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_R
             return text
         messages.append(reply)
         commit_outputs = []
+        zip_outputs = []
         for call in calls:
             tool = by_name.get(call["name"])
             try:
@@ -115,7 +146,11 @@ async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_R
             outputs.append(output)
             if call["name"] in COMMIT_TOOLS:
                 commit_outputs.append(output)
+            elif call["name"] == ZIP_TOOL and output.startswith("Zip pronto"):
+                zip_outputs.append(output)
             messages.append(ToolMessage(content=output[:12000], tool_call_id=call.get("id") or call["name"], name=call["name"]))
+        if zip_outputs and not commit_outputs:
+            return "\n\n".join(zip_outputs)
         if commit_outputs:
             # Resposta final = o que o git realmente fez, sem passar pelo modelo.
             report = "\n\n".join(commit_outputs)
