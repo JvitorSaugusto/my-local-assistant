@@ -7,6 +7,7 @@ from backend.main import DB_URI_LANGGRAPH
 from backend.database.config import async_session_env
 from backend.database.models import TaskModel
 from backend.graph.tools import reset_branch_call_counter
+from backend.graph.config import MAX_GENERATE_STEPS
 from celery import Celery
 from celery.signals import worker_ready
 from sqlalchemy import update
@@ -85,7 +86,7 @@ async def _run_generate_async(thread_id: str, task: GenerateTaskSchema):
 
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id},
-            "recursion_limit": 80,
+            "recursion_limit": max(80, 2 * MAX_GENERATE_STEPS + 20),
         }
 
         task_prompt = f"""
