@@ -65,15 +65,17 @@ class OpsNodeTests(unittest.TestCase):
             call("git_commit_files", {"paths": ["a.py"], "message": "fix: ajusta x"}, "2"),
             AIMessage(content="Commit feito."),
         ])
-        self.assertEqual(self.run_ops(llm), "Commit feito.")
+        answer = self.run_ops(llm)
+        self.assertIn("Commit", answer)
+        self.assertIn("a.py", answer)
         self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "fix: ajusta x")
         self.assertIn("b.py", git(self.root, "status", "--porcelain"))
 
     def test_unknown_tool_and_tool_errors_do_not_crash(self):
         llm = FakeLLM([call("apaga_tudo", {}, "1"), call("git_commit_files", {"paths": ["zzz.py"], "message": "x"}, "2"), AIMessage(content="ok")])
-        self.assertEqual(self.run_ops(llm), "ok")
+        self.assertIn("não encontrei", self.run_ops(llm))
         self.assertIn("desconhecida", llm.seen[1][-1].content)
-        self.assertIn("não encontrei", llm.seen[2][-1].content)
+        self.assertEqual(len(llm.seen), 2)
 
     def test_round_limit(self):
         llm = FakeLLM([call("git_changes_overview", {}, str(i)) for i in range(20)])
