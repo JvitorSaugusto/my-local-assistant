@@ -1152,6 +1152,7 @@ function showWelcome() {
 function renderHistory(messages) {
   el.messages.innerHTML = "";
   messages.forEach((m) => appendMessage(m.role, m.content, m.model, m));
+  syncTaskTyping();
 }
 
 async function refreshMessages(chat) {
@@ -1252,6 +1253,38 @@ function appendTyping() {
   el.messages.appendChild(wrap);
   scrollToBottom();
   return wrap;
+}
+
+function taskStatusText(tasks) {
+  const running = tasks.filter((task) => task.status === "running");
+  const queued = tasks.filter((task) => task.status === "queued");
+  const head = running[0] || queued[0];
+  const extra = running.length + queued.length - 1;
+  const prefix = running.length ? "Executando" : "Na fila:";
+  return (prefix + " #" + head.id + " " + (head.title || "")).trim() + (extra > 0 ? " (+" + extra + ")" : "");
+}
+
+// Balão de "pensando" para tarefas que rodam no Celery (o POST já voltou, mas a task segue ativa).
+function syncTaskTyping() {
+  const busy = (state.currentTasks || []).filter(isTaskLocked);
+  const existing = el.messages.querySelector('[data-typing="1"][data-kind="tasks"]');
+  if (!busy.length || state.activeId == null) {
+    if (existing) existing.remove();
+    return;
+  }
+  const text = taskStatusText(busy);
+  if (existing) {
+    const current = existing.querySelector(".typing-label");
+    if (current && current.textContent !== text) current.textContent = text;
+    return;
+  }
+  if (el.messages.querySelector('[data-typing="1"]')) return;
+  const wrap = appendTyping();
+  wrap.dataset.kind = "tasks";
+  const label = document.createElement("span");
+  label.className = "typing-label";
+  label.textContent = text;
+  wrap.querySelector(".typing-row").appendChild(label);
 }
 
 function scrollToBottom() {
@@ -1507,6 +1540,7 @@ function startPolling() {
 
     try {
       await loadTasks(chat.thread_id);
+      syncTaskTyping();
       const data = await api(API.messages(chat.thread_id));
       if (state.activeId !== chat.id) return;
       const msgs = data?.messages ?? [];
@@ -1522,7 +1556,7 @@ function startPolling() {
         if (state.pendingChats.has(chat.id)) appendTyping();
         scrollToBottom();
       } else if (!state.pendingChats.has(chat.id)) {
-        const typingEl = el.messages.querySelector('[data-typing="1"]');
+        const typingEl = el.messages.querySelector('[data-typing="1"]:not([data-kind="tasks"])');
         if (typingEl) typingEl.remove();
       }
     } catch (e) {}

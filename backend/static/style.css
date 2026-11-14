@@ -749,3 +749,15 @@ dialog.modal::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 #btn-pin { padding: 0 10px; }
 #btn-pin:not(.active) { opacity: 0.7; }
 #btn-pin.active { opacity: 1; }
+
+
+/* Status da tarefa do Celery ao lado do balão de "pensando" */
+.typing-label {
+  margin-left: 10px;
+  font-size: 13px;
+  opacity: 0.75;
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
