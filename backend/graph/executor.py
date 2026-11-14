@@ -100,8 +100,8 @@ def _git(workspace: str, *args: str, timeout: int = 30) -> subprocess.CompletedP
 
 def _classify(result: str) -> str:
     """Converte o texto devolvido pelas tools em ok | skipped | failed."""
-    head = result.lstrip().upper()
-    if head.startswith("ERRO"):
+    head = result.lstrip().lstrip("❌⚠️ ").upper()
+    if head.startswith(("ERRO", "EDIÇÃO REJEITADA", "EDICAO REJEITADA", "REJEITAD", "FALHA")):
         return "failed"
     if head.startswith("NADA A FAZER"):
         return "skipped"
