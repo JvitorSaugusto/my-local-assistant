@@ -603,12 +603,36 @@ async def _generate_node_impl(state: State):
                 recent_messages[i] = HumanMessage(content=state["enhanced_prompt"])
                 break
 
+    branch_context = (branch_context + "\n\n" if branch_context else "") + NO_CHANGE_RULE
+
+    _task_msgs = _messages_of_current_task(recent_messages)
+    first_call = not any(getattr(m, "type", "") == "ai" for m in _task_msgs)
+    dup_calls = 0
+    if task and not first_call:
+        rounds = _tool_rounds(_task_msgs)
+        dup_calls = _duplicate_read_calls(_task_msgs)
+        if rounds >= MAX_GENERATE_STEPS:
+            return await _abort_task(
+                task, workspace,
+                f"limite de {MAX_GENERATE_STEPS} rodadas de ferramentas atingido sem concluir.",
+            )
+        if dup_calls >= MAX_DUPLICATE_CALLS:
+            return await _abort_task(
+                task, workspace,
+                f"o modelo repetiu {dup_calls} chamadas de leitura idênticas (loop detectado).",
+            )
+
     dossier_text, dossier_report = "", {}
     if task:
         dossier_text, dossier_report = await asyncio.to_thread(
             build_task_dossier, workspace, list(task.files or [])
         )
-        rag_text = await rag_context(workspace, f"{task.title}\n{(task.description or '')[:600]}")
+        # RAG só na 1ª volta: refazer a cada ciclo custava ~25 s de timeout e inchava o prompt.
+        rag_text = (
+            await rag_context(workspace, f"{task.title}\n{(task.description or '')[:600]}")
+            if first_call
+            else ""
+        )
         if rag_text:
             dossier_report["rag_chars"] = len(rag_text)
             header = "" if dossier_text else "## DOSSIÊ DE CONTEXTO (montado pelo sistema)\n"
@@ -616,6 +640,16 @@ async def _generate_node_impl(state: State):
                 (dossier_text + "\n\n" if dossier_text else header)
                 + "### Trechos relacionados do repositório (RAG)\n"
                 + rag_text
+            )
+        if dossier_text and estimate_tokens(dossier_text) > DOSSIER_MAX_TOKENS:
+            print(
+                f"⚠️ [GENERATE] Dossiê de ~{estimate_tokens(dossier_text)} tokens cortado para "
+                f"~{DOSSIER_MAX_TOKENS} (teto DOSSIER_MAX_TOKENS)."
+            )
+            dossier_text = (
+                dossier_text[: DOSSIER_MAX_TOKENS * 3]
+                + "\n\n[... dossiê cortado pelo sistema por tamanho; use search_in_file / "
+                "read_file_chunk para ver o restante]"
             )
 
     context = [
@@ -632,11 +666,40 @@ async def _generate_node_impl(state: State):
         )
     ]
 
-    context.extend(recent_messages)
+    context.extend(
+        _compact_old_tool_results(
+            [
+                m for m in recent_messages
+                if (getattr(m, "additional_kwargs", None) or {}).get("message_tag") != "internal_context_report"
+            ]
+        )
+    )
+    if dup_calls:
+        context.append(
+            HumanMessage(
+                name="hidden_task_prompt",
+                content=(
+                    "AVISO DO SISTEMA: você repetiu uma leitura que já havia feito. NÃO repita buscas. "
+                    "Com o que já leu: edite o arquivo, ou, se a condição da tarefa para alterar "
+                    "não ocorre, responda começando por 'SEM_ALTERACOES:' e o motivo."
+                ),
+            )
+        )
 
     prompt_tokens = estimate_tokens("\n".join(str(getattr(m, "content", "")) for m in context))
+    if task:
+        def _tok(value) -> int:
+            return estimate_tokens(str(value or ""))
+
+        _msgs_text = "\n".join(str(getattr(m, "content", "")) for m in recent_messages)
+        print(
+            "📏 [GENERATE] tokens por parte: "
+            f"prompt_base={_tok(GENERATE_NODE_PROMPT)} resumo={_tok(actual_summary)} "
+            f"task={_tok(task.model_dump_json(indent=2))} dossie={_tok(dossier_text)} "
+            f"mensagens={_tok(_msgs_text)} "
+            f"(recent={len(recent_messages)} msgs, desta_task={len(_task_msgs)} msgs) total={prompt_tokens}"
+        )
     context_notice = None
-    first_call = not any(getattr(m, "type", "") == "ai" for m in _messages_of_current_task(recent_messages))
     if task and first_call:
         begin_journal(workspace, task.id)
         context_notice = AIMessage(
