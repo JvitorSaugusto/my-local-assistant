@@ -36,8 +36,6 @@ class State(TypedDict):
     gatherer_tool_trace: list[dict]
     repo_map_raw: NotRequired[str | None]
     project_stack: NotRequired[str | None]
-    repo_map_raw: NotRequired[str | None]
-    project_stack: NotRequired[str | None]
     
     active_generate_task: GenerateTaskSchema | None
     generate_start_idx: NotRequired[int | None]
@@ -116,6 +114,18 @@ GENERATE_NUM_CTX = CODER_NUM_CTX
 MAX_VERIFY_RETRIES = 2
 # True: tarefas em modo livre terminam em 'review' e só viram 'completed' após aprovação no painel.
 REVIEW_FREE_TASKS = True
+# Teto de rodadas de ferramentas por execução de task. Passou disso, a task falha (com rollback)
+# em vez de girar sem fim. Cada rodada gasta ~2 passos do grafo (generate + tools); com o
+# recursion_limit padrão do LangGraph (25) o máximo seguro é ~10. Se você subir o recursion_limit
+# no Celery, pode subir este valor por .env (MAX_GENERATE_STEPS).
+MAX_GENERATE_STEPS = _env_int("MAX_GENERATE_STEPS", 10)
+# Quantas chamadas de LEITURA idênticas (mesma tool + mesmos args) são toleradas antes de abortar.
+MAX_DUPLICATE_CALLS = _env_int("MAX_DUPLICATE_CALLS", 3)
+# Teto do dossiê (tokens estimados) no prompt do Generate. O excedente é cortado pelo sistema,
+# com aviso, em vez de o Ollama cortar o INÍCIO do prompt sem avisar.
+DOSSIER_MAX_TOKENS = _env_int("DOSSIER_MAX_TOKENS", 16000)
+# Resultados de tools mais antigos que os 3 últimos são encurtados para este tamanho (caracteres).
+OLD_TOOL_RESULT_CHARS = _env_int("OLD_TOOL_RESULT_CHARS", 500)
 
 generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=GENERATE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
