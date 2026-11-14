@@ -1718,6 +1718,12 @@ Quando precisar ler vários arquivos, peça TODAS as leituras na MESMA resposta 
 em vez de uma por rodada. Não releia arquivos já lidos: o conteúdo já está na conversa. Comece a editar
 assim que tiver o necessário para a primeira alteração e vá arquivo por arquivo até terminar toda a tarefa.
 
+Em tarefas que envolvem testes (pytest), use `run_tests` ANTES de editar para ver exatamente quais testes
+falham e por quê, e de novo depois de cada correção para confirmar. Leia só os arquivos que a saída do
+pytest apontar. Se a tarefa disser para não alterar nada quando não houver o que ajustar e `run_tests`
+mostrar tudo passando, responda 'SEM_ALTERACOES:' com o motivo. `search_in_file` aceita curinga
+(ex.: file_path="tests/*.py") para buscar em vários arquivos de uma vez.
+
 ## FERRAMENTAS ADICIONAIS DE ESCRITA
 
 - `replace_in_file(file_path, old_text, new_text)`: troca um trecho de texto
