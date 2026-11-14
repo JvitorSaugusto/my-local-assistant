@@ -19,8 +19,12 @@ from backend.database.models import TaskModel
 
 from .config import (
     CODER_NUM_CTX,
+    DOSSIER_MAX_TOKENS,
     GENERATE_NUM_CTX,
+    MAX_DUPLICATE_CALLS,
+    MAX_GENERATE_STEPS,
     MAX_VERIFY_RETRIES,
+    OLD_TOOL_RESULT_CHARS,
     REVIEW_FREE_TASKS,
     State,
     code_llm_with_tools,
@@ -457,6 +461,91 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
             )
         ],
         "active_node": "generate_dispatch_node",
+    }
+
+
+NO_CHANGE_RULE = (
+    "SAÍDA SEM ALTERAÇÃO: se a tarefa manda não fazer nada quando uma condição não ocorre "
+    "(ex.: \"se não houver duplicado, não faça nada\") e você JÁ VERIFICOU que a condição não "
+    "ocorre, encerre SEM chamar ferramenta, com uma resposta que comece EXATAMENTE por "
+    "'SEM_ALTERACOES:' seguida do motivo. Não repita buscas já feitas."
+)
+
+_READ_TOOL_NAMES = {
+    "read_file_content", "read_file_chunk", "search_in_file",
+    "list_directory_files", "generate_repo_map", "search_codebase",
+}
+
+
+def _says_no_change(text: str) -> bool:
+    head = (text or "").strip().upper()
+    return head.startswith(("SEM_ALTERACOES", "SEM_ALTERAÇÕES", "SEM ALTERAÇÕES", "SEM ALTERACOES"))
+
+
+def _tool_rounds(task_messages) -> int:
+    """Quantas vezes o modelo pediu ferramentas nesta execução da task."""
+    return sum(
+        1 for m in task_messages
+        if getattr(m, "type", "") == "ai" and getattr(m, "tool_calls", None)
+    )
+
+
+def _duplicate_read_calls(task_messages) -> int:
+    """Quantas chamadas de LEITURA repetem (mesma tool + mesmos args) uma chamada anterior."""
+    seen, dups = set(), 0
+    for m in task_messages:
+        if getattr(m, "type", "") != "ai":
+            continue
+        for call in getattr(m, "tool_calls", None) or []:
+            if call.get("name") not in _READ_TOOL_NAMES:
+                continue
+            key = (call["name"], repr(sorted((call.get("args") or {}).items())))
+            if key in seen:
+                dups += 1
+            seen.add(key)
+    return dups
+
+
+def _compact_old_tool_results(messages, keep_last: int = 3):
+    """Só para o PROMPT (o estado do grafo não muda): encurta resultados de tools antigos."""
+    idx = [i for i, m in enumerate(messages) if getattr(m, "type", "") == "tool"]
+    old = set(idx[:-keep_last]) if keep_last else set(idx)
+    out = []
+    for i, m in enumerate(messages):
+        content = getattr(m, "content", None)
+        if i in old and isinstance(content, str) and len(content) > OLD_TOOL_RESULT_CHARS:
+            m = m.model_copy(update={
+                "content": content[:OLD_TOOL_RESULT_CHARS]
+                + "\n[... resultado antigo encurtado pelo sistema para caber no contexto]"
+            })
+        out.append(m)
+    return out
+
+
+async def _abort_task(task, workspace, reason: str):
+    """Encerra a task como 'failed' (com rollback do diário) e termina o grafo."""
+    print(f"⛔ [GENERATE] Task {task.id} abortada: {reason}")
+    restored = journal_rollback(workspace, task.id)
+    error = reason
+    if restored:
+        error += f"\n\nAs alterações desta execução foram DESFEITAS automaticamente ({len(restored)} arquivo(s))."
+    journal_end(workspace)
+    async with async_session_env() as db:
+        await db.execute(
+            update(TaskModel).where(TaskModel.id == task.id).values(status="failed", last_error=error[:2000])
+        )
+        await db.commit()
+    return {
+        "messages": [
+            AIMessage(
+                content=f"⛔ A tarefa foi interrompida pelo sistema: {reason}\nReescreva a task de forma mais objetiva e use 'Reiniciar'.",
+                name="Qwen3-Coder (Generate)",
+                additional_kwargs={"message_tag": "internal_verify_gate", "created_at": now_iso()},
+            )
+        ],
+        "active_node": "generate_node",
+        "enhanced_prompt": None,
+        "active_generate_task": None,
     }
 
 
