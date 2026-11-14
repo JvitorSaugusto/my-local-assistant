@@ -258,23 +258,29 @@ def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
         print(f"[BUSCA] FALHOU: {error}")
         return f"Erro ao ler o arquivo: {str(error)}"
 
-    try:
-        compiled = re.compile(pattern)
-    except re.error as error:
-        return f"Padrão de busca inválido: {error}"
-
-    matches = [
-        f"{i+1}: {line}"
-        for i, line in enumerate(lines)
-        if compiled.search(line)
-    ]
+    # 1) texto LITERAL (o modelo cola um trecho exato, com parênteses/aspas, que como regex não
+    #    casa: "Auth.changeMyPassword(event)" vira um grupo). 2) regex só como fallback.
+    matches = [f"{i+1}: {line}" for i, line in enumerate(lines) if pattern in line]
+    if not matches:
+        try:
+            compiled = re.compile(pattern)
+        except re.error:
+            compiled = None
+        if compiled is not None:
+            matches = [
+                f"{i+1}: {line}"
+                for i, line in enumerate(lines)
+                if compiled.search(line)
+            ]
 
     if not matches:
         print("[BUSCA] nenhuma ocorrência")
         return f"Nenhuma ocorrência de '{pattern}' encontrada em {file_path}."
 
     print(f"[BUSCA] {len(matches)} ocorrência(s) encontrada(s)")
-    return "\n".join(matches)
+    header = f"{len(matches)} ocorrência(s) de '{pattern}' em {file_path}:\n"
+    extra = f"\n[... mais {len(matches) - 60} ocorrências omitidas]" if len(matches) > 60 else ""
+    return header + "\n".join(matches[:60]) + extra
 
 @tool
 def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
@@ -1622,7 +1628,10 @@ def validate_python_syntax(file_path: str, runtime: ToolRuntime) -> str:
         return f"ERRO: o arquivo '{file_path}' não existe no workspace."
 
     if resolved_path.suffix != ".py":
-        return "ERRO: apenas arquivos Python (.py) podem ser verificados."
+        return (
+            f"OK (não aplicável): '{file_path}' não é um arquivo Python, não há sintaxe Python a validar. "
+            "Não é um erro: não chame esta ferramenta de novo para este arquivo; conclua a tarefa."
+        )
 
     try:
         content, _newline = _read_text_keep_newline(resolved_path)
