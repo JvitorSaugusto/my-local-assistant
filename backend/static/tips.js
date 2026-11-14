@@ -69,6 +69,17 @@
       ]
     },
     {
+      title: "Git e pacotes pelo chat (Ops)",
+      tips: [
+        { kind: "insert", title: "Commitar seus arquivos", when: "O assistente agrupa os arquivos que você alterou por assunto, mostra grupos numerados e pergunta quais commitar. Responda 'todos', os números dos grupos ou nomes de arquivo. Cada grupo vira um commit com mensagem escrita a partir do diff real. Recusa main/master e arquivos de segredo, e informa o hash e como desfazer. Também aceita @commit.",
+          text: "commita meus arquivos" },
+        { kind: "insert", title: "Pacote .md para outra IA (pelo chat)", when: "Sem abrir a página Pacote: se você não citar arquivos, o assistente sugere os mais prováveis. Depois monta um .md com o problema, o resumo do projeto e trechos reais (segredos mascarados) e devolve o link para baixar. Também aceita @pack.",
+          text: "gere um md do problema <descreva o problema> pro claude" },
+        { kind: "insert", title: "Primer do projeto", when: "Resumo curto do projeto (arquitetura, rotas e tasks recentes) em .md, para abrir um chat novo em outra IA. Também aceita @primer.",
+          text: "me dá o primer do projeto" }
+      ]
+    },
+    {
       title: "Projeto, RAG e anexos",
       tips: [
         { kind: "info", title: "Escolher o projeto", when: "Aba Projeto → Procurar pastas no servidor → Usar esta pasta. A lista de projetos é separada por aparelho (PC e celular)." },
