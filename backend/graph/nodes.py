@@ -632,6 +632,7 @@ async def _generate_node_impl(state: State):
     _task_msgs = _messages_of_current_task(recent_messages)
     first_call = not any(getattr(m, "type", "") == "ai" for m in _task_msgs)
     dup_calls = 0
+    rounds = 0
     if task and not first_call:
         rounds = _tool_rounds(_task_msgs)
         dup_calls = _duplicate_read_calls(_task_msgs)
@@ -710,6 +711,20 @@ async def _generate_node_impl(state: State):
                     "AVISO DO SISTEMA: você repetiu uma leitura que já havia feito. NÃO repita buscas. "
                     "Com o que já leu: edite o arquivo, ou, se a condição da tarefa para alterar "
                     "não ocorre, responda começando por 'SEM_ALTERACOES:' e o motivo."
+                ),
+            )
+        )
+
+    if task and rounds >= 8 and not _has_write_call(_task_msgs):
+        context.append(
+            HumanMessage(
+                name="hidden_task_prompt",
+                content=(
+                    f"AVISO DO SISTEMA: já foram {rounds} rodadas só de leitura, sem nenhuma edição. "
+                    "Pare de explorar. Com o que já leu, faça AGORA a primeira edição necessária "
+                    "(replace_in_file ou edit_existing_file), arquivo por arquivo, até concluir a tarefa. "
+                    "Se a condição da tarefa para alterar não ocorre, responda começando por "
+                    "'SEM_ALTERACOES:' e o motivo. Não use curingas (*) em file_path: informe um arquivo."
                 ),
             )
         )
