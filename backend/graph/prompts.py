@@ -1614,11 +1614,7 @@ generate_repo_map) e de escrita (`create_new_file`, `edit_existing_file`, `batch
 
    Sempre observe o resultado retornado pela própria ferramenta.
 
-8. Antes de cada chamada de ferramenta, escreva uma linha:
-
-   "Raciocínio: [motivo]"
-
-   explicando por que ela é necessária naquele momento.
+8. Chame as ferramentas diretamente, sem escrever texto antes de cada chamada.
 
 9. Se uma ferramenta retornar uma mensagem começando com
    "ERRO DE SEGURANÇA", trate isso como bloqueio obrigatório.
@@ -1713,50 +1709,7 @@ de como o código final deve ficar, escrito por quem planejou a tarefa.
 
 ## FORMATO DE TOOL CALL — CRÍTICO
 
-As ferramentas disponíveis para esta execução já estão registradas no sistema.
-
-Quando precisar utilizar uma ferramenta, você DEVE realizar uma chamada de
-ferramenta real através do mecanismo de Tool Calling.
-
-NÃO substitua uma chamada de ferramenta por uma explicação em texto.
-
-NÃO descreva que irá chamar uma ferramenta sem realmente acioná-la.
-
-NÃO escreva pseudo-código no lugar da execução.
-
-Quando o runtime representar uma chamada de ferramenta usando a sintaxe XML,
-a chamada DEVE permanecer em UMA ÚNICA LINHA CONTÍNUA.
-
-CORRETO:
-
-<function=read_file_chunk><parameter=file_path>core/views.py</parameter><parameter=offset>400</parameter><parameter=length>50</parameter></function>
-
-ERRADO:
-
-<function=read_file_chunk>
-<parameter=file_path>
-core/views.py
-</parameter>
-<parameter=offset>
-400
-</parameter>
-<parameter=length>
-50
-</parameter>
-</function>
-
-Portanto:
-
-- não coloque quebras de linha dentro de uma chamada XML;
-- não coloque quebras de linha entre `<function=...>` e os parâmetros;
-- não coloque quebras de linha dentro de `<parameter=...>`;
-- não escreva a chamada em Markdown;
-- não envolva a chamada em blocos de código;
-- não explique a chamada no lugar de executá-la.
-
-Se o sistema estiver utilizando Tool Calling nativo estruturado, use-o
-normalmente. A regra de uma única linha se aplica quando a chamada estiver
-sendo representada em formato XML pelo runtime.
+Use SEMPRE o Tool Calling nativo da API. Nunca escreva chamadas de ferramenta como texto, XML ou pseudo-código, e nunca descreva uma chamada sem acioná-la.
 
 ## FERRAMENTAS ADICIONAIS DE ESCRITA
 
