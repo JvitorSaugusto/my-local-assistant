@@ -15,7 +15,16 @@ from .task_journal import record_write
 from .task_guards import js_edit_error
 
 
-MAX_READS_PER_GENERATE_TASK = 50
+MAX_READS_PER_GENERATE_TASK = int(os.getenv("MAX_READS_PER_GENERATE_TASK", "") or 30)
+
+_READ_LIMIT_MSG = (
+    "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: você já fez muitas "
+    "chamadas de leitura nesta execução sem produzir uma edição. PARE de "
+    "usar ferramentas de leitura. Se você já tem o suficiente, prossiga "
+    "para criar/editar arquivos. Se a tarefa pede para não fazer nada nesse caso, "
+    "responda começando com 'SEM_ALTERACOES:' e o motivo. Se não tem como decidir, "
+    "responda começando com 'TAREFA AMBÍGUA:' — não chame mais nenhuma ferramenta de leitura."
+)
 
 
 def parse_python_ast(content: str, sub_indent: str) -> list[str]:
@@ -82,14 +91,8 @@ def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
 
     file_paths = []
     
-    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
-        return (
-            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: você já fez muitas "
-            "chamadas de leitura nesta execução sem produzir uma edição. PARE de "
-            "usar ferramentas de leitura. Se você já tem o suficiente, prossiga "
-            "para criar/editar arquivos. Se não tem, reporte a tarefa como ambígua "
-            "e encerre — não chame mais nenhuma ferramenta de leitura."
-        )
+    if _count_read_calls(_messages_since_last_human(runtime.state)) >= MAX_READS_PER_GENERATE_TASK:
+        return _READ_LIMIT_MSG
     
     already_listed = any(
         call["name"] == "list_directory_files" and call["args"].get("dir_path") == dir_path
@@ -143,10 +146,8 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     Returns:
         str: Conteúdo completo do arquivo, ou mensagem de erro/orientação.
     """
-    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
-        return (
-            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: ..."
-        )
+    if _count_read_calls(_messages_since_last_human(runtime.state)) >= MAX_READS_PER_GENERATE_TASK:
+        return _READ_LIMIT_MSG
 
     workspace_path = runtime.state.get("workspace_path")
     resolved_path, path_error = _confined_path(file_path, workspace_path)
@@ -191,10 +192,8 @@ def read_file_chunk(file_path: str, offset: int, length: int, runtime: ToolRunti
         str: Linhas no formato "N: conteúdo", mais um resumo indicando quantas
         linhas o arquivo tem no total e se o trecho retornado é o final dele.
     """
-    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
-        return (
-            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: ..."
-        )
+    if _count_read_calls(_messages_since_last_human(runtime.state)) >= MAX_READS_PER_GENERATE_TASK:
+        return _READ_LIMIT_MSG
 
     workspace_path = runtime.state.get("workspace_path")
     resolved_path, path_error = _confined_path(file_path, workspace_path)
@@ -243,14 +242,8 @@ def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
     """
     import re
 
-    if _count_read_calls(runtime.state.get("messages", [])) >= MAX_READS_PER_GENERATE_TASK:
-        return (
-            "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: você já fez muitas "
-            "chamadas de leitura nesta execução sem produzir uma edição. PARE de "
-            "usar ferramentas de leitura. Se você já tem o suficiente, prossiga "
-            "para criar/editar arquivos. Se não tem, reporte a tarefa como ambígua "
-            "e encerre — não chame mais nenhuma ferramenta de leitura."
-        )
+    if _count_read_calls(_messages_since_last_human(runtime.state)) >= MAX_READS_PER_GENERATE_TASK:
+        return _READ_LIMIT_MSG
 
     workspace_path = runtime.state.get("workspace_path")
     resolved_path, path_error = _confined_path(file_path, workspace_path)
