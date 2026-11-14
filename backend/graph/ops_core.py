@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 
 OPS_NAME = "Qwen3-Coder (Ops)"
@@ -348,6 +349,110 @@ def save_pack(markdown, hint=""):
 
 def pack_file_path(name):
     if not re.fullmatch(r"[\w.-]+\.md", str(name or "")):
+        return None
+    path = pack_dir() / name
+    return path if path.is_file() else None
+
+# --- Zip de arquivos e pastas para o chat ---
+ZIP_MAX_FILES = 500
+ZIP_MAX_BYTES = 50 * 1024 * 1024
+_ZIP_BLOCKED_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__"}
+
+
+def project_files(root):
+    """Arquivos do projeto (relativos, com '/'): rastreados + novos não ignorados; sem .git, venv e node_modules."""
+    root = Path(root)
+    found = []
+    if is_repo(root):
+        done = _git(root, "ls-files", "-z", "-c", "-o", "--exclude-standard")
+        found = [p for p in (done.stdout or b"").decode("utf-8", errors="replace").split("\0") if p]
+    else:
+        for current, dirs, names in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in _ZIP_BLOCKED_DIRS]
+            found.extend(Path(current, n).relative_to(root).as_posix() for n in names)
+    ok = [p for p in found if not (set(p.split("/")) & _ZIP_BLOCKED_DIRS) and (root / p).is_file()]
+    return sorted(set(ok))
+
+
+def _parent_dirs(path):
+    parts = path.split("/")[:-1]
+    return ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+
+def resolve_zip_targets(root, names):
+    """Casa nomes (arquivo simples, sufixo, caminho completo ou pasta) com os arquivos do projeto.
+    Devolve (arquivos, ignorados, erro)."""
+    files = project_files(root)
+    dirs = sorted({d for f in files for d in _parent_dirs(f)})
+    selected, skipped, ambiguous, missing = [], [], {}, []
+    wanted = 0
+    for raw in names or []:
+        name = str(raw).strip().replace("\\", "/").strip("'\"").rstrip("/")
+        if name.startswith("./"):
+            name = name[2:]
+        if not name:
+            continue
+        wanted += 1
+        hits, amb, miss = resolve_names(files, [name])
+        if not hits and not amb:
+            dir_hits, amb, miss = resolve_names(dirs, [name])
+            hits = [f for d in dir_hits for f in files if f.startswith(d + "/")]
+        ambiguous.update(amb)
+        missing.extend(miss)
+        for path in hits:
+            if path not in selected:
+                selected.append(path)
+    if not wanted:
+        return [], [], "ERRO: nenhum arquivo ou pasta informado."
+    if ambiguous or missing:
+        return [], [], _problems_text(ambiguous, missing)
+    kept = []
+    for path in selected:
+        if is_secret_path(path):
+            skipped.append(f"{path} (segredo)")
+        else:
+            kept.append(path)
+    if not kept:
+        return [], skipped, "ERRO: nada para zipar" + (": " + ", ".join(skipped) if skipped else ".")
+    if len(kept) > ZIP_MAX_FILES:
+        return [], skipped, f"ERRO: {len(kept)} arquivos passam do limite de {ZIP_MAX_FILES}. Peça uma pasta menor ou nomes específicos."
+    total = sum((Path(root) / p).stat().st_size for p in kept)
+    if total > ZIP_MAX_BYTES:
+        return [], skipped, f"ERRO: {total // (1024 * 1024)} MB passam do limite de {ZIP_MAX_BYTES // (1024 * 1024)} MB. Peça menos arquivos."
+    return kept, skipped, None
+
+
+def build_zip(root, names, hint=""):
+    """Zipa os arquivos/pastas pedidos. Devolve dict {path, files, skipped, bytes} ou texto 'ERRO: ...'."""
+    root = Path(root)
+    files, skipped, error = resolve_zip_targets(root, names)
+    if error:
+        return error
+    base = pack_dir()
+    now = time.time()
+    for old in base.glob("arquivos_*.zip"):
+        try:
+            if now - old.stat().st_mtime > 30 * 24 * 3600:
+                old.unlink()
+        except OSError:
+            continue
+    label = hint or "-".join(Path(str(n)).stem for n in list(names)[:3])
+    slug = re.sub(r"[^a-z0-9]+", "-", str(label).lower())[:40].strip("-") or "arquivos"
+    path = base / f"arquivos_{time.strftime('%Y%m%d_%H%M%S')}_{slug}.zip"
+    tmp = path.with_name(path.name + ".part")
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
+            for rel in files:
+                archive.write(root / rel, arcname=rel)
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return {"path": path, "files": files, "skipped": skipped, "bytes": path.stat().st_size}
+
+
+def zip_file_path(name):
+    if not re.fullmatch(r"[\w.-]+\.zip", str(name or "")):
         return None
     path = pack_dir() / name
     return path if path.is_file() else None
