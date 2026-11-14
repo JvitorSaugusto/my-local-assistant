@@ -219,6 +219,56 @@ def read_file_chunk(file_path: str, offset: int, length: int, runtime: ToolRunti
 
     return chunk + footer
 
+def _search_many(pattern_path: str, pattern: str, workspace_path: str | None, max_files: int = 40, max_lines: int = 80) -> str:
+    """search_in_file com curinga (ex.: tests/*.py): busca em vários arquivos DENTRO do workspace."""
+    if not workspace_path:
+        return "ERRO: nenhum workspace definido para esta conversa."
+    root = Path(workspace_path).resolve()
+    raw = pattern_path.strip().replace("\\", "/")
+    if Path(raw).is_absolute() or ".." in raw.split("/"):
+        return "ERRO: use um padrão relativo à raiz do projeto, sem '..' (ex.: tests/*.py)."
+    try:
+        candidates = sorted(p for p in root.glob(raw) if p.is_file())
+    except (OSError, ValueError, NotImplementedError) as error:
+        return f"ERRO: padrão inválido '{pattern_path}': {error}"
+
+    files = []
+    for candidate in candidates:
+        resolved, path_error = _confined_path(str(candidate), workspace_path)
+        if not path_error and resolved is not None:
+            files.append(resolved)
+    if not files:
+        return f"Nenhum arquivo corresponde a '{pattern_path}'."
+
+    compiled = None
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        pass
+
+    found, total, scanned = [], 0, files[:max_files]
+    for path in scanned:
+        try:
+            lines = read_text_for_tools(path).splitlines()
+        except Exception:
+            continue
+        rel = path.relative_to(root).as_posix()
+        hits = [(i + 1, line) for i, line in enumerate(lines) if pattern in line]
+        if not hits and compiled is not None:
+            hits = [(i + 1, line) for i, line in enumerate(lines) if compiled.search(line)]
+        for number, line in hits:
+            total += 1
+            if len(found) < max_lines:
+                found.append(f"{rel}:{number}: {line}")
+
+    if not total:
+        return f"Nenhuma ocorrência de '{pattern}' em {len(scanned)} arquivo(s) de '{pattern_path}'."
+    header = f"{total} ocorrência(s) de '{pattern}' em {len(scanned)} arquivo(s) de '{pattern_path}':\n"
+    extra = f"\n[... mais {total - max_lines} ocorrências omitidas]" if total > max_lines else ""
+    skipped = f"\n[... {len(files) - max_files} arquivo(s) não pesquisados]" if len(files) > max_files else ""
+    return header + "\n".join(found) + extra + skipped
+
+
 @tool
 def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
     """
@@ -233,7 +283,8 @@ def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
     offset próximo a ela para ver o contexto completo antes de editar.
 
     Args:
-        file_path (str): Caminho relativo do arquivo.
+        file_path (str): Caminho relativo do arquivo, ou um padrão com curinga para vários
+            arquivos (ex.: "tests/*.py"). O padrão é relativo à raiz do projeto.
         pattern (str): Texto ou regex a buscar.
 
     Returns:
@@ -246,6 +297,10 @@ def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
         return _READ_LIMIT_MSG
 
     workspace_path = runtime.state.get("workspace_path")
+    if any(ch in (file_path or "") for ch in "*?["):
+        print(f"[BUSCA] padrão={file_path!r} pattern={pattern!r}")
+        return _search_many(file_path, pattern, workspace_path)
+
     resolved_path, path_error = _confined_path(file_path, workspace_path)
     if path_error:
         return path_error
