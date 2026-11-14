@@ -59,6 +59,16 @@
       ]
     },
     {
+      title: "Receber arquivos pelo chat (zip)",
+      tips: [
+        { kind: "insert", title: "Pedir arquivos em zip", when: "Diga os nomes (simples, como script.js) e/ou pastas: o assistente junta tudo num .zip e devolve o link para baixar. Pastas inteiras e arquivos de pastas diferentes podem ir juntos. Precisa de um projeto escolhido.",
+          text: "me entregue os arquivos <script.js e style.css> e a pasta <rag>" },
+        { kind: "insert", title: "Zip com a tag @zip", when: "Força o modo de arquivos, sem depender de como a frase foi escrita. Se o nome for ambíguo (ex.: b.py em duas pastas), o assistente pede o caminho completo.",
+          text: "@zip <script.js> backend/rag" },
+        { kind: "info", title: "O que entra e o que não entra no zip", when: "Entram arquivos rastreados e novos (respeita o .gitignore). Ficam de fora .git, venv, node_modules, .env, chaves e certificados, e o assistente avisa o que foi omitido. Limite: 500 arquivos e 50 MB. Os zips ficam guardados por 30 dias, na mesma pasta dos pacotes." }
+      ]
+    },
+    {
       title: "Projeto, RAG e anexos",
       tips: [
         { kind: "info", title: "Escolher o projeto", when: "Aba Projeto → Procurar pastas no servidor → Usar esta pasta. A lista de projetos é separada por aparelho (PC e celular)." },
