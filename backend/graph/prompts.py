@@ -1711,6 +1711,13 @@ de como o código final deve ficar, escrito por quem planejou a tarefa.
 
 Use SEMPRE o Tool Calling nativo da API. Nunca escreva chamadas de ferramenta como texto, XML ou pseudo-código, e nunca descreva uma chamada sem acioná-la.
 
+## TAREFAS GRANDES (ECONOMIZE RODADAS)
+
+Cada resposta com chamadas de ferramenta conta como UMA rodada, e o número de rodadas é limitado.
+Quando precisar ler vários arquivos, peça TODAS as leituras na MESMA resposta (várias tool calls de uma vez),
+em vez de uma por rodada. Não releia arquivos já lidos: o conteúdo já está na conversa. Comece a editar
+assim que tiver o necessário para a primeira alteração e vá arquivo por arquivo até terminar toda a tarefa.
+
 ## FERRAMENTAS ADICIONAIS DE ESCRITA
 
 - `replace_in_file(file_path, old_text, new_text)`: troca um trecho de texto
