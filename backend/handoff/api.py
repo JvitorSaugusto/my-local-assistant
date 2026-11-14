@@ -65,6 +65,19 @@ async def download_pack(name: str):
     return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=path.name)
 
 
+@handoff_router.get("/zips/{name}")
+async def download_zip(name: str):
+    """Baixa um .zip gerado pelo chat (só da pasta de pacotes, sem caminhos)."""
+    from fastapi.responses import FileResponse
+
+    from backend.graph.ops_core import zip_file_path
+
+    path = zip_file_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Zip não encontrado.")
+    return FileResponse(path, media_type="application/zip", filename=path.name)
+
+
 @handoff_router.post("/dryrun")
 async def dryrun(payload: DryRunRequest):
     """Aplica as tasks numa cópia temporária (executor real) e devolve um relatório curto; não altera o projeto."""
