@@ -506,7 +506,7 @@ def _duplicate_read_calls(task_messages) -> int:
     return dups
 
 
-def _compact_old_tool_results(messages, keep_last: int = 3):
+def _compact_old_tool_results(messages, keep_last: int = 5):
     """Só para o PROMPT (o estado do grafo não muda): encurta resultados de tools antigos."""
     idx = [i for i, m in enumerate(messages) if getattr(m, "type", "") == "tool"]
     old = set(idx[:-keep_last]) if keep_last else set(idx)
