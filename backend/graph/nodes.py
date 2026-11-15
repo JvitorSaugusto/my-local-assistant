@@ -494,6 +494,38 @@ def _tool_rounds(task_messages) -> int:
     )
 
 
+def _strip_narration(messages):
+    """Só para o PROMPT: tira o texto que o modelo escreve junto das tool calls ('Vou verificar...').
+    Ele só gasta tokens e, repetido a cada rodada, realimenta o próprio loop do modelo."""
+    out = []
+    for m in messages:
+        if (
+            getattr(m, "type", "") == "ai"
+            and getattr(m, "tool_calls", None)
+            and str(getattr(m, "content", "") or "").strip()
+        ):
+            m = m.model_copy(update={"content": ""})
+        out.append(m)
+    return out
+
+
+def _progress_panel(task_messages) -> str:
+    """Resumo feito pelo sistema do que já foi lido/editado: sobrevive à compactação dos resultados antigos."""
+    read: list[str] = []
+    for m in task_messages:
+        if getattr(m, "type", "") != "ai":
+            continue
+        for call in getattr(m, "tool_calls", None) or []:
+            path = (call.get("args") or {}).get("file_path")
+            if call.get("name") in {"read_file_content", "read_file_chunk", "search_in_file"} and isinstance(path, str) and path not in read:
+                read.append(path)
+    edited = _extract_written_files(task_messages)
+    lines = [f"PROGRESSO DESTA EXECUÇÃO (resumo do sistema): {_tool_rounds(task_messages)} rodadas de ferramentas."]
+    lines.append("Arquivos já lidos (não releia por inteiro): " + (", ".join(read[:25]) if read else "nenhum"))
+    lines.append("Arquivos já editados: " + (", ".join(edited[:25]) if edited else "NENHUM ainda"))
+    return "\n".join(lines)
+
+
 def _rounds_since_last_write(task_messages) -> int:
     """Rodadas de ferramentas depois da última edição (sem edição nenhuma = todas as rodadas)."""
     count = 0
@@ -784,7 +816,7 @@ async def _generate_node_impl(state: State):
         "\n".join(str(getattr(m, "content", "")) for m in _history if getattr(m, "type", "") != "tool")
     )
     _tool_budget = max(int(0.82 * GENERATE_NUM_CTX) - _fixed_tokens - 3000, 2000)
-    context.extend(_compact_to_budget(_history, _tool_budget))
+    context.extend(_compact_to_budget(_strip_narration(_history), _tool_budget))
     if dup_calls:
         context.append(
             HumanMessage(
@@ -810,6 +842,10 @@ async def _generate_node_impl(state: State):
                 ),
             )
         )
+
+    if task and not first_call:
+        # No FIM do contexto (não no system): o prefixo continua igual e o cache do Ollama é aproveitado.
+        context.append(HumanMessage(name="hidden_task_prompt", content=_progress_panel(_task_msgs)))
 
     prompt_tokens = estimate_tokens("\n".join(str(getattr(m, "content", "")) for m in context))
     if task:
