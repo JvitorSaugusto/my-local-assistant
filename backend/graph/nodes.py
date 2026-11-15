@@ -29,6 +29,7 @@ from .config import (
     State,
     code_llm_with_tools,
     context_gatherer_llm_with_tools,
+    generate_llm_edit_phase,
     generate_llm_with_tools,
     heavy_llm_structured,
     note_llm_draft_with_tools,
@@ -473,7 +474,7 @@ NO_CHANGE_RULE = (
 
 _READ_TOOL_NAMES = {
     "read_file_content", "read_file_chunk", "search_in_file",
-    "list_directory_files", "generate_repo_map", "search_codebase",
+    "list_directory_files", "generate_repo_map", "search_codebase", "run_tests",
 }
 
 
@@ -496,6 +497,8 @@ def _duplicate_read_calls(task_messages) -> int:
     for m in task_messages:
         if getattr(m, "type", "") != "ai":
             continue
+        if _has_write_call([m]):
+            seen.clear()  # depois de uma edição, reler/reexecutar o mesmo teste é legítimo
         for call in getattr(m, "tool_calls", None) or []:
             if call.get("name") not in _READ_TOOL_NAMES:
                 continue
@@ -538,10 +541,15 @@ def _compact_to_budget(messages, budget_tokens: int, min_keep: int = 2):
     for i, m in enumerate(messages):
         content = getattr(m, "content", None)
         if i in tool_idx and i not in keep and isinstance(content, str) and len(content) > OLD_TOOL_RESULT_CHARS:
-            m = m.model_copy(update={
-                "content": content[:OLD_TOOL_RESULT_CHARS]
-                + "\n[... resultado antigo encurtado pelo sistema para caber no contexto; releia o trecho se precisar]"
-            })
+            if getattr(m, "name", "") == "run_tests":
+                # o resumo do pytest (falhas e contagem) fica no FIM da saída: preserva o fim
+                short = "[... início omitido ...]\n" + content[-max(OLD_TOOL_RESULT_CHARS, 1500):]
+            else:
+                short = (
+                    content[:OLD_TOOL_RESULT_CHARS]
+                    + "\n[... resultado antigo encurtado pelo sistema para caber no contexto; releia o trecho se precisar]"
+                )
+            m = m.model_copy(update={"content": short})
         out.append(m)
     return out
 
@@ -677,6 +685,15 @@ async def _generate_node_impl(state: State):
                 "read_file_chunk para ver o restante]"
             )
 
+    # Depois da 1ª rodada o que foi lido já está na conversa: o dossiê encolhe e libera espaço
+    # para os resultados das ferramentas (o orçamento de tokens é calculado em cima do que sobra).
+    if dossier_text and not first_call and estimate_tokens(dossier_text) > 4000:
+        dossier_text = (
+            dossier_text[: 4000 * 3]
+            + "\n\n[... dossiê reduzido nas rodadas seguintes: o que você já leu está na conversa; "
+            "use read_file_chunk / search_in_file para ver mais]"
+        )
+
     context = [
         build_system_context(
             GENERATE_NODE_PROMPT,
@@ -758,7 +775,31 @@ async def _generate_node_impl(state: State):
             "o Ollama pode cortar o início sem avisar."
         )
 
-    response = await generate_llm_with_tools.ainvoke(context)
+    # Se o modelo gira em leituras/testes sem NUNCA editar, a leitura ampla e o run_tests são
+    # desativados (fase de edição) até a primeira escrita; depois todas as ferramentas voltam.
+    _llm = generate_llm_with_tools
+    if (
+        task
+        and not _has_write_call(_task_msgs)
+        and (_tool_rounds(_task_msgs) >= 10 or dup_calls >= 2)
+    ):
+        _llm = generate_llm_edit_phase
+        print("✏️ [GENERATE] Fase de edição: leitura ampla e run_tests desativados até a primeira escrita.")
+        context.append(
+            HumanMessage(
+                name="hidden_task_prompt",
+                content=(
+                    "AVISO DO SISTEMA: a fase de exploração acabou. As ferramentas run_tests, "
+                    "read_file_content, list_directory_files, generate_repo_map e search_codebase foram "
+                    "DESATIVADAS porque você repetiu leituras/testes sem editar nada. Use o que já leu "
+                    "(read_file_chunk e search_in_file só para localizar o trecho exato) e faça a "
+                    "PRIMEIRA EDIÇÃO AGORA com replace_in_file ou edit_existing_file. Depois de editar, "
+                    "as demais ferramentas voltam. Se a tarefa não exige alteração, responda começando "
+                    "por 'SEM_ALTERACOES:' e o motivo."
+                ),
+            )
+        )
+    response = await _llm.ainvoke(context)
 
     response.name = "Qwen3-Coder (Generate)"
     response.additional_kwargs["message_tag"] = "internal_thought_generate"
