@@ -4,6 +4,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 from langchain_core.messages import (
     AIMessage,
@@ -51,7 +52,7 @@ from .prompts import (
 from .task_journal import begin_journal, journal_end, journal_rollback, syntax_problems_for_paths
 from .task_commit import capture_originals, commit_task
 from .ops_core import detect_ops_intent
-from .tools import EDIT_PHASE_AFTER_ROUNDS
+from .tools import EDIT_PHASE_AFTER_ROUNDS, run_tests
 from .node_helpers import (
     _check_python_syntax,
     _extract_edited_python_files,
@@ -566,6 +567,46 @@ def _compact_to_budget(messages, budget_tokens: int, min_keep: int = 2):
     return out
 
 
+_PYTEST_SNAPSHOTS: dict = {}
+_TEST_WORDS_RE = re.compile(r"\b(testes?|pytest|tests?)\b", re.IGNORECASE)
+
+
+def _count_write_rounds(task_messages) -> int:
+    return sum(1 for m in task_messages if getattr(m, "type", "") == "ai" and _has_write_call([m]))
+
+
+async def _pytest_snapshot(task, workspace: str, writes: int) -> str:
+    """Para tasks sobre testes: o SISTEMA roda o pytest e entrega o resultado no dossiê (refeito a cada
+    edição), em vez de o modelo gastar rodadas descobrindo o que falha."""
+    if not _TEST_WORDS_RE.search(f"{task.title}\n{task.description or ''}"):
+        return ""
+    if not (Path(workspace) / "tests").is_dir():
+        return ""
+    key = (task.id, workspace, writes)
+    if key in _PYTEST_SNAPSHOTS:
+        return _PYTEST_SNAPSHOTS[key]
+
+    runtime = SimpleNamespace(state={"workspace_path": workspace, "messages": []})
+    try:
+        result = await asyncio.to_thread(run_tests.func, path="tests", runtime=runtime)
+    except Exception as exc:  # noqa: BLE001 - o snapshot é um extra
+        result = f"ERRO: {exc}"
+    result = str(result).strip()
+    if not result or result.upper().startswith("ERRO"):
+        snapshot = ""
+    else:
+        if len(result) > 6500:
+            result = result[:200] + "\n[... omitido ...]\n" + result[-6000:]
+        snapshot = (
+            "### Resultado ATUAL do pytest (rodado pelo sistema antes desta rodada; refeito após cada edição)\n"
+            + result
+        )
+    if len(_PYTEST_SNAPSHOTS) > 20:
+        _PYTEST_SNAPSHOTS.clear()
+    _PYTEST_SNAPSHOTS[key] = snapshot
+    return snapshot
+
+
 async def _abort_task(task, workspace, reason: str):
     """Encerra a task como 'failed' (com rollback do diário) e termina o grafo."""
     print(f"⛔ [GENERATE] Task {task.id} abortada: {reason}")
@@ -712,6 +753,11 @@ async def _generate_node_impl(state: State):
             + "\n\n[... dossiê reduzido nas rodadas seguintes: o que você já leu está na conversa; "
             "use read_file_chunk / search_in_file para ver mais]"
         )
+
+    if task and workspace:
+        _snapshot = await _pytest_snapshot(task, workspace, _count_write_rounds(_task_msgs))
+        if _snapshot:
+            dossier_text = (dossier_text + "\n\n" if dossier_text else "") + _snapshot
 
     context = [
         build_system_context(
