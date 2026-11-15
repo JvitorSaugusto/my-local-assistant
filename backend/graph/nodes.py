@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import subprocess
 import time
@@ -32,6 +33,7 @@ from .config import (
     State,
     code_llm_with_tools,
     context_gatherer_llm_with_tools,
+    generate_llm,
     generate_llm_edit_phase,
     generate_llm_with_tools,
     heavy_llm_structured,
@@ -495,6 +497,85 @@ def _tool_rounds(task_messages) -> int:
     )
 
 
+_TASK_PLANS: dict = {}
+
+_PLANNER_PROMPT = (
+    "Você é o planejador de uma tarefa de programação. Responda SOMENTE com JSON no formato "
+    '{"passos": [{"passo": "descrição curta e concreta", "arquivos": ["caminho/relativo"]}]}. '
+    "Regras: no máximo 8 passos, na ordem de execução; um passo por arquivo a editar (ou por grupo pequeno de "
+    "edições relacionadas); use SOMENTE caminhos que aparecem na tarefa, no dossiê ou no resultado do pytest; "
+    "não invente arquivos; se a tarefa envolve testes, o último passo é conferir rodando os testes. "
+    "Nenhum texto fora do JSON."
+)
+
+
+def _parse_plan(text: str) -> list[dict]:
+    match = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return []
+    steps = []
+    for item in (data.get("passos") if isinstance(data, dict) else None) or []:
+        if not isinstance(item, dict) or not str(item.get("passo") or "").strip():
+            continue
+        files = [str(f).strip() for f in (item.get("arquivos") or []) if str(f).strip()][:5]
+        steps.append({"passo": str(item["passo"]).strip()[:200], "arquivos": files})
+        if len(steps) >= 8:
+            break
+    return steps
+
+
+def _norm_path(path: str) -> str:
+    text = str(path).strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+def _plan_status(plan: list[dict], edited: list[str]) -> tuple[list[bool], int | None]:
+    """Passo concluído = todos os arquivos dele já foram editados. Passos sem arquivo contam como pendentes."""
+    done_files = {_norm_path(f) for f in edited}
+    flags = [bool(s["arquivos"]) and all(_norm_path(f) in done_files for f in s["arquivos"]) for s in plan]
+    next_idx = next((i for i, flag in enumerate(flags) if not flag), None)
+    return flags, next_idx
+
+
+def _plan_text(plan: list[dict]) -> str:
+    lines = ["PLANO DA TAREFA (gerado pelo sistema; siga na ordem, um passo por vez; o painel de progresso mostra o que já foi feito):"]
+    for number, step in enumerate(plan, start=1):
+        files = f" (arquivos: {', '.join(step['arquivos'])})" if step["arquivos"] else ""
+        lines.append(f"{number}. {step['passo']}{files}")
+    return "\n".join(lines)
+
+
+async def _task_plan(task, task_messages, dossier_text: str) -> list[dict]:
+    """Tasks grandes: UMA chamada ao modelo (sem ferramentas) gera um plano em passos, guardado por execução."""
+    big = len(task.files or []) >= 3 or len(task.description or "") >= 700
+    if not big:
+        return []
+    first = task_messages[0] if task_messages else None
+    key = (task.id, getattr(first, "id", None))
+    if key in _TASK_PLANS:
+        return _TASK_PLANS[key]
+    plan: list[dict] = []
+    try:
+        response = await generate_llm.ainvoke([
+            SystemMessage(content=_PLANNER_PROMPT),
+            HumanMessage(content=f"TAREFA:\n{task.model_dump_json(indent=2)}\n\nCONTEXTO:\n{(dossier_text or '')[:12000]}"),
+        ])
+        plan = _parse_plan(str(response.content))
+    except Exception as exc:  # noqa: BLE001 - o plano é um extra: sem ele a task segue como antes
+        print(f"ℹ️ [GENERATE] Plano indisponível ({exc}); seguindo sem plano.")
+    print(f"🗺️ [GENERATE] Plano da task {task.id}: {len(plan)} passo(s).")
+    if len(_TASK_PLANS) > 20:
+        _TASK_PLANS.clear()
+    _TASK_PLANS[key] = plan
+    return plan
+
+
 def _strip_narration(messages):
     """Só para o PROMPT: tira o texto que o modelo escreve junto das tool calls ('Vou verificar...').
     Ele só gasta tokens e, repetido a cada rodada, realimenta o próprio loop do modelo."""
@@ -510,7 +591,7 @@ def _strip_narration(messages):
     return out
 
 
-def _progress_panel(task_messages) -> str:
+def _progress_panel(task_messages, plan=None) -> str:
     """Resumo feito pelo sistema do que já foi lido/editado: sobrevive à compactação dos resultados antigos."""
     read: list[str] = []
     for m in task_messages:
@@ -524,6 +605,11 @@ def _progress_panel(task_messages) -> str:
     lines = [f"PROGRESSO DESTA EXECUÇÃO (resumo do sistema): {_tool_rounds(task_messages)} rodadas de ferramentas."]
     lines.append("Arquivos já lidos (não releia por inteiro): " + (", ".join(read[:25]) if read else "nenhum"))
     lines.append("Arquivos já editados: " + (", ".join(edited[:25]) if edited else "NENHUM ainda"))
+    if plan:
+        flags, next_idx = _plan_status(plan, edited)
+        lines.append("Passos do plano concluídos: " + (", ".join(str(i + 1) for i, f in enumerate(flags) if f) or "nenhum"))
+        if next_idx is not None:
+            lines.append(f"PRÓXIMO PASSO: {next_idx + 1}. {plan[next_idx]['passo']}")
     return "\n".join(lines)
 
 
@@ -832,6 +918,8 @@ async def _generate_node_impl(state: State):
         if _snapshot:
             dossier_text = (dossier_text + "\n\n" if dossier_text else "") + _snapshot
 
+    _plan = await _task_plan(task, _task_msgs, dossier_text) if task else []
+
     context = [
         build_system_context(
             GENERATE_NODE_PROMPT,
@@ -843,6 +931,7 @@ async def _generate_node_impl(state: State):
             if task
             else None,
             dossier_text or None,
+            _plan_text(_plan) if _plan else None,
         )
     ]
 
@@ -886,7 +975,7 @@ async def _generate_node_impl(state: State):
 
     if task and not first_call:
         # No FIM do contexto (não no system): o prefixo continua igual e o cache do Ollama é aproveitado.
-        context.append(HumanMessage(name="hidden_task_prompt", content=_progress_panel(_task_msgs)))
+        context.append(HumanMessage(name="hidden_task_prompt", content=_progress_panel(_task_msgs, _plan)))
 
     prompt_tokens = estimate_tokens("\n".join(str(getattr(m, "content", "")) for m in context))
     if task:
