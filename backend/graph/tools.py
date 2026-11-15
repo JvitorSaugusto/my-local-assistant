@@ -87,13 +87,21 @@ def parse_python_ast(content: str, sub_indent: str) -> list[str]:
     return signatures
 
 def _count_read_calls(messages) -> int:
-    return sum(
-        1
-        for msg in messages
-        if getattr(msg, "tool_calls", None)
-        for call in msg.tool_calls
-        if call["name"] in ("read_file_content", "list_directory_files", "read_file_chunk","search_in_file", "generate_repo_map",)
-    )
+    """Leituras desde a ÚLTIMA edição: cada escrita zera o contador (tasks grandes alternam ler e editar)."""
+    count = 0
+    for msg in messages:
+        calls = getattr(msg, "tool_calls", None)
+        if not calls:
+            continue
+        if any(call["name"] in _WRITE_CALL_NAMES for call in calls):
+            count = 0
+            continue
+        count += sum(
+            1
+            for call in calls
+            if call["name"] in ("read_file_content", "list_directory_files", "read_file_chunk", "search_in_file", "generate_repo_map")
+        )
+    return count
 
 def _messages_since_last_human(state: dict) -> list:
     """Espelha o mesmo corte usado em generate_node/context_gatherer_node —
