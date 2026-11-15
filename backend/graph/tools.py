@@ -17,6 +17,39 @@ from .task_guards import js_edit_error
 
 MAX_READS_PER_GENERATE_TASK = int(os.getenv("MAX_READS_PER_GENERATE_TASK", "") or 30)
 
+# Depois de tantas rodadas de ferramentas SEM nenhuma edição, as ferramentas de exploração são
+# recusadas aqui (não só removidas do prompt: o modelo ainda as chama e o ToolNode as executaria).
+EDIT_PHASE_AFTER_ROUNDS = int(os.getenv("EDIT_PHASE_AFTER_ROUNDS", "") or 15)
+_WRITE_CALL_NAMES = {
+    "create_new_file", "edit_existing_file", "batch_edit_file", "append_to_file",
+    "replace_in_file", "write_markdown_file", "create_pdf_file",
+}
+
+
+def _edit_phase_block(runtime, tool_name: str) -> str | None:
+    """Mensagem de recusa se a task já passou do limite de rodadas sem escrever nada; senão None."""
+    try:
+        messages = _messages_since_last_human(runtime.state)
+    except Exception:  # noqa: BLE001 - o guard nunca derruba a tool
+        return None
+    rounds, wrote = 0, False
+    for msg in messages:
+        calls = getattr(msg, "tool_calls", None)
+        if getattr(msg, "type", "") != "ai" or not calls:
+            continue
+        rounds += 1
+        if any(call.get("name") in _WRITE_CALL_NAMES for call in calls):
+            wrote = True
+    if wrote or rounds < EDIT_PHASE_AFTER_ROUNDS:
+        return None
+    return (
+        f"FERRAMENTA DESATIVADA: '{tool_name}' não está disponível porque você já fez {rounds} rodadas "
+        "sem nenhuma edição. Use o que já leu e EDITE AGORA com replace_in_file ou edit_existing_file "
+        "(read_file_chunk e search_in_file continuam disponíveis só para localizar o trecho exato). "
+        "Depois da primeira edição todas as ferramentas voltam. Se a tarefa não exige alteração, "
+        "responda começando por 'SEM_ALTERACOES:' e o motivo."
+    )
+
 _READ_LIMIT_MSG = (
     "ERRO FATAL — LIMITE DE INVESTIGAÇÃO ATINGIDO: você já fez muitas "
     "chamadas de leitura nesta execução sem produzir uma edição. PARE de "
@@ -89,6 +122,10 @@ def list_directory_files(dir_path: str, runtime: ToolRuntime) -> list:
     CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.php', '.html', '.css', '.sql'}
     IGNORED_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', 'env'}
 
+    blocked = _edit_phase_block(runtime, "list_directory_files")
+    if blocked:
+        return blocked
+
     file_paths = []
     
     if _count_read_calls(_messages_since_last_human(runtime.state)) >= MAX_READS_PER_GENERATE_TASK:
@@ -146,6 +183,10 @@ def read_file_content(file_path: str, runtime: ToolRuntime) -> str:
     Returns:
         str: Conteúdo completo do arquivo, ou mensagem de erro/orientação.
     """
+    blocked = _edit_phase_block(runtime, "read_file_content")
+    if blocked:
+        return blocked
+
     if _count_read_calls(_messages_since_last_human(runtime.state)) >= MAX_READS_PER_GENERATE_TASK:
         return _READ_LIMIT_MSG
 
@@ -345,6 +386,10 @@ def generate_repo_map(dir_path: str, runtime: ToolRuntime) -> str:
 
     O caminho recebido é resolvido contra o workspace da conversa.
     """
+    blocked = _edit_phase_block(runtime, "generate_repo_map")
+    if blocked:
+        return blocked
+
 
     CODE_EXTENSIONS = {
         ".py", ".js", ".ts", ".jsx", ".tsx", ".php", ".md"
@@ -2254,6 +2299,10 @@ def run_tests(path: str, runtime: ToolRuntime) -> str:
     Returns:
         str: Saída do pytest (as últimas linhas, onde ficam os erros e o resumo) e o código de saída.
     """
+    blocked = _edit_phase_block(runtime, "run_tests")
+    if blocked:
+        return blocked
+
     workspace_path = runtime.state.get("workspace_path")
     target = (path or "tests").strip()
     if target.startswith("-"):
@@ -2325,6 +2374,10 @@ async def search_codebase(
         str: Resultados formatados, ou uma mensagem explicando por que não há índice ou fonte.
     """
     from .rag_bridge import rag_search_for_tool
+
+    blocked = _edit_phase_block(runtime, "search_codebase")
+    if blocked:
+        return blocked
 
     workspace_path = runtime.state.get("workspace_path")
     return await rag_search_for_tool(
