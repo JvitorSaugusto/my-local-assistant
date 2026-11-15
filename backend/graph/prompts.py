@@ -1718,7 +1718,7 @@ Quando precisar ler vários arquivos, peça TODAS as leituras na MESMA resposta 
 em vez de uma por rodada. Não releia arquivos já lidos: o conteúdo já está na conversa. Comece a editar
 assim que tiver o necessário para a primeira alteração e vá arquivo por arquivo até terminar toda a tarefa.
 
-Em tarefas que envolvem testes (pytest), use `run_tests` ANTES de editar para ver exatamente quais testes
+Em tarefas que envolvem testes (pytest), o sistema já coloca no dossiê o resultado ATUAL do pytest (seção 'Resultado ATUAL do pytest', refeita a cada edição): comece por ele e corrija a primeira falha, uma de cada vez. Se precisar de mais detalhe, use `run_tests` ANTES de editar para ver exatamente quais testes
 falham e por quê, e de novo depois de cada correção para confirmar. Leia só os arquivos que a saída do
 pytest apontar. Se a tarefa disser para não alterar nada quando não houver o que ajustar e `run_tests`
 mostrar tudo passando, responda 'SEM_ALTERACOES:' com o motivo. `search_in_file` aceita curinga
