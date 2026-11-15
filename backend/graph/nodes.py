@@ -23,6 +23,7 @@ from .config import (
     GENERATE_NUM_CTX,
     MAX_DUPLICATE_CALLS,
     MAX_GENERATE_STEPS,
+    MAX_GENERATE_TOTAL_STEPS,
     MAX_VERIFY_RETRIES,
     OLD_TOOL_RESULT_CHARS,
     REVIEW_FREE_TASKS,
@@ -50,6 +51,7 @@ from .prompts import (
 from .task_journal import begin_journal, journal_end, journal_rollback, syntax_problems_for_paths
 from .task_commit import capture_originals, commit_task
 from .ops_core import detect_ops_intent
+from .tools import EDIT_PHASE_AFTER_ROUNDS
 from .node_helpers import (
     _check_python_syntax,
     _extract_edited_python_files,
@@ -491,6 +493,16 @@ def _tool_rounds(task_messages) -> int:
     )
 
 
+def _rounds_since_last_write(task_messages) -> int:
+    """Rodadas de ferramentas depois da última edição (sem edição nenhuma = todas as rodadas)."""
+    count = 0
+    for m in task_messages:
+        if getattr(m, "type", "") != "ai" or not getattr(m, "tool_calls", None):
+            continue
+        count = 0 if _has_write_call([m]) else count + 1
+    return count
+
+
 def _duplicate_read_calls(task_messages) -> int:
     """Quantas chamadas de LEITURA repetem (mesma tool + mesmos args) uma chamada anterior."""
     seen, dups = set(), 0
@@ -644,10 +656,17 @@ async def _generate_node_impl(state: State):
     if task and not first_call:
         rounds = _tool_rounds(_task_msgs)
         dup_calls = _duplicate_read_calls(_task_msgs)
-        if rounds >= MAX_GENERATE_STEPS:
+        stalled = _rounds_since_last_write(_task_msgs)
+        if rounds >= MAX_GENERATE_TOTAL_STEPS:
             return await _abort_task(
                 task, workspace,
-                f"limite de {MAX_GENERATE_STEPS} rodadas de ferramentas atingido sem concluir.",
+                f"limite total de {MAX_GENERATE_TOTAL_STEPS} rodadas de ferramentas atingido sem concluir.",
+            )
+        if stalled >= MAX_GENERATE_STEPS:
+            return await _abort_task(
+                task, workspace,
+                f"{stalled} rodadas de ferramentas seguidas sem nenhuma edição nova "
+                f"(limite {MAX_GENERATE_STEPS}); o modelo não está avançando.",
             )
         if dup_calls >= MAX_DUPLICATE_CALLS:
             return await _abort_task(
@@ -781,7 +800,7 @@ async def _generate_node_impl(state: State):
     if (
         task
         and not _has_write_call(_task_msgs)
-        and (_tool_rounds(_task_msgs) >= 10 or dup_calls >= 2)
+        and (_tool_rounds(_task_msgs) >= EDIT_PHASE_AFTER_ROUNDS or dup_calls >= 2)
     ):
         _llm = generate_llm_edit_phase
         print("✏️ [GENERATE] Fase de edição: leitura ampla e run_tests desativados até a primeira escrita.")
