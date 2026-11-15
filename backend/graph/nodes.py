@@ -24,6 +24,7 @@ from .config import (
     GENERATE_NUM_CTX,
     MAX_DUPLICATE_CALLS,
     MAX_GENERATE_STEPS,
+    KEEP_PARTIAL_ON_ABORT,
     MAX_GENERATE_TOTAL_STEPS,
     MAX_VERIFY_RETRIES,
     OLD_TOOL_RESULT_CHARS,
@@ -639,23 +640,60 @@ async def _pytest_snapshot(task, workspace: str, writes: int) -> str:
     return snapshot
 
 
-async def _abort_task(task, workspace, reason: str):
-    """Encerra a task como 'failed' (com rollback do diário) e termina o grafo."""
+async def _abort_task(task, workspace, reason: str, task_messages=None):
+    """Encerra a task interrompida (teto de rodadas ou loop). Se o agente JÁ editou algo e o resultado tem
+    sintaxe válida, o trabalho parcial é mantido em 'review' (Aprovar mantém, Reprovar desfaz); caso
+    contrário faz rollback pelo diário e marca 'failed'."""
     print(f"⛔ [GENERATE] Task {task.id} abortada: {reason}")
-    restored = journal_rollback(workspace, task.id)
-    error = reason
-    if restored:
-        error += f"\n\nAs alterações desta execução foram DESFEITAS automaticamente ({len(restored)} arquivo(s))."
-    journal_end(workspace)
+    written = _extract_written_files(task_messages or [])
+    keep_partial = False
+    problems: list[str] = []
+    if KEEP_PARTIAL_ON_ABORT and written:
+        problems.extend(_check_python_syntax(_extract_edited_python_files(task_messages or []), workspace))
+        problems.extend(syntax_problems_for_paths(workspace, written))
+        keep_partial = not problems
+
+    if keep_partial:
+        status = "review"
+        checks: list[str] = []
+        if task.verify:
+            checks = await asyncio.to_thread(run_checks, task.verify, workspace or "")
+        error = (
+            f"INTERROMPIDA antes de concluir: {reason}\n\n"
+            f"O trabalho parcial ({len(written)} arquivo(s)) foi MANTIDO para você revisar em 'Ver alterações': "
+            "Aprovar mantém, Reprovar desfaz tudo."
+        )
+        error += (
+            "\n\nVerificação final (rodada agora):\n" + "\n".join(f"- {item}" for item in checks)
+            if checks
+            else ("\n\nVerificação final: passou." if task.verify else "")
+        )
+        notice = (
+            f"⏸️ A execução foi interrompida pelo sistema: {reason}\n"
+            "As alterações feitas até aqui foram MANTIDAS: revise no painel de tarefas. "
+            "Se faltou algo, crie uma task de continuação."
+        )
+        journal_end(workspace)
+    else:
+        restored = journal_rollback(workspace, task.id)
+        status = "failed"
+        error = reason
+        if problems:
+            error += "\n\nAs edições parciais tinham erro de sintaxe: " + "; ".join(problems[:3])
+        if restored:
+            error += f"\n\nAs alterações desta execução foram DESFEITAS automaticamente ({len(restored)} arquivo(s))."
+        notice = f"⛔ A tarefa foi interrompida pelo sistema: {reason}\nReescreva a task de forma mais objetiva e use 'Reiniciar'."
+        journal_end(workspace)
+
     async with async_session_env() as db:
         await db.execute(
-            update(TaskModel).where(TaskModel.id == task.id).values(status="failed", last_error=error[:2000])
+            update(TaskModel).where(TaskModel.id == task.id).values(status=status, last_error=error[:2000])
         )
         await db.commit()
     return {
         "messages": [
             AIMessage(
-                content=f"⛔ A tarefa foi interrompida pelo sistema: {reason}\nReescreva a task de forma mais objetiva e use 'Reiniciar'.",
+                content=notice,
                 name="Qwen3-Coder (Generate)",
                 additional_kwargs={"message_tag": "internal_verify_gate", "created_at": now_iso()},
             )
@@ -734,17 +772,20 @@ async def _generate_node_impl(state: State):
             return await _abort_task(
                 task, workspace,
                 f"limite total de {MAX_GENERATE_TOTAL_STEPS} rodadas de ferramentas atingido sem concluir.",
+                task_messages=_task_msgs,
             )
         if stalled >= MAX_GENERATE_STEPS:
             return await _abort_task(
                 task, workspace,
                 f"{stalled} rodadas de ferramentas seguidas sem nenhuma edição nova "
                 f"(limite {MAX_GENERATE_STEPS}); o modelo não está avançando.",
+                task_messages=_task_msgs,
             )
         if dup_calls >= MAX_DUPLICATE_CALLS:
             return await _abort_task(
                 task, workspace,
                 f"o modelo repetiu {dup_calls} chamadas de leitura idênticas (loop detectado).",
+                task_messages=_task_msgs,
             )
 
     dossier_text, dossier_report = "", {}
