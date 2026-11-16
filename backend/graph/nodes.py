@@ -41,6 +41,7 @@ from .config import (
     note_llm_final,
     router_structured,
     standard_llm,
+    standard_llm_with_tools,
 )
 from .prompts import (
     CODE_NODE_PROMPT,
@@ -84,6 +85,11 @@ from .node_helpers import (
 )
 from .executor import execute_task, missing_listed_files, run_checks, workspace_summary
 from .handoff import SUMMARY_PROMPT, edited_files, join_handoff, split_handoff, strip_think, summary_transcript, text_of
+from .assistant_tools import WEB_TOOLS
+from .memory import prompt_block as memory_block
+from .notekit import NOTE_FIX_PROMPT, note_depth_instruction, note_problems, note_profile
+from .prompts_extra import CODE_TOOLS_RULES, ENHANCER_CONTEXT_RULES, STANDARD_TOOLS_RULES, standard_rules
+from .webkit import strip_unverified_urls, today_label, urls_in
 from .context_builder import build_task_dossier, estimate_tokens, format_report
 from .grounding import auto_check_documents
 from .rag_bridge import rag_context
@@ -225,20 +231,34 @@ def router_node(state: State):
 
 
 def enhancer_node(state: State):
-    persona = SystemMessage(content=PROMPT_ENHANCER_NODE_PROMPT)
-
     last_message = state["messages"][-1]
-    context = [persona, last_message]
+    summary = state.get("summary", "")
+    system = build_system_context(
+        PROMPT_ENHANCER_NODE_PROMPT,
+        ENHANCER_CONTEXT_RULES,
+        f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{summary}" if summary else None,
+        memory_block(),
+    )
+    # o histórico recente (cortado) deixa o enhancer resolver "isso", "o arquivo", "aquele erro"
+    history = summary_transcript(state["messages"][:-1], limit=4, per_message=800, total=4000)
+    if history:
+        raw = last_message.content if isinstance(last_message.content, str) else str(last_message.content)
+        user_part = HumanMessage(content=f"HISTÓRICO RECENTE (só para resolver referências):\n{history}\n\nPEDIDO A MELHORAR:\n{raw}")
+    else:
+        user_part = last_message
+    context = [system, user_part]
 
     response = standard_llm.invoke(context)
     response.name = "GPT-OSS (20B) ENHANCER"
     response.additional_kwargs["message_tag"] = "internal_thought_enhancer"
     stamp_message(response)
 
+    improved = re.sub(r"^\s*PEDIDO( A)? MELHORAD[OA]:\s*", "", strip_think(text_of(response.content)), flags=re.I)
     print("GPT-OSS (20B) ENHANCER")
 
+    # resposta vazia não pode apagar o pedido do usuário: sem enhanced_prompt o fluxo segue com a mensagem original
     return {
-        "enhanced_prompt": response.content,
+        "enhanced_prompt": improved or None,
     }
 
 
@@ -248,61 +268,103 @@ def after_enhancer_route(state: State):
     return "router_node"
 
 
-def standard_node_20b(state: State):
-    actual_summary = state.get("summary", "")
-    recent_messages = state["messages"][-6:]
+STANDARD_MAX_TOOL_ROUNDS = 4  # rodadas de ferramentas (pesquisa web etc.) por pergunta no modo Normal
 
-    if state.get("enhanced_prompt"):
-        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
 
-    context = [
-        build_system_context(
-            STANDARD_NODE_PROMPT,
-            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}"
-            if actual_summary
-            else None,
-        )
+def _internal_msg(message) -> bool:
+    return str((getattr(message, "additional_kwargs", None) or {}).get("message_tag") or "").startswith("internal_")
+
+
+def _turn_context(messages: list, prior: int = 4, enhanced: str | None = None) -> list:
+    """Contexto de UM turno: poucas mensagens de conversa anteriores + tudo desde a última pergunta do usuário.
+    Inclui as rodadas de ferramentas (antes, `[-6:]` empurrava a pergunta para fora depois de 3 rodadas)."""
+    last_human = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].type == "human"), 0)
+    earlier = [
+        m
+        for m in messages[:last_human]
+        if m.type in ("human", "ai") and not getattr(m, "tool_calls", None) and not _internal_msg(m)
     ]
+    current = list(messages[last_human:])
+    if enhanced and current:
+        current[0] = HumanMessage(content=enhanced)
+    return earlier[-prior:] + current
 
-    context.extend(recent_messages)
 
-    response = standard_llm.invoke(context)
+def _tool_text(messages: list, only: tuple | None = None) -> str:
+    return "\n".join(
+        str(m.content) for m in messages if m.type == "tool" and (only is None or getattr(m, "name", "") in only)
+    )
+
+
+def _assistant_context(prompt: str, state: State, extra: str | None = None) -> SystemMessage:
+    """Parte estável primeiro (cache do Ollama); resumo, memórias do usuário e data no fim."""
+    summary = state.get("summary", "")
+    return build_system_context(
+        prompt,
+        extra,
+        f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{summary}" if summary else None,
+        memory_block(),
+        f"DATA DE HOJE: {today_label()}",
+    )
+
+
+def standard_node_20b(state: State):
+    messages = _turn_context(state["messages"], enhanced=state.get("enhanced_prompt"))
+    rounds = sum(1 for m in messages if m.type == "ai" and getattr(m, "tool_calls", None))
+    exhausted = rounds >= STANDARD_MAX_TOOL_ROUNDS
+    if exhausted:
+        messages = messages + [
+            HumanMessage(
+                content="Limite de ferramentas atingido: responda AGORA com o que já foi coletado, citando as fontes "
+                "(somente links que apareceram nos resultados) e dizendo o que não deu para confirmar."
+            )
+        ]
+
+    context = [_assistant_context(STANDARD_NODE_PROMPT, state, standard_rules(bool(WEB_TOOLS)))]
+    context.extend(messages)
+
+    response = None
+    if not exhausted:
+        try:
+            response = standard_llm_with_tools.invoke(context)
+        except Exception as exc:
+            print(f"[STANDARD] Falha com ferramentas ({type(exc).__name__}: {exc}); respondendo sem elas.")
+    if response is None:
+        response = standard_llm.invoke(context)
+
     print("=== STANDARD ===")
-    print("length:", len(response.content))
+    print("length:", len(response.content), "| tool_calls:", len(getattr(response, "tool_calls", None) or []))
     print("metadata:", response.response_metadata)
     print("content:", repr(response.content[-500:]))
     response.name = "GPT-OSS (20B)"
-    response.additional_kwargs["message_tag"] = "response_standard"
+    if getattr(response, "tool_calls", None):
+        response.additional_kwargs["message_tag"] = "internal_thought_standard_tools"
+    else:
+        response.additional_kwargs["message_tag"] = "response_standard"
+        tool_text = _tool_text(messages)
+        if tool_text and isinstance(response.content, str):
+            # links que não vieram das ferramentas (nem do usuário) são inventados: removidos
+            response.content = strip_unverified_urls(response.content, tool_text + "\n" + _last_human_text(state))
     stamp_message(response)
 
-    return {"messages": [response], "enhanced_prompt": None}
+    return {"messages": [response], "active_node": "standard_node_20b", "enhanced_prompt": None}
 
 
 def code_node(state: State):
-    actual_summary = state.get("summary", "")
-    recent_messages = state["messages"][-6:]
-
     workspace_path = state.get("workspace_path", "Diretório não informado")
-
-    if state.get("enhanced_prompt"):
-        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
+    recent_messages = _turn_context(state["messages"], prior=5, enhanced=state.get("enhanced_prompt"))
 
     prompt_with_workspace = f"{CODE_NODE_PROMPT}\n\n[CONTEXTO DO AMBIENTE]\nO caminho raiz do workspace atual é: {workspace_path}"
 
-    context = [
-        build_system_context(
-            prompt_with_workspace,
-            f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{actual_summary}"
-            if actual_summary
-            else None,
-        )
-    ]
-
+    context = [_assistant_context(prompt_with_workspace, state, CODE_TOOLS_RULES if WEB_TOOLS else None)]
     context.extend(recent_messages)
 
     response = code_llm_with_tools.invoke(context)
     response.name = "GPT-OSS (20B) CODE"
     response.additional_kwargs["message_tag"] = "response_code"
+    web_text = _tool_text(recent_messages, only=("web_search", "web_fetch"))
+    if web_text and not getattr(response, "tool_calls", None) and isinstance(response.content, str):
+        response.content = strip_unverified_urls(response.content, web_text + "\n" + _last_human_text(state))
     stamp_message(response)
 
     return {"messages": [response], "active_node": "code_node", "enhanced_prompt": None}
@@ -1405,14 +1467,13 @@ def note_draft_node(state: State) -> State:
             "enhanced_prompt": None,
         }
 
-    persona = SystemMessage(content=NOTE_NODE_PROMPT)
+    persona = _assistant_context(NOTE_NODE_PROMPT, state)
 
-    recent_messages = state["messages"][-6:]
+    # contexto do turno inteiro: as rodadas de ferramentas (leitura de arquivos, web) não podem empurrar o pedido para fora
+    recent_messages = _turn_context(state["messages"], prior=5, enhanced=state.get("enhanced_prompt"))
 
-    if state.get("enhanced_prompt"):
-        recent_messages[-1] = HumanMessage(content=state.get("enhanced_prompt"))
-
-    last_user_message = recent_messages[-1].content if recent_messages else ""
+    last_user_message = _last_human_text(state)
+    profile = note_profile(last_user_message)
 
     is_update = (
         "##" in last_user_message
@@ -1434,6 +1495,7 @@ def note_draft_node(state: State) -> State:
             "de ferramenta ou pela mensagem do usuário.\n\n"
             "Transforme o conteúdo acima em uma nota técnica seguindo todas as "
             "regras do prompt do sistema.\n\nRetorne somente a nota final em Markdown."
+            "\n\n" + note_depth_instruction(profile, bool(WEB_TOOLS))
         )
     )
 
@@ -1470,24 +1532,44 @@ def note_refine_node(state: State) -> State:
         stamp_message(draft_msg)
         return {"messages": [draft_msg]}
 
-    persona = SystemMessage(content=NOTE_NODE_PROMPT)
+    persona = _assistant_context(NOTE_NODE_PROMPT, state)
+    request = _last_human_text(state)
+    profile = note_profile(request)
+    last_human = next((i for i in range(len(state["messages"]) - 1, -1, -1) if state["messages"][i].type == "human"), 0)
+    turn_messages = state["messages"][last_human:]
+    web_text = _tool_text(turn_messages, only=("web_search", "web_fetch"))
+    sources = list(dict.fromkeys(urls_in(web_text)))[:12]
 
     if not draft_content or not draft_content.strip():
         print("Aviso: Rascunho vazio chegou no Refine.")
-        recent_messages = state["messages"][-6:]
+        recent_messages = _turn_context(state["messages"], prior=5)
         final_response = note_llm_final.invoke([persona] + recent_messages)
     else:
+        research = ""
+        if web_text:
+            research = (
+                "\nPESQUISA NA WEB feita antes do rascunho (base factual; use só estes links em '## Fontes'):\n"
+                + "\n".join(f"- {u}" for u in sources)
+                + "\n\n"
+                + web_text[:8000]
+                + "\n"
+            )
         refinement_prompt = f"""
+        PEDIDO ORIGINAL DO USUÁRIO:
+        {request[:3000]}
+
         Aqui está um rascunho de nota (uso interno, não deve aparecer na sua resposta):
 
         <rascunho>
         {draft_content}
         </rascunho>
-
+        {research}
         Reescreva mantendo tudo que já está correto e adicionando profundidade
         onde fizer sentido (segundo exemplo, o "porquê" de decisões técnicas,
-        diferenciação de conceitos). Não invente informações que não estejam
-        no rascunho, no histórico da conversa ou no conteúdo lido pelas ferramentas.
+        diferenciação de conceitos, erros comuns). Não invente informações que não estejam
+        no rascunho, no histórico da conversa, na pesquisa ou no conteúdo lido pelas ferramentas.
+
+        {note_depth_instruction(profile, False)}
 
         Responda somente com a nota final e reescrita, em Markdown, começando
         direto com '# '. Não inclua o rascunho nem comentários sobre o processo.
@@ -1502,6 +1584,27 @@ def note_refine_node(state: State) -> State:
 
         if not final_response.content.strip():
             final_response = draft_msg
+
+    # checagem automática (tamanho, estrutura, exemplo, consulta rápida, fontes) e UMA passada de correção
+    note = strip_think(text_of(final_response.content))
+    problems = note_problems(note, profile, used_web=bool(web_text))
+    if problems:
+        print("Nota com problemas:", problems)
+        extra = ("Links permitidos em '## Fontes': " + ", ".join(sources)) if sources else ""
+        fix = note_llm_final.invoke(
+            [
+                persona,
+                HumanMessage(
+                    content=NOTE_FIX_PROMPT.format(problems="\n".join(f"- {p}" for p in problems), extra=extra, note=note)
+                ),
+            ]
+        )
+        fixed = strip_think(text_of(fix.content))
+        if fixed and len(note_problems(fixed, profile, used_web=bool(web_text))) <= len(problems):
+            final_response, note = fix, fixed
+    if web_text:
+        note = strip_unverified_urls(note, web_text + "\n" + request)
+    final_response.content = note
 
     final_response.name = "Qwen3 Notas Final (30B)"
     final_response.additional_kwargs["message_tag"] = "response_note"
