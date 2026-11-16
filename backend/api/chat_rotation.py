@@ -19,9 +19,11 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from backend.graph.handoff import join_handoff, plain_summary
@@ -206,7 +208,7 @@ def tasks_block(tasks: list[dict]) -> str:
             if t["status"] in ("failed", "review") and t.get("error"):
                 line += f" | último aviso: {_one_line(t['error'], 200)}"
             if t.get("uploads"):
-                line += f" | usa anexo(s) do chat anterior: {', '.join(t['uploads'])} (reenvie neste chat)"
+                line += f" | usa anexo(s): {', '.join(t['uploads'])} (copiados para este chat)"
             lines.append(line)
         if len(open_tasks) > 30:
             lines.append(f"- ... e mais {len(open_tasks) - 30} task(s).")
@@ -391,6 +393,35 @@ async def _drop_pin(thread_id: str) -> None:
         pass
 
 
+def _copy_uploads_sync(workspace: str, old_thread: str, new_thread: str) -> int:
+    """Copia os anexos do chat (<workspace>/.assistant_uploads/<thread>/) para o chat novo."""
+    from backend.api.uploads import UPLOAD_DIR_NAME, sanitize_thread_id
+
+    if not workspace:
+        return 0
+    base = Path(workspace) / UPLOAD_DIR_NAME
+    src, dst = base / sanitize_thread_id(old_thread), base / sanitize_thread_id(new_thread)
+    if not src.is_dir() or dst.exists():
+        return 0
+    shutil.copytree(src, dst)
+    return sum(1 for p in dst.rglob("*") if p.is_file())
+
+
+async def _copy_uploads(workspace: str, old_thread: str, new_thread: str) -> int:
+    try:
+        return await asyncio.to_thread(_copy_uploads_sync, workspace, old_thread, new_thread)
+    except Exception as exc:
+        _log(f"não consegui copiar os anexos para o chat novo ({type(exc).__name__}: {exc})")
+        return 0
+
+
+def _drop_uploads_sync(workspace: str, new_thread: str) -> None:
+    from backend.api.uploads import UPLOAD_DIR_NAME, sanitize_thread_id
+
+    if workspace:
+        shutil.rmtree(Path(workspace) / UPLOAD_DIR_NAME / sanitize_thread_id(new_thread), ignore_errors=True)
+
+
 async def _update_state(app_graph: Any, thread_id: str, values: dict) -> None:
     config = {"configurable": {"thread_id": thread_id}}
     try:
@@ -436,6 +467,7 @@ async def _rotate(app_graph: Any, thread_id: str, workspace_path: str, values: d
     chat_id, new_thread = await _create_chat_row(new_title)
     moved = 0
     pinned = False
+    copied = 0
     try:
         now = _now()
         visible = (
@@ -455,6 +487,7 @@ async def _rotate(app_graph: Any, thread_id: str, workspace_path: str, values: d
         )
         moved = await _move_tasks(open_ids, thread_id, new_thread)
         pinned = await _copy_pin(thread_id, new_thread)
+        copied = await _copy_uploads(workspace, thread_id, new_thread)
         marker = {"thread_id": new_thread, "chat_id": chat_id, "title": new_title}
         notice = _notice_text(new_title, tokens, turns, moved)
         await _update_state(
@@ -474,6 +507,7 @@ async def _rotate(app_graph: Any, thread_id: str, workspace_path: str, values: d
         for undo in (
             lambda: _move_tasks(open_ids, new_thread, thread_id) if moved else asyncio.sleep(0),
             lambda: _drop_pin(new_thread) if pinned else asyncio.sleep(0),
+            lambda: asyncio.to_thread(_drop_uploads_sync, workspace, new_thread) if copied else asyncio.sleep(0),
             lambda: _delete_chat_row(chat_id),
         ):
             try:
