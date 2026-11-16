@@ -83,6 +83,7 @@ from .node_helpers import (
     stamp_message,
 )
 from .executor import execute_task, missing_listed_files, run_checks, workspace_summary
+from .handoff import join_handoff, split_handoff
 from .context_builder import build_task_dossier, estimate_tokens, format_report
 from .grounding import auto_check_documents
 from .rag_bridge import rag_context
@@ -2016,7 +2017,8 @@ def check_context_limit(state: State):
 
 
 def summarize_node(state: State):
-    actual_summary = state.get("summary", "")
+    # bloco de continuação (chat anterior) fica de fora do parágrafo e é devolvido intacto no final
+    handoff, actual_summary = split_handoff(state.get("summary", ""))
     all_messages = state["messages"]
 
     meaningful_messages = []
@@ -2040,7 +2042,7 @@ def summarize_node(state: State):
 
     response = standard_llm.invoke(recent_messages + [order])
 
-    return {"summary": response.content, "enhanced_prompt": None}
+    return {"summary": join_handoff(handoff, response.content), "enhanced_prompt": None}
 
 
 def return_tool_message(state: State):
