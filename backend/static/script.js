@@ -1597,6 +1597,7 @@ async function sendMessage(text) {
       appendMessage("assistant", data?.content ?? data?.message ?? "", data?.name ?? data?.model, data || {});
     }
     if (data?.chat_full) appendNotice("Esta conversa está ficando longa: ela continua em um chat novo (com resumo) assim que as tarefas terminarem.");
+    if (data?.title_pending) scheduleTitleRefresh(chat);
   } catch (err) {
     if (state.activeId === chat.id) {
       typing.remove();
@@ -1618,6 +1619,17 @@ async function sendMessage(text) {
       refreshChatSize(chat);
     }
   }
+}
+
+// O backend titula o chat em segundo plano depois da 1ª resposta: busca o título novo e atualiza a barra lateral.
+function scheduleTitleRefresh(chat) {
+  [6000, 16000].forEach((ms) => setTimeout(async () => {
+    try {
+      await loadChats();
+      const fresh = state.chats.find((item) => item.id === chat.id);
+      if (fresh && state.activeId === chat.id) el.chatTitle.textContent = fresh.title;
+    } catch (err) { /* segue sem atualizar */ }
+  }, ms));
 }
 
 async function sendBatch() {
