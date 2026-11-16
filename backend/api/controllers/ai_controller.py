@@ -8,6 +8,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
+from backend.api.chat_title import schedule_title
 from backend.api.chat_rotation import chat_size, maybe_rotate_chat, release_active_tasks
 from backend.api.history import build_clean_history
 from backend.graph.config import State
@@ -102,12 +103,18 @@ async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
 
     message = result["messages"][-1]
 
+    # 1ª troca da conversa: dá um título ao chat em segundo plano (não atrasa a resposta)
+    title_pending = sum(1 for m in result["messages"] if getattr(m, "type", "") == "human") == 1
+    if title_pending:
+        schedule_title(thread_id, payload.message, message.content if isinstance(message.content, str) else "")
+
     return {
         "content": message.content,
         "name": getattr(message, "name", None),
         "created_at": message.additional_kwargs.get("created_at"),
         "elapsed_seconds": round(time.perf_counter() - started, 2),
         "chat_full": rotation["status"] == "waiting",
+        "title_pending": title_pending,
     }
 
 
