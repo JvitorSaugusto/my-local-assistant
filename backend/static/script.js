@@ -22,6 +22,9 @@ const API = {
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
   send: "/api/ai/",
   stop: (threadId) => `/api/ai/${threadId}/stop`,
+  size: (threadId) => `/api/ai/${threadId}/size`,
+  newChat: (threadId) => `/api/ai/${threadId}/new-chat`,
+  releaseTasks: (threadId) => `/api/ai/${threadId}/release-tasks`,
   rewind: (threadId) => `/api/ai/${threadId}/rewind`,
   batch: "/api/ai/batch/",
   upload: (threadId) => `/api/uploads/${encodeURIComponent(threadId)}`,
@@ -1127,6 +1130,7 @@ async function openChat(id) {
     if (state.activeId !== requestChatId) return;
     const messages = data?.messages ?? [];
     renderHistory(messages);
+    refreshChatSize(chat);
     
     const aiCount = messages.filter(m => m.role === "assistant").length;
     if (state.expectedAiCount[requestChatId] && aiCount >= state.expectedAiCount[requestChatId]) {
@@ -1145,6 +1149,9 @@ function showWelcome() {
   el.welcome.classList.remove("hidden");
   el.btnToggleTasks.classList.add("hidden");
   document.getElementById("btn-pin")?.classList.add("hidden");
+  const chatTools_ = document.getElementById("chat-tools");
+  if (chatTools_) chatTools_.style.display = "none";
+  document.getElementById("chat-banner")?.classList.add("hidden");
   el.chatTitle.textContent = "Assistente Local";
   closeDrawer();
 }
@@ -1452,6 +1459,99 @@ async function composeWithAttachments(text) {
     paths.map((path) => `- ${path}`).join("\n");
 }
 
+// ---- Tamanho do chat, botão "novo chat com resumo" e aviso de chat encerrado/aguardando ----
+function chatTools() {
+  let box = document.getElementById("chat-tools");
+  if (box) return box;
+  const actions = document.querySelector(".topbar-actions");
+  if (!actions) return null;
+  box = document.createElement("div");
+  box.id = "chat-tools";
+  box.style.cssText = "display:none;align-items:center;gap:6px;";
+  box.innerHTML =
+    '<span id="chat-size" style="font-size:12px;color:var(--muted);white-space:nowrap"></span>' +
+    '<button id="btn-new-chat-summary" class="top-btn" type="button" title="Continuar em um chat novo, com um resumo desta conversa">↪<span class="top-btn-label">Novo chat com resumo</span></button>';
+  actions.insertBefore(box, actions.firstChild);
+  box.querySelector("#btn-new-chat-summary").addEventListener("click", continueInNewChat);
+  return box;
+}
+
+function chatBanner() {
+  let banner = document.getElementById("chat-banner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "chat-banner";
+    banner.className = "msg-notice hidden";
+    banner.style.cssText = "margin:8px 16px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;";
+    el.messages.parentNode.insertBefore(banner, el.messages);
+  }
+  return banner;
+}
+
+function bannerButton(label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn btn-sm btn-primary";
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+async function refreshChatSize(chat) {
+  if (!chat?.thread_id) return;
+  const tools = chatTools();
+  const banner = chatBanner();
+  try {
+    const info = await api(API.size(chat.thread_id));
+    if (state.activeId !== chat.id) return;
+    if (tools) tools.style.display = "flex";
+    const sizeEl = document.getElementById("chat-size");
+    if (sizeEl) {
+      const limit = info.limit_tokens || 0;
+      const pct = limit > 0 ? Math.round((100 * info.tokens) / limit) : 0;
+      sizeEl.textContent = limit > 0 ? `≈${Math.round(info.tokens / 1000)}k/${Math.round(limit / 1000)}k` : `${info.turns} msgs`;
+      sizeEl.style.color = pct >= 80 ? "var(--warn)" : "var(--muted)";
+      sizeEl.title = limit > 0 ? `Tamanho estimado da conversa: ${pct}% do limite para trocar de chat.` : "Mensagens nesta conversa.";
+    }
+    banner.innerHTML = "";
+    if (info.rotated_to) {
+      banner.append(`Esta conversa foi encerrada. Continue em "${info.rotated_to.title}".`);
+      banner.append(bannerButton("Abrir o chat novo", async () => {
+        await loadChats();
+        const next = state.chats.find((item) => item.id === info.rotated_to.id || item.thread_id === info.rotated_to.thread_id);
+        if (next) await openChat(next.id);
+      }));
+      banner.classList.remove("hidden");
+    } else if (info.full && info.active_tasks.length) {
+      const ids = info.active_tasks.map((task) => `#${task.id}`).join(", ");
+      banner.append(`Chat cheio: vai continuar em um chat novo quando as tasks ${ids} terminarem.`);
+      banner.append(bannerButton("Liberar tasks presas", async () => {
+        if (!confirm("Use só se o worker caiu e as tasks ficaram presas. Elas serão marcadas como falhas; se editaram arquivos, confira o diff e use Reprovar.")) return;
+        try {
+          await api(API.releaseTasks(chat.thread_id), { method: "POST" });
+          await loadTasks(chat.thread_id);
+          refreshChatSize(chat);
+        } catch (err) { alert(err.message || "Não foi possível liberar as tasks."); }
+      }));
+      banner.classList.remove("hidden");
+    } else {
+      banner.classList.add("hidden");
+    }
+  } catch (err) { /* sem medidor: segue sem ele */ }
+}
+
+async function continueInNewChat() {
+  const chat = state.chats.find((item) => item.id === state.activeId);
+  if (!chat?.thread_id || state.sending) return;
+  if (!confirm("Continuar esta conversa em um chat novo, com um resumo de tudo? As tasks em aberto vão junto.")) return;
+  try {
+    const data = await api(API.newChat(chat.thread_id), { method: "POST", body: JSON.stringify({ workspace_path: state.workspacePath }) });
+    await switchToNewChat(chat, data);
+  } catch (err) {
+    alert(err.message || "Não foi possível criar o chat novo.");
+  }
+}
+
 // Chat cheio: o backend criou um chat novo (mesmo nome com número na frente, com resumo e as tasks em aberto).
 // Abre o chat novo e reenvia nele a mensagem que disparou a troca.
 async function switchToNewChat(oldChat, data) {
@@ -1515,6 +1615,7 @@ async function sendMessage(text) {
     if (state.activeId === chat.id) {
       scrollToBottom();
       if (!isMobile()) el.chatInput.focus();
+      refreshChatSize(chat);
     }
   }
 }
