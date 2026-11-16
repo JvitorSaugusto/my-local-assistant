@@ -83,7 +83,7 @@ from .node_helpers import (
     stamp_message,
 )
 from .executor import execute_task, missing_listed_files, run_checks, workspace_summary
-from .handoff import join_handoff, split_handoff
+from .handoff import SUMMARY_PROMPT, edited_files, join_handoff, split_handoff, strip_think, summary_transcript, text_of
 from .context_builder import build_task_dossier, estimate_tokens, format_report
 from .grounding import auto_check_documents
 from .rag_bridge import rag_context
@@ -2021,28 +2021,26 @@ def summarize_node(state: State):
     handoff, actual_summary = split_handoff(state.get("summary", ""))
     all_messages = state["messages"]
 
-    meaningful_messages = []
-
-    for msg in all_messages:
-        if msg.type == "tool":
-            continue
-        if msg.type == "ai" and getattr(msg, "tool_calls", None):
-            continue
-
-        meaningful_messages.append(msg)
-
-    recent_messages = meaningful_messages[-10:]
-
+    # resumo ESTRUTURADO e incremental: parte do resumo atual, vê só as mensagens de conversa recentes
+    # (cada uma cortada) e os arquivos mexidos; se o modelo falhar, mantém o resumo atual em vez de derrubar o turno
+    parts: list[str] = []
     if actual_summary:
-        prompt = f"Resumo atual da conversa: {actual_summary}\n\nLeia as novas mensagens acima e atualize o resumo para incluir esses novos assuntos. Mantenha em apenas um parágrafo conciso."
-    else:
-        prompt = "Resuma o assunto principal desta conversa acima em apenas um parágrafo conciso."
+        parts.append("RESUMO CORRENTE:\n" + actual_summary)
+    files = edited_files(all_messages)
+    if files:
+        parts.append("ARQUIVOS EDITADOS NA CONVERSA: " + ", ".join(files))
+    parts.append("MENSAGENS NOVAS:\n" + summary_transcript(all_messages, limit=10))
 
-    order = HumanMessage(content=prompt)
+    new_summary = ""
+    try:
+        response = standard_llm.invoke(
+            [SystemMessage(content=SUMMARY_PROMPT), HumanMessage(content="\n\n".join(parts))]
+        )
+        new_summary = strip_think(text_of(response.content))
+    except Exception as exc:
+        print(f"[🔄 RESUMO] Falha ao atualizar o resumo ({type(exc).__name__}: {exc}); mantendo o anterior.")
 
-    response = standard_llm.invoke(recent_messages + [order])
-
-    return {"summary": join_handoff(handoff, response.content), "enhanced_prompt": None}
+    return {"summary": join_handoff(handoff, new_summary or actual_summary), "enhanced_prompt": None}
 
 
 def return_tool_message(state: State):
