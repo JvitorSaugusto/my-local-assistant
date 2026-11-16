@@ -8,6 +8,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
+from backend.api.chat_rotation import maybe_rotate_chat
 from backend.api.history import build_clean_history
 from backend.graph.config import State
 from backend.graph.node_helpers import now_iso
@@ -36,6 +37,10 @@ class RewindPayload(BaseModel):
     message_id: str
 
 
+class NewChatPayload(BaseModel):
+    workspace_path: str = ""
+
+
 async def get_compiled_graph(request: Request) -> CompiledStateGraph:
     graph = getattr(request.app.state, "compiled_graph", None)
     if graph is None:
@@ -54,10 +59,20 @@ def _cancel_running(thread_id: str) -> bool:
     return False
 
 
+def _is_busy(thread_id: str) -> bool:
+    task = RUNNING.get(thread_id)
+    return bool(task and not task.done())
+
+
 @ai_router.post("/")
 async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
     thread_id = payload.thread_id
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+
+    # Chat cheio: continua em um chat novo (com resumo), mas só quando nenhuma task/execução do chat está ativa.
+    rotation = await maybe_rotate_chat(app_graph, thread_id, payload.workspace_path, busy=_is_busy(thread_id))
+    if rotation["status"] in ("rotated", "already"):
+        return {**rotation["response"], "carry_message": payload.message}
 
     inputs = cast(State, {
         "messages": [
@@ -92,12 +107,32 @@ async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
         "name": getattr(message, "name", None),
         "created_at": message.additional_kwargs.get("created_at"),
         "elapsed_seconds": round(time.perf_counter() - started, 2),
+        "chat_full": rotation["status"] == "waiting",
     }
 
 
 @ai_router.post("/{thread_id}/stop")
 async def stop_generation(thread_id: str):
     return {"stopped": _cancel_running(thread_id)}
+
+
+@ai_router.post("/{thread_id}/new-chat")
+async def continue_in_new_chat(thread_id: str, payload: NewChatPayload, app_graph: CompiledGraphDep):
+    """Continua esta conversa em um chat novo (com resumo), mesmo que ainda não tenha atingido o limite."""
+    rotation = await maybe_rotate_chat(
+        app_graph, thread_id, payload.workspace_path, busy=_is_busy(thread_id), force=True
+    )
+    status = rotation["status"]
+    if status in ("rotated", "already"):
+        return rotation["response"]
+    if status == "waiting":
+        raise HTTPException(
+            status_code=409,
+            detail="Há tasks ou uma execução em andamento neste chat. Aguarde terminarem para continuar em um chat novo.",
+        )
+    if status == "not_needed":
+        raise HTTPException(status_code=400, detail="Este chat ainda não tem conversa para continuar em um chat novo.")
+    raise HTTPException(status_code=500, detail=rotation.get("detail") or "Não foi possível criar o chat novo.")
 
 
 @ai_router.post("/{thread_id}/rewind")
