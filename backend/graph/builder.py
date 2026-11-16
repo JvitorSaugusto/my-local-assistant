@@ -1,6 +1,7 @@
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from .config import State
+from .assistant_tools import ASSISTANT_TOOLS
 from .ops_node import ops_node
 from .nodes import (
     after_enhancer_route,
@@ -45,7 +46,7 @@ def build_graph():
         run_tests,
     ]
 
-    builder.add_node("tools", ToolNode(all_tools))
+    builder.add_node("tools", ToolNode(all_tools + ASSISTANT_TOOLS))
 
     builder.add_node("router_node", router_node)
     
@@ -146,6 +147,7 @@ def build_graph():
         "tools", 
         return_tool_message, 
         {
+            "standard_node_20b": "standard_node_20b",
             "code_node": "code_node",
             "generate_node": "generate_node",
             "generate_dispatch_node": "generate_dispatch_node",
@@ -158,7 +160,15 @@ def build_graph():
     builder.add_edge("ops_node", END)
 
     builder.add_edge("note_refine_node", END)
-    builder.add_edge("standard_node_20b", END)
+    # modo Normal com ferramentas (web, data/hora, cálculo, memória): volta para o próprio nó depois de cada tool
+    builder.add_conditional_edges(
+        "standard_node_20b",
+        tools_condition,
+        {
+            "tools": "tools",
+            "__end__": END,
+        },
+    )
     
 
     return builder
