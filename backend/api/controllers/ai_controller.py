@@ -8,7 +8,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
-from backend.api.chat_rotation import maybe_rotate_chat
+from backend.api.chat_rotation import chat_size, maybe_rotate_chat, release_active_tasks
 from backend.api.history import build_clean_history
 from backend.graph.config import State
 from backend.graph.node_helpers import now_iso
@@ -133,6 +133,23 @@ async def continue_in_new_chat(thread_id: str, payload: NewChatPayload, app_grap
     if status == "not_needed":
         raise HTTPException(status_code=400, detail="Este chat ainda não tem conversa para continuar em um chat novo.")
     raise HTTPException(status_code=500, detail=rotation.get("detail") or "Não foi possível criar o chat novo.")
+
+
+@ai_router.get("/{thread_id}/size")
+async def get_chat_size(thread_id: str, app_graph: CompiledGraphDep):
+    """Tamanho estimado do chat, se está cheio, tasks ativas e, se já foi trocado, para qual chat."""
+    try:
+        return await chat_size(app_graph, thread_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Não foi possível medir o chat: {exc}")
+
+
+@ai_router.post("/{thread_id}/release-tasks")
+async def release_stuck_tasks(thread_id: str):
+    """Libera tasks presas em queued/running (worker caiu) para o chat poder continuar em um chat novo."""
+    if _is_busy(thread_id):
+        raise HTTPException(status_code=409, detail="Há uma execução ativa neste chat. Use Parar antes de liberar as tasks.")
+    return {"released": await release_active_tasks(thread_id)}
 
 
 @ai_router.post("/{thread_id}/rewind")
