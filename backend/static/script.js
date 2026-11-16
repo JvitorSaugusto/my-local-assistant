@@ -2370,6 +2370,7 @@ document.getElementById("btn-copy-prompt").addEventListener("click", async (even
 el.btnImportTasks.addEventListener('click', () => {
   // Limpa o textarea antes de abrir o modal
   el.inputImportJson.value = '';
+  updateImportPreview();
   // Abre o modal
   el.importTasksModal.showModal();
   refreshTaskUploads();
@@ -2408,53 +2409,207 @@ function extractJsonText(raw) {
   return start >= 0 && end > start ? body.slice(start, end + 1) : body;
 }
 
-el.importTasksForm.addEventListener('submit', async (event) => {
-  // Previne o envio padrão do formulário
-  event.preventDefault();
-  
-  try {
-    // Tenta fazer o parse do JSON
-    const parsed = JSON.parse(extractJsonText(el.inputImportJson.value));
-    
-    // Garante que seja um array
-    const tasksArray = Array.isArray(parsed) ? parsed : [parsed];
-    
-    // Pega o thread_id ativo
-    const chat = state.chats.find(c => c.id === state.activeId);
-    
-    if (!chat) {
-      alert('Nenhuma conversa ativa encontrada.');
-      return;
+// ---- Importação tolerante: arquivo .json, correção automática, erro com linha/coluna, prévia e importação parcial ----
+function repairJsonText(text) {
+  let out = String(text).replace(/^﻿/, "").replace(/[​-‍⁠]/g, "");
+  // aspas curvas usadas como delimitadores (depois de [ { , : ou antes de : , ] })
+  out = out.replace(/([\[{,:]\s*)[“”]/g, '$1"').replace(/[“”](\s*[:,\]}])/g, '"$1');
+  // quebras de linha/tab reais dentro de strings viram \n e \t
+  let res = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of out) {
+    if (!inString) {
+      if (ch === '"') inString = true;
+      res += ch;
+      continue;
     }
-    
-    // Faz o POST para criar as tarefas em batch
+    if (escaped) { escaped = false; res += ch; continue; }
+    if (ch === "\\") { escaped = true; res += ch; continue; }
+    if (ch === '"') { inString = false; res += ch; continue; }
+    if (ch === "\n") { res += "\\n"; continue; }
+    if (ch === "\r") continue;
+    if (ch === "\t") { res += "\\t"; continue; }
+    res += ch;
+  }
+  // vírgula sobrando antes de ] ou }
+  return res.replace(/,(\s*[\]}])/g, "$1");
+}
+
+function describeJsonError(text, error) {
+  const msg = String((error && error.message) || error);
+  let pos = null;
+  const byPos = msg.match(/position (\d+)/i);
+  const byLine = msg.match(/line (\d+) column (\d+)/i);
+  if (byPos) pos = Number(byPos[1]);
+  else if (byLine) {
+    const lines = text.split("\n");
+    pos = lines.slice(0, Number(byLine[1]) - 1).reduce((acc, l) => acc + l.length + 1, 0) + Number(byLine[2]) - 1;
+  }
+  if (pos == null || pos > text.length) return "JSON inválido: " + msg;
+  const before = text.slice(0, pos);
+  const line = before.split("\n").length;
+  const col = pos - before.lastIndexOf("\n");
+  const snippet = (text.slice(Math.max(0, pos - 40), pos) + "⟦aqui⟧" + text.slice(pos, pos + 40)).replace(/\n/g, " ");
+  return `JSON inválido na linha ${line}, coluna ${col}: ${msg}\n…${snippet}…`;
+}
+
+function parseImportJson(raw) {
+  const text = extractJsonText(raw);
+  let data;
+  let repaired = false;
+  try {
+    data = JSON.parse(text);
+  } catch (first) {
+    try {
+      data = JSON.parse(repairJsonText(text));
+      repaired = true;
+    } catch (second) {
+      throw new Error(describeJsonError(text, first));
+    }
+  }
+  if (data && !Array.isArray(data) && Array.isArray(data.tasks)) data = data.tasks;
+  const tasks = (Array.isArray(data) ? data : [data]).filter((t) => t && typeof t === "object" && !Array.isArray(t));
+  if (!tasks.length) throw new Error("O JSON não tem nenhuma tarefa (objetos com title, steps, verify...).");
+  return { tasks, repaired };
+}
+
+function describeApiError(item, taskNumber) {
+  const loc = (item.loc || []).filter((x) => x !== "body");
+  const out = [];
+  let i = 0;
+  if (typeof loc[0] === "number") { out.push(`task ${taskNumber != null ? taskNumber : loc[0] + 1}`); i = 1; }
+  while (i < loc.length) {
+    const part = loc[i];
+    if ((part === "steps" || part === "verify") && typeof loc[i + 1] === "number") {
+      let label = `${part === "steps" ? "passo" : "verificação"} ${loc[i + 1] + 1}`;
+      i += 2;
+      if (typeof loc[i] === "string" && i < loc.length - 1) { label += ` (${loc[i]})`; i += 1; }
+      out.push(label);
+      continue;
+    }
+    out.push(String(part));
+    i += 1;
+  }
+  return `${out.join(", ")}: ${item.msg}`;
+}
+
+function formatApiError(body, taskNumber) {
+  const detail = body && body.detail;
+  if (Array.isArray(detail)) return detail.slice(0, 5).map((d) => "• " + describeApiError(d, taskNumber)).join("\n");
+  return typeof detail === "string" ? detail : "";
+}
+
+function updateImportPreview() {
+  const box = document.getElementById("import-preview");
+  if (!box) return;
+  const raw = el.inputImportJson.value.trim();
+  if (!raw) { box.textContent = ""; return; }
+  try {
+    const { tasks, repaired } = parseImportJson(raw);
+    box.style.color = "var(--ok)";
+    const list = tasks.map((t, i) => `${i + 1}. ${t.title || "sem título"} [${Array.isArray(t.steps) && t.steps.length ? t.steps.length + " passo(s)" : "livre/IA"}]`);
+    box.textContent = `✓ ${tasks.length} tarefa(s)${repaired ? " (JSON corrigido automaticamente)" : ""}\n` + list.join("\n");
+  } catch (error) {
+    box.style.color = "var(--danger)";
+    box.textContent = "✗ " + error.message;
+  }
+}
+
+(function setupImportHelpers() {
+  const area = el.inputImportJson;
+  if (!area) return;
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "btn btn-ghost btn-sm";
+  pick.textContent = "Escolher arquivo .json";
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,.txt,application/json,text/plain";
+  input.hidden = true;
+  const load = async (file) => {
+    if (!file) return;
+    area.value = await file.text();
+    updateImportPreview();
+  };
+  pick.addEventListener("click", () => input.click());
+  input.addEventListener("change", async () => { await load(input.files[0]); input.value = ""; });
+  bar.append(pick, input);
+  area.parentNode.insertBefore(bar, area);
+  const preview = document.createElement("div");
+  preview.id = "import-preview";
+  preview.style.cssText = "margin-top:6px;font-size:12.5px;white-space:pre-wrap;max-height:140px;overflow:auto;";
+  area.insertAdjacentElement("afterend", preview);
+  area.addEventListener("input", updateImportPreview);
+  area.addEventListener("dragover", (event) => event.preventDefault());
+  area.addEventListener("drop", async (event) => {
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    if (!file) return;
+    event.preventDefault();
+    await load(file);
+  });
+})();
+
+el.importTasksForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const chat = state.chats.find(c => c.id === state.activeId);
+  if (!chat) {
+    alert('Nenhuma conversa ativa encontrada.');
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = parseImportJson(el.inputImportJson.value);
+  } catch (error) {
+    alert(error.message);
+    return;
+  }
+  const tasks = parsed.tasks;
+
+  const post = async (list) => {
     const response = await fetch(API.createTasksBatch(chat.thread_id), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(tasksArray)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(list)
     });
-    
-    if (response.ok) {
-      // Carrega as tarefas atualizadas
-      loadTasks(chat.thread_id);
-      // Fecha o modal
-      el.importTasksModal.close();
-      dryRunImportedTasks(tasksArray, chat.thread_id);
-    } else {
-      let detail = '';
-      try {
-        const body = await response.json();
-        detail = Array.isArray(body?.detail)
-          ? body.detail.slice(0, 3).map((d) => `• ${(d.loc || []).filter((x) => x !== 'body').join('.')}: ${d.msg}`).join('\n')
-          : (body?.detail || '');
-      } catch {}
-      alert('Erro ao importar tarefas.' + (detail ? '\n\n' + detail : ''));
-      console.error('Erro na importação:', response);
+    let body = null;
+    try { body = await response.json(); } catch {}
+    return { ok: response.ok, body };
+  };
+
+  try {
+    let imported = tasks;
+    const failures = [];
+    const all = await post(tasks);
+    if (!all.ok) {
+      if (tasks.length < 2) {
+        alert('Erro ao importar tarefas.\n\n' + formatApiError(all.body, 1));
+        return;
+      }
+      // o lote foi recusado: importa as boas uma a uma e relata só as que têm problema
+      imported = [];
+      for (let i = 0; i < tasks.length; i++) {
+        const one = await post([tasks[i]]);
+        if (one.ok) imported.push(tasks[i]);
+        else failures.push(`#${i + 1} "${tasks[i].title || 'sem título'}":\n${formatApiError(one.body, i + 1) || 'erro desconhecido'}`);
+      }
+      if (!imported.length) {
+        alert('Nenhuma tarefa foi importada.\n\n' + failures.join('\n\n'));
+        return;
+      }
     }
+    loadTasks(chat.thread_id);
+    el.importTasksModal.close();
+    if (failures.length) {
+      alert(`${imported.length} tarefa(s) importada(s) e ${failures.length} com erro (corrija e importe só essas):\n\n` + failures.join('\n\n'));
+    }
+    dryRunImportedTasks(imported, chat.thread_id);
   } catch (error) {
-    alert('Erro ao fazer parse do JSON. Verifique se o formato está correto.');
-    console.error('Erro de parsing:', error);
+    alert('Não foi possível enviar as tarefas ao servidor.');
+    console.error('Erro na importação:', error);
   }
 });
