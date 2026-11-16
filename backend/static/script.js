@@ -23,6 +23,7 @@ const API = {
   send: "/api/ai/",
   stop: (threadId) => `/api/ai/${threadId}/stop`,
   size: (threadId) => `/api/ai/${threadId}/size`,
+  live: (threadId) => `/api/ai/${threadId}/live`,
   newChat: (threadId) => `/api/ai/${threadId}/new-chat`,
   releaseTasks: (threadId) => `/api/ai/${threadId}/release-tasks`,
   rewind: (threadId) => `/api/ai/${threadId}/rewind`,
@@ -1568,6 +1569,59 @@ async function switchToNewChat(oldChat, data) {
   return true;
 }
 
+// ---- Raciocínio ao vivo: balão "Pensando…" que se atualiza enquanto os modelos trabalham ----
+function liveThoughtsText(segments, maxChars = 12000) {
+  const text = (segments || []).map((seg) => {
+    const lines = ["▸ " + (seg.label || "Modelo") + (seg.done ? "" : " …")];
+    if (seg.thought) lines.push(seg.thought);
+    if (seg.text) lines.push(seg.text);
+    (seg.tools || []).forEach((line) => lines.push(line));
+    if (seg.result) lines.push("← " + seg.result);
+    return lines.join("\n");
+  }).join("\n\n");
+  return text.length > maxChars ? "…" + text.slice(-maxChars) : text;
+}
+
+function startLiveThoughts(chat, typing) {
+  const body = typing && typing.querySelector(".msg-body");
+  const row = typing && typing.querySelector(".typing-row");
+  if (!body || !row) return { stop() {} };
+  const box = document.createElement("details");
+  box.className = "msg-thoughts live-thoughts";
+  box.open = true;
+  box.hidden = true;
+  box.innerHTML = `<summary>${ICON.brain}<span class="live-title">Pensando…</span></summary><div class="msg-thoughts-body live-body" style="white-space:pre-wrap;max-height:320px;overflow:auto;font-size:13px;"></div>`;
+  body.insertBefore(box, row);
+  const out = box.querySelector(".live-body");
+  const title = box.querySelector(".live-title");
+  let seq = -1;
+  let stopped = false;
+  let timer = null;
+
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const data = await api(API.live(chat.thread_id) + "?after=" + seq);
+      if (!stopped && data && data.changed !== false) {
+        seq = data.seq;
+        const segs = data.segments || [];
+        if (segs.length) {
+          const nearBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+          box.hidden = false;
+          out.textContent = liveThoughtsText(segs);
+          const last = segs[segs.length - 1];
+          title.textContent = (last.label || "Pensando") + "…";
+          if (nearBottom) out.scrollTop = out.scrollHeight;
+          scrollToBottom();
+        }
+      }
+    } catch (err) { /* sem balão ao vivo nesta rodada; a resposta final chega normalmente */ }
+    if (!stopped) timer = setTimeout(tick, 800);
+  };
+  timer = setTimeout(tick, 400);
+  return { stop() { stopped = true; clearTimeout(timer); } };
+}
+
 async function sendMessage(text) {
   if (!text.trim() || state.sending) return;
   if (state.activeId == null) {
@@ -1584,6 +1638,7 @@ async function sendMessage(text) {
   appendMessage("user", text, null, { created_at: new Date().toISOString() });
   scrollToBottom();
   const typing = appendTyping();
+  const live = startLiveThoughts(chat, typing);
 
   try {
     const data = await api(API.send, { method: "POST", body: JSON.stringify({ thread_id: chat.thread_id, message: text, workspace_path: state.workspacePath }) });
@@ -1609,6 +1664,7 @@ async function sendMessage(text) {
       }
     }
   } finally {
+    live.stop();
     state.sending = false;
     state.stopRequested = false;
     setSendButtonMode(false);
