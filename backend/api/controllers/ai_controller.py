@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from backend.api.chat_title import schedule_title
 from backend.api.chat_rotation import chat_size, maybe_rotate_chat, release_active_tasks
 from backend.api.history import build_clean_history
+from backend.api.live_thoughts import live_snapshot, run_graph_live
 from backend.graph.config import State
 from backend.graph.node_helpers import now_iso
 
@@ -86,7 +87,8 @@ async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
     })
 
     started = time.perf_counter()
-    task = asyncio.create_task(app_graph.ainvoke(inputs, config=config))
+    # run_graph_live = ainvoke + buffer do raciocínio ao vivo (GET /{thread_id}/live); LIVE_THOUGHTS=0 volta ao ainvoke puro
+    task = asyncio.create_task(run_graph_live(app_graph, inputs, config, thread_id))
     RUNNING[thread_id] = task
 
     try:
@@ -116,6 +118,12 @@ async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
         "chat_full": rotation["status"] == "waiting",
         "title_pending": title_pending,
     }
+
+
+@ai_router.get("/{thread_id}/live")
+async def live_thoughts(thread_id: str, after: int = -1):
+    """Raciocínio/saída parcial da execução em andamento (o front consulta enquanto o POST não volta)."""
+    return live_snapshot(thread_id, after)
 
 
 @ai_router.post("/{thread_id}/stop")
