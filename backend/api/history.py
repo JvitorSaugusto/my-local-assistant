@@ -60,6 +60,8 @@ def build_clean_history(messages) -> list[dict]:
         name = getattr(msg, "name", "") or ""
         if msg.type == "human":
             turns.append({"human": None if name in HIDDEN_NAMES else msg, "ai": []})
+        elif msg.type == "ai" and str(msg.additional_kwargs.get("message_tag") or "").startswith("chat_handoff"):
+            turns.append({"human": None, "ai": [msg]})
         elif msg.type == "ai" and name != "Qwen3-Coder (Context Gatherer)":
             if not turns:
                 turns.append({"human": None, "ai": []})
