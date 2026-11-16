@@ -1452,6 +1452,22 @@ async function composeWithAttachments(text) {
     paths.map((path) => `- ${path}`).join("\n");
 }
 
+// Chat cheio: o backend criou um chat novo (mesmo nome com número na frente, com resumo e as tasks em aberto).
+// Abre o chat novo e reenvia nele a mensagem que disparou a troca.
+async function switchToNewChat(oldChat, data) {
+  const target = data.new_chat || {};
+  await loadChats();
+  const next = state.chats.find((item) => item.id === target.id || item.thread_id === target.thread_id);
+  if (!next) return false;
+  const mode = state.routeModes[String(oldChat.id)];
+  if (mode) { state.routeModes[String(next.id)] = mode; saveRouteModes(); }
+  await openChat(next.id);
+  appendNotice(`Conversa anterior cheia: você foi levado para "${next.title}", que começa com um resumo de tudo.`);
+  const carry = data.carry_message;
+  if (carry) setTimeout(() => sendMessage(carry), 0); // roda depois de o envio atual liberar state.sending
+  return true;
+}
+
 async function sendMessage(text) {
   if (!text.trim() || state.sending) return;
   if (state.activeId == null) {
@@ -1473,12 +1489,14 @@ async function sendMessage(text) {
     const data = await api(API.send, { method: "POST", body: JSON.stringify({ thread_id: chat.thread_id, message: text, workspace_path: state.workspacePath }) });
     if (state.activeId !== chat.id) return;
     typing.remove();
+    if (data?.new_chat && (await switchToNewChat(chat, data))) return;
     if (data?.cancelled) {
       await refreshMessages(chat);
       appendNotice("Resposta interrompida. Você pode editar sua mensagem e enviar de novo.");
     } else if (!(await refreshMessages(chat))) {
       appendMessage("assistant", data?.content ?? data?.message ?? "", data?.name ?? data?.model, data || {});
     }
+    if (data?.chat_full) appendNotice("Esta conversa está ficando longa: ela continua em um chat novo (com resumo) assim que as tarefas terminarem.");
   } catch (err) {
     if (state.activeId === chat.id) {
       typing.remove();
