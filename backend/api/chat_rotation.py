@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.graph.handoff import join_handoff, plain_summary
+from backend.graph.handoff import edited_files, join_handoff, plain_summary
 
 HANDOFF_TAG = "chat_handoff"
 ACTIVE_STATUSES = ("queued", "running")
@@ -253,7 +253,9 @@ async def _llm_summary(prev: str, transcript: str) -> str:
 async def build_handoff_text(old_title: str, old_summary: str, messages: list[Any], tasks: list[dict]) -> str:
     limit = max_handoff_chars()
     block = _clip(tasks_block(tasks), limit // 2)
-    budget = max(400, limit - len(block) - 60)
+    files = edited_files(messages)
+    files_line = _clip("Arquivos editados nesta conversa: " + ", ".join(files), 300) if files else ""
+    budget = max(400, limit - len(block) - len(files_line) - 60)
     pairs = meaningful_messages(messages)
     prev = plain_summary(old_summary)
     body = ""
@@ -265,7 +267,7 @@ async def build_handoff_text(old_title: str, old_summary: str, messages: list[An
     if not body:
         body = fallback_summary(prev, pairs)
     head = f"Chat anterior: «{old_title}»."
-    return "\n\n".join(part for part in (head, _clip(body, budget), block) if part)
+    return "\n\n".join(part for part in (head, _clip(body, budget), files_line, block) if part)
 
 
 async def _chat_title(thread_id: str) -> str | None:
@@ -518,6 +520,54 @@ async def _rotate(app_graph: Any, thread_id: str, workspace_path: str, values: d
 
     _log(f"chat {thread_id} cheio (≈{tokens // 1000}k tokens, {turns} msgs) -> novo chat «{new_title}» ({new_thread}); {moved} task(s) movida(s)")
     return _response(notice, now, marker, time.perf_counter() - started)
+
+
+async def chat_size(app_graph: Any, thread_id: str) -> dict:
+    """Tamanho do chat para a tela: tokens estimados, limite, se está cheio, tasks ativas e (se já foi trocado) o chat novo."""
+    state = await app_graph.aget_state({"configurable": {"thread_id": thread_id}})
+    values = state.values or {}
+    messages = list(values.get("messages") or [])
+    tokens = chat_tokens(messages, values.get("summary") or "")
+    turns = count_turns(messages)
+    marker = find_handoff(messages)
+    tasks = await _load_tasks(thread_id)
+    return {
+        "tokens": tokens,
+        "turns": turns,
+        "limit_tokens": max_tokens(),
+        "limit_messages": max_messages(),
+        "full": is_full(tokens, turns),
+        "rotated_to": (
+            {"id": marker.get("chat_id"), "thread_id": marker.get("thread_id"), "title": marker.get("title")}
+            if marker
+            else None
+        ),
+        "active_tasks": [{"id": t["id"], "title": t["title"], "status": t["status"]} for t in tasks if t["status"] in ACTIVE_STATUSES],
+    }
+
+
+async def release_active_tasks(thread_id: str) -> list[int]:
+    """Marca como 'failed' as tasks do chat presas em 'queued'/'running' (ex.: o worker caiu), liberando a troca de chat."""
+    from sqlalchemy import update
+
+    from backend.database.config import async_session_env
+    from backend.database.models import TaskModel
+
+    ids = [t["id"] for t in await _load_tasks(thread_id) if t["status"] in ACTIVE_STATUSES]
+    if not ids:
+        return []
+    async with async_session_env() as db:
+        await db.execute(
+            update(TaskModel)
+            .where(TaskModel.id.in_(ids), TaskModel.thread_id == thread_id, TaskModel.status.in_(ACTIVE_STATUSES))
+            .values(
+                status="failed",
+                last_error="Liberada manualmente (o worker parou ou a execução ficou presa). "
+                "Se ela chegou a editar arquivos, confira o diff e use Reprovar para desfazer.",
+            )
+        )
+        await db.commit()
+    return ids
 
 
 async def maybe_rotate_chat(app_graph: Any, thread_id: str, workspace_path: str = "", *, busy: bool = False,
