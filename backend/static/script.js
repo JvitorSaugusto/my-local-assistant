@@ -2402,7 +2402,10 @@ el.btnCancelImport.addEventListener('click', () => {
 function extractJsonText(raw) {
   // Aceita JSON colado dentro de bloco ```json e com texto antes/depois: pega do primeiro [ ou { ao último ] ou }.
   const text = String(raw || "").trim();
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  // JSON puro (como no arquivo .json) nunca passa por heurística: o conteúdo das tasks tem ``` dentro das strings
+  try { JSON.parse(text); return text; } catch { /* segue para a extração tolerante */ }
+  // só trata como bloco de código se o texto COMEÇAR com a cerca (``` no meio de uma string não conta)
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/i);
   const body = (fenced ? fenced[1] : text).trim();
   const start = body.search(/[\[{]/);
   const end = Math.max(body.lastIndexOf("]"), body.lastIndexOf("}"));
