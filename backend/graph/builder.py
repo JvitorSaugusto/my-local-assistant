@@ -3,6 +3,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from .config import State
 from .assistant_tools import ASSISTANT_TOOLS
 from .ops_node import ops_node
+from .audit_node import audit_node
 from .nodes import (
     after_enhancer_route,
     context_gatherer_node,
@@ -60,6 +61,7 @@ def build_graph():
     builder.add_node("heavy_analyzer_node", heavy_analyzer_node)
     builder.add_node("summarize_node", summarize_node)
     builder.add_node("ops_node", ops_node)
+    builder.add_node("audit_node", audit_node)
     builder.add_node("enhancer_node", enhancer_node)
     
     builder.add_conditional_edges(
@@ -85,6 +87,7 @@ def build_graph():
             "heavy_analyzer_node": "heavy_analyzer_node",
             "context_gatherer_node": "context_gatherer_node",
             "ops_node": "ops_node",
+            "audit_node": "audit_node",
             "enhancer_node": "enhancer_node",
         }
     )
@@ -158,6 +161,7 @@ def build_graph():
     
     builder.add_edge("heavy_analyzer_node", END)
     builder.add_edge("ops_node", END)
+    builder.add_edge("audit_node", END)
 
     builder.add_edge("note_refine_node", END)
     # modo Normal com ferramentas (web, data/hora, cálculo, memória): volta para o próprio nó depois de cada tool

@@ -56,6 +56,7 @@ from .prompts import (
 from .task_journal import begin_journal, journal_end, journal_rollback, syntax_problems_for_paths
 from .task_commit import capture_originals, commit_task
 from .ops_core import detect_ops_intent
+from .audit_core import parse_command as parse_audit_command
 from .tools import EDIT_PHASE_AFTER_ROUNDS, run_tests
 from .node_helpers import (
     _check_python_syntax,
@@ -118,6 +119,10 @@ def router_node(state: State):
             )
         else:
             last_msg = str(raw_content)
+
+    if not (state.get("enhanced_prompt") or state.get("active_generate_task")) and parse_audit_command(last_msg) is not None:
+        print("🔀 [ROUTER] Rota: 'AUDIT' (auditoria determinística)")
+        return {"actual_route": "AUDIT", "enhance_before_heavy": False}
 
     ops_text = None if (state.get("enhanced_prompt") or state.get("active_generate_task")) else detect_ops_intent(last_msg, state["messages"])
     if ops_text is not None:
@@ -2086,6 +2091,8 @@ def route_decision(state: State):
             print("🔀 [EDGE] Rota HEAVY sem tools. Indo para: heavy_analyzer_node")
             return "heavy_analyzer_node"
 
+    elif destiny == "AUDIT":
+        return "audit_node"
     elif destiny == "OPS":
         return "ops_node"
     elif destiny == "NOTES":
