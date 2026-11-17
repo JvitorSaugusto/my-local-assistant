@@ -479,6 +479,7 @@ _CONF_PT = {"high": "alta", "medium": "média", "low": "baixa"}
 AUDIT_HELP = (
     "**Auditoria determinística** (ruff, vulture, radon, bandit e duplicação por AST, sem LLM)\n\n"
     "- `@audit` — audita o projeto todo\n"
+    "- Também vale em português: `Audite o arquivo nodes.py`, `Audite os arquivos a.py, b.py e c.py`, `Audite a pasta backend/api`, `Audite o que mudou`\n"
     "- `@audit diff` — só o que mudou (git diff + arquivos novos); `@audit diff base=main` compara com a branch\n"
     "- `@audit backend/api backend/graph/nodes.py` — só essas pastas/arquivos\n"
     "- `min=medium` — mostra só achados com confiança média ou alta (padrão: todos)\n"
@@ -490,11 +491,15 @@ AUDIT_HELP = (
 
 
 def parse_command(text: str) -> dict | None:
-    """None se a mensagem não é um comando @audit. Senão {cmd, ...}."""
+    """None se a mensagem não é um comando de auditoria (@audit ou pedido em linguagem natural)."""
     text = str(text or "")
+    if not AUDIT_TAG.search(text[:TAG_LOOKAHEAD]):
+        return _parse_natural(text)
+    return _parse_tagged(text)
+
+
+def _parse_tagged(text: str) -> dict | None:
     zone = text[:TAG_LOOKAHEAD]
-    if not AUDIT_TAG.search(zone):
-        return None
     rest = (AUDIT_TAG.sub("", zone, count=1) + text[TAG_LOOKAHEAD:]).strip()
     tokens = rest.split()
     head = tokens[0].lower() if tokens else ""
@@ -525,6 +530,47 @@ def parse_command(text: str) -> dict | None:
     return cmd
 
 
+_NL_START = re.compile(
+    r"^\s*(?:por favor[,\s]+)?(?:(?:pode|poderia|consegue)\s+)?"
+    r"(?:audite|auditar|(?:fa[çc]a|fazer|rode|rodar|execute|executar)\s+(?:uma\s+)?auditoria)\b(?P<rest>.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_NL_STOP = {"o", "a", "os", "as", "e", "um", "uma", "do", "da", "dos", "das", "de", "no", "na", "nos", "nas", "em", "para",
+            "pra", "por", "favor", "me", "arquivo", "arquivos", "codigo", "código", "fonte", "somente", "apenas", "só", "so"}
+_NL_FOLDER = {"pasta", "pastas", "diretório", "diretorio", "diretórios", "diretorios"}
+_NL_WHOLE = {"projeto", "repositório", "repositorio", "tudo", "inteiro", "completo", "completa"}
+_NL_DIFF = {"mudou", "mudaram", "alterado", "alterados", "alteração", "alterações", "alteracao", "alteracoes", "diff",
+            "incremental", "novos", "modificado", "modificados", "modificações", "modificacoes"}
+
+
+def _parse_natural(text: str) -> dict | None:
+    """'Audite o arquivo x.py', 'audite os arquivos a.py, b.py e c.py', 'audite a pasta backend/api', 'audite o projeto',
+    'audite o que mudou'. Só vale se houver caminho, 'projeto/tudo' ou 'mudou': senão a mensagem segue para o LLM."""
+    if len(text) > 400:
+        return None
+    match = _NL_START.match(text)
+    if not match:
+        return None
+    paths: list[str] = []
+    folder_mode = whole = diff = False
+    for raw in re.split(r"[\s,;]+", match.group("rest")):
+        tok = raw.strip("\"'`()[]<>.,;:!?")
+        low = tok.lower()
+        if not tok or low in _NL_STOP:
+            continue
+        if low in _NL_FOLDER:
+            folder_mode = True
+        elif low in _NL_WHOLE:
+            whole = True
+        elif low in _NL_DIFF:
+            diff = True
+        elif "/" in tok or tok.endswith(CODE_EXT) or folder_mode:
+            paths.append(tok)
+    if not (paths or whole or diff):
+        return None
+    return {"cmd": "run", "incremental": diff, "base": None, "min": "low", "tools": None, "paths": paths}
+
+
 def expand_paths(workspace: str, tokens: list[str]) -> tuple[list[str], list[str]]:
     """Pastas viram a lista de arquivos de código dentro delas. Devolve (arquivos, erros)."""
     root = Path(workspace).resolve()
@@ -544,7 +590,13 @@ def expand_paths(workspace: str, tokens: list[str]) -> tuple[list[str], list[str
             prefix = rel + "/" if rel else ""
             files.extend(f for f in project_code_files(str(root)) if f.startswith(prefix))
         else:
-            errors.append(f"{tok}: não encontrado (ou não é .py/.js)")
+            matches = [f for f in project_code_files(str(root)) if f == rel or f.endswith("/" + rel)] if rel else []
+            if len(matches) == 1:
+                files.append(matches[0])
+            elif matches:
+                errors.append(f"{tok}: ambíguo ({', '.join(matches[:4])}); use o caminho completo")
+            else:
+                errors.append(f"{tok}: não encontrado (ou não é .py/.js)")
     return sorted(set(files)), errors
 
 

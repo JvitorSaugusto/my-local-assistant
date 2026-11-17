@@ -188,3 +188,37 @@ class ChatCommandTests(unittest.TestCase):
         self.assertIn("1 alta", text)
         self.assertIn("@audit tasks", text)
         self.assertIn("Nenhum achado", ac.format_report({"findings": [], "tools": {}, "files": 0}))
+
+
+class NaturalLanguageTests(unittest.TestCase):
+    def test_single_and_multiple_files(self):
+        one = ac.parse_command("Audite o arquivo backend/graph/executor.py")
+        self.assertEqual((one["cmd"], one["paths"], one["incremental"]), ("run", ["backend/graph/executor.py"], False))
+        many = ac.parse_command("audite os arquivos executor.py, task_guards.py e <task_journal.py>.")
+        self.assertEqual(many["paths"], ["executor.py", "task_guards.py", "task_journal.py"])
+        self.assertEqual(ac.parse_command("Por favor, poderia auditar x.js")["paths"], ["x.js"])
+        self.assertEqual(ac.parse_command("faça uma auditoria do arquivo a.py")["paths"], ["a.py"])
+
+    def test_folders_project_and_changes(self):
+        self.assertEqual(ac.parse_command("Audite a pasta backend/api")["paths"], ["backend/api"])
+        self.assertEqual(ac.parse_command("audite a pasta rag")["paths"], ["rag"])
+        self.assertEqual(ac.parse_command("Audite o projeto")["paths"], [])
+        diff = ac.parse_command("Audite o que mudou")
+        self.assertEqual((diff["cmd"], diff["incremental"], diff["paths"]), ("run", True, []))
+
+    def test_unrelated_messages_are_left_to_the_llm(self):
+        self.assertIsNone(ac.parse_command("Audite esta função e me explique o resultado"))
+        self.assertIsNone(ac.parse_command("faça uma auditoria"))
+        self.assertIsNone(ac.parse_command("preciso que você audite x.py " + "y" * 450))
+        self.assertIsNone(ac.parse_command("o que é uma auditoria de código?"))
+
+    def test_expand_paths_resolves_bare_file_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "pkg").mkdir()
+            Path(root, "pkg", "unico.py").write_text("x = 1\n", encoding="utf-8")
+            Path(root, "pkg", "dup.py").write_text("x = 1\n", encoding="utf-8")
+            Path(root, "dup.py").write_text("x = 1\n", encoding="utf-8")
+            files, errors = ac.expand_paths(root, ["unico.py", "dup.py", "pkg/dup.py", "faltando.py"])
+        self.assertEqual(files, ["dup.py", "pkg/dup.py", "pkg/unico.py"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("faltando.py", errors[0])
