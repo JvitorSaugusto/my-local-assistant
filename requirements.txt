@@ -96,3 +96,8 @@ xxhash==4.0.1
 zstandard==0.25.0
 reportlab>=4.0
 pypdf>=5.0
+ruff>=0.6
+mypy>=1.10
+vulture>=2.11
+radon>=6.0
+bandit>=1.7
