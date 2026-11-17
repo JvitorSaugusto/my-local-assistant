@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from backend.api.schemas import ChatRequestSchema, TaskCreateSchema
 from backend.database.models import AiChatModel, TaskModel
+from backend.api.task_split import expand_tasks
 
 
 class ChatService:
@@ -69,8 +70,8 @@ class TaskService:
             
     async def create(self, tasks_data: list[TaskCreateSchema], thread_id: str) -> list[TaskModel]:
         new_tasks = [
-            TaskModel(**task.model_dump(), thread_id=thread_id) 
-            for task in tasks_data
+            TaskModel(**data, thread_id=thread_id) 
+            for data in expand_tasks(tasks_data)
         ]
         
         self.db.add_all(new_tasks)
