@@ -1,0 +1,619 @@
+"""Auditoria determinística de código (base do modo Auditoria do Heavy). Sem LLM.
+
+Fluxo: ferramentas (ruff, vulture, radon, bandit + duplicação por hash de AST) -> achados estruturados -> validação
+contra o código REAL (arquivo, linha, trecho lidos do disco) -> filtro de falsos positivos já registrados -> tasks.
+
+Achado: {id, file, line, end_line, snippet, kind, severity, confidence, tool, rule, message, note}
+  kind: bug | dead_code | duplication | complexity | security | optimization
+  severity: low | medium | high | critical     confidence: low | medium | high
+O `id` é estável (não depende do número da linha), então o registro de falsos positivos sobrevive a edições.
+
+Ferramenta ausente ou com erro => status no resultado, nunca derruba a auditoria.
+.env (opcionais): AUDIT_DIR (padrão: ~/.assistente_audit/<hash do projeto>), AUDIT_TOOL_TIMEOUT=120
+"""
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SEVERITY = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+CONFIDENCE = {"low": 1, "medium": 2, "high": 3}
+SKIP_DIRS = {".git", ".venv", "venv", "env", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", "alembic"}
+CODE_EXT = (".py", ".js")
+_BUG_RULES = ("E9", "F63", "F7", "F82")
+
+
+def _timeout() -> int:
+    try:
+        return int(os.getenv("AUDIT_TOOL_TIMEOUT", "") or 120)
+    except ValueError:
+        return 120
+
+
+def _norm(path) -> str:
+    text = str(path or "").replace("\\", "/").strip()
+    return text[2:] if text.startswith("./") else text
+
+
+def _rel(path: str, workspace: str) -> str:
+    """Caminho relativo ao projeto, aceitando '\\' e '/', com ou sem letra de unidade (Windows)."""
+    p, w = _norm(path), _norm(workspace).rstrip("/")
+    if w and (p.casefold() == w.casefold() or p.casefold().startswith(w.casefold() + "/")):
+        return p[len(w) + 1:]
+    return p
+
+
+def _run(cmd: list[str], cwd: str) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace", timeout=_timeout(),
+                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _read_lines(path: Path) -> list[str] | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return data.decode(enc).replace("\r\n", "\n").split("\n")
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1", errors="replace").replace("\r\n", "\n").split("\n")
+
+
+def _finding(file, line, kind, severity, confidence, tool, rule, message, end_line=None) -> dict:
+    return {"id": "", "file": _norm(file), "line": int(line or 1), "end_line": int(end_line or line or 1), "snippet": "",
+            "kind": kind, "severity": severity, "confidence": confidence, "tool": tool, "rule": str(rule or ""),
+            "message": str(message or "").strip(), "note": ""}
+
+
+# ── parsers (testáveis sem as ferramentas instaladas) ─────────────────────
+
+def parse_ruff(text: str, workspace: str) -> list[dict]:
+    try:
+        items = json.loads(text or "[]")
+    except ValueError:
+        return []
+    out = []
+    for item in items:
+        code = str(item.get("code") or "")
+        loc, end = item.get("location") or {}, item.get("end_location") or {}
+        if code.startswith(_BUG_RULES):
+            kind, sev = "bug", "high"
+        elif code in ("F401", "F841", "F811"):
+            kind, sev = "dead_code", "low"
+        elif code.startswith("B"):
+            kind, sev = "bug", "medium"
+        elif code.startswith("PERF"):
+            kind, sev = "optimization", "low"
+        else:
+            kind, sev = "bug", "low"
+        out.append(_finding(_rel(item.get("filename", ""), workspace), loc.get("row", 1), kind, sev, "high", "ruff", code,
+                            item.get("message"), end.get("row")))
+    return out
+
+
+_VULTURE = re.compile(r"^(?P<file>.+?):(?P<line>\d+): (?P<msg>unused .+?) \((?P<pct>\d+)% confidence\)\s*$")
+
+
+def parse_vulture(text: str, workspace: str) -> list[dict]:
+    out = []
+    for raw in (text or "").splitlines():
+        m = _VULTURE.match(raw.strip())
+        if not m:
+            continue
+        pct = int(m.group("pct"))
+        conf = "high" if pct >= 90 else "medium" if pct >= 70 else "low"
+        out.append(_finding(_rel(m.group("file"), workspace), m.group("line"), "dead_code", "low", conf, "vulture", "unused",
+                            f"{m.group('msg')} ({pct}%)"))
+    return out
+
+
+def parse_radon(text: str, workspace: str) -> list[dict]:
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        return []
+    out = []
+    for path, blocks in (data or {}).items():
+        if not isinstance(blocks, list):
+            continue
+        for b in blocks:
+            cc = int(b.get("complexity") or 0)
+            if cc <= 10:
+                continue
+            sev = "high" if cc > 30 else "medium" if cc > 20 else "low"
+            out.append(_finding(_rel(path, workspace), b.get("lineno", 1), "complexity", sev, "high", "radon", f"CC{cc}",
+                                f"{b.get('name')} tem complexidade ciclomática {cc} (rank {b.get('rank')})", b.get("endline")))
+    return out
+
+
+def parse_bandit(text: str, workspace: str) -> list[dict]:
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        return []
+    out = []
+    for r in data.get("results") or []:
+        if r.get("test_id") == "B101":  # assert: ruído (testes)
+            continue
+        sev = str(r.get("issue_severity") or "LOW").lower()
+        conf = str(r.get("issue_confidence") or "LOW").lower()
+        out.append(_finding(_rel(r.get("filename", ""), workspace), r.get("line_number", 1), "security",
+                            sev if sev in SEVERITY else "low", conf if conf in CONFIDENCE else "low", "bandit",
+                            r.get("test_id"), r.get("issue_text")))
+    return out
+
+
+# ── duplicação por hash de AST ────────────────────────────────────────────
+
+class _Normalize(ast.NodeTransformer):
+    def visit_Name(self, node):
+        return ast.copy_location(ast.Name(id="_", ctx=node.ctx), node)
+
+    def visit_arg(self, node):
+        return ast.copy_location(ast.arg(arg="_", annotation=None), node)
+
+    def visit_Constant(self, node):
+        return ast.copy_location(ast.Constant(value=type(node.value).__name__), node)
+
+
+def ast_duplicates(workspace: str, files: list[str], min_nodes: int = 40) -> list[dict]:
+    seen: dict[str, tuple[str, int, str]] = {}
+    out = []
+    for rel in files:
+        if not rel.endswith(".py"):
+            continue
+        lines = _read_lines(Path(workspace, rel))
+        if lines is None:
+            continue
+        try:
+            tree = ast.parse("\n".join(lines))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if sum(1 for _ in ast.walk(node)) < min_nodes:
+                continue
+            clone = ast.parse(ast.unparse(node)).body[0]
+            clone.name, clone.decorator_list = "f", []
+            if clone.body and isinstance(clone.body[0], ast.Expr) and isinstance(getattr(clone.body[0], "value", None), ast.Constant):
+                clone.body = clone.body[1:] or [ast.Pass()]
+            key = hashlib.sha1(ast.dump(_Normalize().visit(clone)).encode()).hexdigest()
+            if key in seen:
+                f0, l0, n0 = seen[key]
+                out.append(_finding(rel, node.lineno, "duplication", "medium", "high", "ast-hash", "DUP",
+                                    f"{node.name} é estruturalmente idêntica a {n0} ({f0}:{l0})", getattr(node, "end_lineno", None)))
+            else:
+                seen[key] = (rel, node.lineno, node.name)
+    return out
+
+
+# ── validação contra o código real ────────────────────────────────────────
+
+def _fingerprint(f: dict) -> str:
+    base = "|".join([f["kind"], f["file"], f["rule"], re.sub(r"\s+", " ", f["snippet"]).strip()[:300]])
+    return hashlib.sha1(base.encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _word_hits(workspace: str, name: str, skip_file: str, skip_line: int, limit: int = 1500) -> int:
+    pat = re.compile(r"\b" + re.escape(name) + r"\b")
+    hits = checked = 0
+    for base, dirs, names in os.walk(workspace):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for n in names:
+            if not n.endswith((".py", ".js", ".html")):
+                continue
+            checked += 1
+            if checked > limit:
+                return hits
+            rel = os.path.relpath(os.path.join(base, n), workspace).replace("\\", "/")
+            lines = _read_lines(Path(base, n)) or []
+            for i, text in enumerate(lines, start=1):
+                if pat.search(text) and not (rel == skip_file and i == skip_line):
+                    hits += 1
+    return hits
+
+
+def _decorated_def(workspace: str, rel: str, line: int) -> bool:
+    lines = _read_lines(Path(workspace, rel))
+    if not lines:
+        return False
+    try:
+        tree = ast.parse("\n".join(lines))
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.decorator_list:
+            if node.lineno == line or any(d.lineno == line for d in node.decorator_list):
+                return True
+    return False
+
+
+def validate_findings(workspace: str, findings: list[dict]) -> tuple[list[dict], list[str]]:
+    """Preenche snippet/id com o código real e descarta o que não confere. Devolve (válidos, motivos_descartes)."""
+    root = Path(workspace).resolve()
+    good, dropped = [], []
+    for f in findings:
+        rel = f["file"]
+        try:
+            target = (root / rel).resolve()
+            target.relative_to(root)
+        except ValueError:
+            dropped.append(f"{rel}: fora do projeto")
+            continue
+        lines = _read_lines(target) if target.is_file() else None
+        if not lines or not (1 <= f["line"] <= len(lines)):
+            dropped.append(f"{rel}:{f['line']}: linha inexistente")
+            continue
+        end = min(max(f["end_line"], f["line"]), f["line"] + 11, len(lines))
+        f = dict(f)
+        f["end_line"] = end
+        f["snippet"] = "\n".join(lines[f["line"] - 1:end])
+        if f["rule"] == "F401" and rel.endswith("__init__.py"):
+            dropped.append(f"{rel}:{f['line']}: import em __init__ (reexport)")
+            continue
+        if f["tool"] == "vulture":
+            m = re.search(r"'([^']+)'", f["message"])
+            name = m.group(1) if m else ""
+            if name and not re.search(r"\b" + re.escape(name) + r"\b", f["snippet"]):
+                dropped.append(f"{rel}:{f['line']}: vulture apontou '{name}' mas a linha não o contém")
+                continue
+            if _decorated_def(workspace, rel, f["line"]):
+                dropped.append(f"{rel}:{f['line']}: função/classe decorada (rota, tool, fixture)")
+                continue
+            if name and name.startswith("test"):
+                dropped.append(f"{rel}:{f['line']}: teste")
+                continue
+            if name:
+                hits = _word_hits(workspace, name, rel, f["line"])
+                if hits:
+                    f["confidence"] = "low"
+                    f["note"] = f"'{name}' aparece {hits}x em outros pontos do projeto; confirme antes de apagar"
+        f["id"] = _fingerprint(f)
+        good.append(f)
+    return good, dropped
+
+
+# ── registro de falsos positivos ──────────────────────────────────────────
+
+def audit_dir(workspace: str) -> Path:
+    custom = os.getenv("AUDIT_DIR", "").strip()
+    if custom:
+        return Path(custom)
+    key = hashlib.sha1(str(Path(workspace).resolve()).encode()).hexdigest()[:10]
+    return Path.home() / ".assistente_audit" / key
+
+
+def _fp_path(workspace: str) -> Path:
+    return audit_dir(workspace) / "false_positives.json"
+
+
+def load_false_positives(workspace: str) -> dict[str, dict]:
+    try:
+        data = json.loads(_fp_path(workspace).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def mark_false_positive(workspace: str, finding: dict, reason: str = "") -> bool:
+    fid = finding.get("id") or ""
+    if not fid:
+        return False
+    data = load_false_positives(workspace)
+    data[fid] = {"file": finding.get("file"), "rule": finding.get("rule"), "kind": finding.get("kind"), "reason": reason[:300]}
+    path = _fp_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return True
+
+
+def unmark_false_positive(workspace: str, fid: str) -> bool:
+    data = load_false_positives(workspace)
+    if fid not in data:
+        return False
+    del data[fid]
+    path = _fp_path(workspace)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+# ── arquivos (completo ou incremental por git diff) ───────────────────────
+
+def project_code_files(workspace: str) -> list[str]:
+    out = []
+    for base, dirs, names in os.walk(workspace):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        for n in sorted(names):
+            if n.endswith(CODE_EXT):
+                out.append(os.path.relpath(os.path.join(base, n), workspace).replace("\\", "/"))
+    return out
+
+
+def changed_files(workspace: str, base: str | None = None) -> list[str] | None:
+    """Arquivos de código alterados em relação a `base` (merge-base) + working tree + novos. None = não é repo git."""
+    probe = _run(["git", "rev-parse", "--is-inside-work-tree"], workspace)
+    if probe is None or probe.returncode != 0:
+        return None
+    names: set[str] = set()
+    cmds = [["git", "diff", "--name-only", "HEAD"], ["git", "ls-files", "--others", "--exclude-standard"]]
+    if base:
+        mb = _run(["git", "merge-base", base, "HEAD"], workspace)
+        if mb is not None and mb.returncode == 0 and mb.stdout.strip():
+            cmds.append(["git", "diff", "--name-only", mb.stdout.strip(), "HEAD"])
+    for cmd in cmds:
+        res = _run(cmd, workspace)
+        if res is not None and res.returncode == 0:
+            names.update(ln.strip().replace("\\", "/") for ln in res.stdout.splitlines() if ln.strip())
+    return sorted(n for n in names if n.endswith(CODE_EXT) and os.path.isfile(os.path.join(workspace, n))
+                  and not any(part in SKIP_DIRS for part in n.split("/")))
+
+
+# ── execução das ferramentas ──────────────────────────────────────────────
+
+def _chunks(items: list[str], size: int = 80):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _tool_cmd(name: str) -> list[str] | None:
+    exe = shutil.which(name)
+    if exe:
+        return [exe]
+    return None
+
+
+def _run_tool(name: str, workspace: str, files: list[str]) -> tuple[list[dict], str]:
+    py = [f for f in files if f.endswith(".py")]
+    if not py:
+        return [], "sem arquivos .py"
+    base = _tool_cmd(name)
+    if base is None:
+        return [], "ausente (pip install " + name + ")"
+    found: list[dict] = []
+    for chunk in _chunks(py):
+        if name == "ruff":
+            res = _run(base + ["check", "--select", "E9,F,B,PERF", "--no-cache", "--isolated", "--output-format=json"] + chunk, workspace)
+            if res is not None and res.returncode == 2 and "output-format" in (res.stderr or ""):
+                res = _run(base + ["check", "--select", "E9,F,B,PERF", "--no-cache", "--isolated", "--format=json"] + chunk, workspace)
+            ok, parser = (0, 1), parse_ruff
+        elif name == "vulture":
+            res, ok, parser = _run(base + chunk + ["--min-confidence", "60"], workspace), (0, 3), parse_vulture
+        elif name == "radon":
+            res, ok, parser = _run(base + ["cc", "-j", "-n", "C"] + chunk, workspace), (0,), parse_radon
+        elif name == "bandit":
+            res, ok, parser = _run(base + ["-q", "-f", "json"] + chunk, workspace), (0, 1), parse_bandit
+        else:
+            return [], "ferramenta desconhecida"
+        if res is None:
+            return found, "timeout ou falha ao executar"
+        if res.returncode not in ok:
+            return found, f"erro (código {res.returncode}): {(res.stderr or res.stdout or '').strip()[:200]}"
+        found.extend(parser(res.stdout, workspace))
+    return found, "ok"
+
+
+def run_audit(workspace: str, paths: list[str] | None = None, incremental: bool = False, base: str | None = None,
+              tools: tuple[str, ...] = ("ruff", "vulture", "radon", "bandit", "duplication"),
+              min_confidence: str = "low", use_registry: bool = True) -> dict:
+    root = str(Path(workspace).resolve())
+    status: dict[str, str] = {}
+    files = [_norm(p) for p in paths] if paths else project_code_files(root)
+    if incremental:
+        changed = changed_files(root, base)
+        if changed is None:
+            status["incremental"] = "não é repositório git: auditoria completa"
+        else:
+            files = [f for f in files if f in set(changed)]
+    raw: list[dict] = []
+    for tool in tools:
+        if tool == "duplication":
+            raw.extend(ast_duplicates(root, files))
+            status[tool] = "ok"
+            continue
+        found, st = _run_tool(tool, root, files)
+        raw.extend(found)
+        status[tool] = st
+    valid, dropped = validate_findings(root, raw)
+    registry = load_false_positives(root) if use_registry else {}
+    kept = [f for f in valid if f["id"] not in registry and CONFIDENCE[f["confidence"]] >= CONFIDENCE.get(min_confidence, 1)]
+    unique: dict[str, dict] = {}
+    for f in kept:
+        unique.setdefault(f["id"], f)
+    ordered = sorted(unique.values(), key=lambda f: (-SEVERITY[f["severity"]], -CONFIDENCE[f["confidence"]], f["file"], f["line"]))
+    return {"findings": ordered, "tools": status, "files": len(files), "dropped": dropped,
+            "ignored_false_positives": len([f for f in valid if f["id"] in registry])}
+
+
+# ── achados -> tasks importáveis ──────────────────────────────────────────
+
+def findings_to_tasks(findings: list[dict], max_per_task: int = 5) -> list[dict]:
+    by_file: dict[str, list[dict]] = {}
+    for f in findings:
+        by_file.setdefault(f["file"], []).append(f)
+    tasks = []
+    for rel, items in by_file.items():
+        for start in range(0, len(items), max_per_task):
+            group = items[start:start + max_per_task]
+            top = max(SEVERITY[f["severity"]] for f in group)
+            blocks = []
+            for f in group:
+                snippet = "\n".join("    " + ln for ln in f["snippet"].split("\n"))
+                note = f"\n  Atenção: {f['note']}" if f["note"] else ""
+                blocks.append(f"- [{f['kind']}/{f['severity']}/{f['rule']}] linha {f['line']}: {f['message']}{note}\n{snippet}")
+            desc = (f"Corrija SOMENTE os achados abaixo em {rel}, com a menor mudança possível e sem alterar o comportamento. "
+                    "Leia o arquivo antes. Se um achado for falso positivo, não mexa nele e explique no resumo.\n\n" + "\n".join(blocks))
+            tasks.append({
+                "title": f"Auditoria: {rel} ({len(group)} achado(s))"[:255],
+                "description": desc,
+                "reason": "Achados validados contra o código real (" + ", ".join(sorted({f['tool'] for f in group})) + ").",
+                "files": [rel],
+                "priority": "high" if top >= 3 else "medium" if top == 2 else "low",
+                "steps": [],
+                "verify": [{"type": "python_syntax", "path": rel}] if rel.endswith(".py") else [],
+            })
+    return tasks
+
+
+# ── comando de chat (@audit) ──────────────────────────────────────────────
+
+AUDIT_TAG = re.compile(r"(?<!\S)@audit(?:oria)?(?!\S)", re.IGNORECASE)
+TAG_LOOKAHEAD = 50
+_SEV_PT = {"critical": "crítica", "high": "alta", "medium": "média", "low": "baixa"}
+_CONF_PT = {"high": "alta", "medium": "média", "low": "baixa"}
+
+AUDIT_HELP = (
+    "**Auditoria determinística** (ruff, vulture, radon, bandit e duplicação por AST, sem LLM)\n\n"
+    "- `@audit` — audita o projeto todo\n"
+    "- `@audit diff` — só o que mudou (git diff + arquivos novos); `@audit diff base=main` compara com a branch\n"
+    "- `@audit backend/api backend/graph/nodes.py` — só essas pastas/arquivos\n"
+    "- `min=medium` — mostra só achados com confiança média ou alta (padrão: todos)\n"
+    "- `tools=ruff,bandit` — escolhe as ferramentas (ruff, vulture, radon, bandit, duplication)\n"
+    "- `@audit tasks` — transforma o último relatório em tasks (`@audit tasks 1 3 5` escolhe pelos números)\n"
+    "- `@audit falso 4 motivo` — marca o achado nº 4 (ou o id) como falso positivo; não volta mais\n"
+    "- `@audit desfazer <id>` — tira do registro de falsos positivos\n"
+)
+
+
+def parse_command(text: str) -> dict | None:
+    """None se a mensagem não é um comando @audit. Senão {cmd, ...}."""
+    text = str(text or "")
+    zone = text[:TAG_LOOKAHEAD]
+    if not AUDIT_TAG.search(zone):
+        return None
+    rest = (AUDIT_TAG.sub("", zone, count=1) + text[TAG_LOOKAHEAD:]).strip()
+    tokens = rest.split()
+    head = tokens[0].lower() if tokens else ""
+    if head in ("ajuda", "help"):
+        return {"cmd": "help"}
+    if head in ("tasks", "task", "tarefas"):
+        return {"cmd": "tasks", "args": tokens[1:]}
+    if head in ("falso", "fp"):
+        return {"cmd": "fp", "args": tokens[1:2], "reason": " ".join(tokens[2:])}
+    if head in ("desfazer", "unfp"):
+        return {"cmd": "unfp", "args": tokens[1:2]}
+    cmd = {"cmd": "run", "incremental": False, "base": None, "min": "low", "tools": None, "paths": []}
+    for tok in tokens:
+        low = tok.lower()
+        if low in ("diff", "incremental"):
+            cmd["incremental"] = True
+        elif low == "completo":
+            cmd["incremental"] = False
+        elif low.startswith("base="):
+            cmd["base"] = tok[5:] or None
+        elif low.startswith("min=") and low[4:] in CONFIDENCE:
+            cmd["min"] = low[4:]
+        elif low.startswith("tools="):
+            names = tuple(n for n in low[6:].split(",") if n in ("ruff", "vulture", "radon", "bandit", "duplication"))
+            cmd["tools"] = names or None
+        else:
+            cmd["paths"].append(tok.strip("\"'"))
+    return cmd
+
+
+def expand_paths(workspace: str, tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Pastas viram a lista de arquivos de código dentro delas. Devolve (arquivos, erros)."""
+    root = Path(workspace).resolve()
+    files: list[str] = []
+    errors: list[str] = []
+    for tok in tokens:
+        rel = _norm(tok).rstrip("/")
+        try:
+            target = (root / rel).resolve()
+            target.relative_to(root)
+        except ValueError:
+            errors.append(f"{tok}: fora do projeto")
+            continue
+        if target.is_file() and rel.endswith(CODE_EXT):
+            files.append(rel)
+        elif target.is_dir():
+            prefix = rel + "/" if rel else ""
+            files.extend(f for f in project_code_files(str(root)) if f.startswith(prefix))
+        else:
+            errors.append(f"{tok}: não encontrado (ou não é .py/.js)")
+    return sorted(set(files)), errors
+
+
+def _last_path(workspace: str, thread_id: str) -> Path:
+    return audit_dir(workspace) / f"last_{re.sub(r'[^A-Za-z0-9_.-]', '_', str(thread_id))[:80]}.json"
+
+
+def save_last(workspace: str, thread_id: str, result: dict) -> None:
+    path = _last_path(workspace, thread_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_last(workspace: str, thread_id: str) -> dict | None:
+    try:
+        data = json.loads(_last_path(workspace, thread_id).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def select_findings(findings: list[dict], args: list[str]) -> list[dict]:
+    """args: números do relatório (1-based), ids ou vazio/'todos' = todos."""
+    if not args or args[0].lower() in ("todos", "all"):
+        return list(findings)
+    chosen, seen = [], set()
+    for a in args:
+        found = None
+        if a.isdigit() and 1 <= int(a) <= len(findings):
+            found = findings[int(a) - 1]
+        else:
+            found = next((f for f in findings if f.get("id") == a), None)
+        if found is not None and found["id"] not in seen:
+            seen.add(found["id"])
+            chosen.append(found)
+    return chosen
+
+
+def format_report(result: dict, limit: int = 25, max_chars: int = 12000) -> str:
+    findings = result.get("findings") or []
+    lines = [f"## Auditoria — {result.get('files', 0)} arquivo(s) analisado(s)", ""]
+    lines.append("**Ferramentas:** " + ", ".join(f"{k}: {v}" for k, v in (result.get("tools") or {}).items()))
+    if findings:
+        by_sev = {k: sum(1 for f in findings if f["severity"] == k) for k in ("critical", "high", "medium", "low")}
+        lines.append("**Achados:** " + ", ".join(f"{n} {_SEV_PT[k]}" for k, n in by_sev.items() if n)
+                     + f" (total {len(findings)})")
+    extras = []
+    if result.get("ignored_false_positives"):
+        extras.append(f"{result['ignored_false_positives']} falso(s) positivo(s) do registro ignorado(s)")
+    if result.get("dropped"):
+        extras.append(f"{len(result['dropped'])} descartado(s) na validação contra o código")
+    if extras:
+        lines.append("**Filtrados:** " + "; ".join(extras))
+    lines.append("")
+    if not findings:
+        lines.append("Nenhum achado validado.")
+    for i, f in enumerate(findings[:limit], start=1):
+        lines.append(f"{i}. **[{_SEV_PT[f['severity']]} · {f['kind']}]** `{f['file']}:{f['line']}` — {f['message']} "
+                     f"({f['tool']} {f['rule']}, confiança {_CONF_PT[f['confidence']]}, id `{f['id']}`)")
+        if f.get("note"):
+            lines.append(f"   ↳ {f['note']}")
+        if i <= 8 and f.get("snippet"):
+            snippet = "\n".join(f["snippet"].split("\n")[:3])
+            lines.append("   ```\n   " + snippet.replace("\n", "\n   ") + "\n   ```")
+    if len(findings) > limit:
+        lines.append(f"\n… e mais {len(findings) - limit} achado(s) (use `min=medium` ou filtre por pasta).")
+    if findings:
+        lines.append("\nPróximos passos: `@audit tasks` cria as tasks; `@audit falso <número>` registra um falso positivo.")
+    text = "\n".join(lines)
+    return text if len(text) <= max_chars else text[:max_chars] + "\n… (relatório cortado)"
