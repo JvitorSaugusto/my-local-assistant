@@ -37,6 +37,34 @@
       ]
     },
     {
+      title: "Auditoria de código (@audit, sem IA)",
+      tips: [
+        { kind: "insert", title: "Auditar o projeto todo", when: "Roda ruff, vulture, radon, bandit e a busca de duplicação por AST, confere cada achado no código real e devolve um relatório numerado (gravidade, tipo, arquivo:linha, confiança e id). Sem LLM: é rápido e repetível. Também aceita @auditoria.",
+          text: "@audit" },
+        { kind: "insert", title: "Auditar um arquivo (em português)", when: "Use o nome do arquivo ou o caminho. Se o nome existir em mais de uma pasta, o assistente lista as opções e pede o caminho completo.",
+          text: "Audite o arquivo <backend/graph/executor.py>" },
+        { kind: "insert", title: "Auditar vários arquivos", when: "Separe por vírgula ou por \"e\". Só vale para .py e .js.",
+          text: "Audite os arquivos <executor.py>, task_guards.py e task_journal.py" },
+        { kind: "insert", title: "Auditar uma pasta", when: "Pastas inteiras entram (sem venv, node_modules e cache). Também dá para misturar pastas e arquivos com @audit.",
+          text: "@audit <backend/api> backend/graph/nodes.py" },
+        { kind: "insert", title: "Auditar só o que mudou", when: "Usa o git: arquivos alterados desde o último commit mais os novos. Com base=main inclui tudo o que a branch mudou em relação à main. Em português: \"Audite o que mudou\".",
+          text: "@audit diff base=main" },
+        { kind: "insert", title: "Filtrar por confiança e ferramentas", when: "min=medium esconde os achados de baixa confiança. tools= aceita ruff, vulture, radon, bandit e duplication.",
+          text: "@audit min=medium tools=ruff,bandit" },
+        { kind: "insert", title: "Transformar achados em tasks", when: "Cria tasks pendentes (uma por arquivo, até 5 achados cada) a partir do último relatório. Sem números, usa todos. Depois execute pelo painel ou com @generate.",
+          text: "@audit tasks" },
+        { kind: "insert", title: "Tasks só de alguns achados", when: "Use os números do relatório ou os ids.",
+          text: "@audit tasks <1> 3 5" },
+        { kind: "insert", title: "Marcar falso positivo", when: "O achado some desta e das próximas auditorias (o registro guarda o id, que não muda quando as linhas se deslocam). O motivo é opcional.",
+          text: "@audit falso <4> chamado por reflexão" },
+        { kind: "insert", title: "Desfazer um falso positivo", when: "Tira o achado do registro; ele volta na próxima auditoria. Use o id mostrado no relatório.",
+          text: "@audit desfazer <id>" },
+        { kind: "insert", title: "Ajuda da auditoria", when: "Lista todos os comandos no chat.",
+          text: "@audit ajuda" },
+        { kind: "info", title: "Ferramentas e limites", when: "As ferramentas vêm do requirements.txt (pip install -r requirements.txt no ambiente do servidor). Se alguma faltar, o relatório mostra \"ausente\" e as demais continuam. Achados em funções decoradas (rotas, tools) e imports de __init__.py são descartados; nome usado em outro ponto do projeto baixa a confiança. Os falsos positivos ficam em ~/.assistente_audit (ou AUDIT_DIR), fora do repositório." }
+      ]
+    },
+    {
       title: "Tarefas",
       tips: [
         { kind: "insert", title: "Executar tasks", when: "Roda as tasks pelos números (#) do painel, em ordem. Também dá para marcar no painel e usar Executar.",
