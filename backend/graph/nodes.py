@@ -56,6 +56,7 @@ from .prompts import (
 from .task_journal import begin_journal, journal_end, journal_rollback, syntax_problems_for_paths
 from .task_commit import capture_originals, commit_task
 from .ops_core import detect_ops_intent
+from .map_shortcut import project_map_message
 from .audit_core import parse_command as parse_audit_command
 from .tools import EDIT_PHASE_AFTER_ROUNDS, run_tests
 from .node_helpers import (
@@ -314,6 +315,9 @@ def _assistant_context(prompt: str, state: State, extra: str | None = None) -> S
 
 
 def standard_node_20b(state: State):
+    mapped = project_map_message(state, "response_standard")
+    if mapped is not None:
+        return {"messages": [mapped], "active_node": "standard_node_20b", "enhanced_prompt": None}
     messages = _turn_context(state["messages"], enhanced=state.get("enhanced_prompt"))
     rounds = sum(1 for m in messages if m.type == "ai" and getattr(m, "tool_calls", None))
     exhausted = rounds >= STANDARD_MAX_TOOL_ROUNDS
@@ -356,6 +360,9 @@ def standard_node_20b(state: State):
 
 
 def code_node(state: State):
+    mapped = project_map_message(state, "response_code")
+    if mapped is not None:
+        return {"messages": [mapped], "active_node": "code_node", "enhanced_prompt": None}
     workspace_path = state.get("workspace_path", "Diretório não informado")
     recent_messages = _turn_context(state["messages"], prior=5, enhanced=state.get("enhanced_prompt"))
 
