@@ -61,6 +61,7 @@ const el = {
   btnTheme: document.getElementById("btn-theme"),
   inputSnippet: document.getElementById("task_snippet"),
   btnEnhance: document.getElementById("btn-enhance"),
+  btnAudit: document.getElementById("btn-audit"),
   batchPanel: document.getElementById("batch-panel"),
   batchInput: document.getElementById("batch-input"),
   btnSendBatch: document.getElementById("btn-send-batch"),
@@ -1760,8 +1761,10 @@ function autoResize() {
 }
 
 // Modo de roteamento fixo: vale para TODAS as mensagens da conversa até ser solto.
-const ROUTE_TAGS = { auto: "", heavy: "@heavy", enhance: "@enhance" };
-const ROUTE_LABEL = { heavy: "Heavy", enhance: "Enhance" };
+const ROUTE_TAGS = { auto: "", heavy: "@heavy", enhance: "@enhance", audit: "@audit" };
+const ROUTE_LABEL = { heavy: "Heavy", enhance: "Enhance", audit: "Auditoria" };
+// Pedido de auditoria já escrito em português ("Audite o arquivo x"): no modo Auditoria não leva a etiqueta @audit na frente.
+const AUDIT_NL_RE = /^\s*(?:por favor[,\s]+)?(?:(?:pode|poderia|consegue)\s+)?(?:audite|auditar|(?:fa[çc]a|fazer|rode|rodar|execute|executar)\s+(?:uma\s+)?auditoria)\b/i;
 const ROUTE_STORE = "assistant_route_modes";
 
 function loadRouteModes() {
@@ -1793,13 +1796,14 @@ function toggleRouteMode(mode) { setRouteMode(getRouteMode() === mode ? "auto" :
 function applyRouteMode(text) {
   const tag = ROUTE_TAGS[getRouteMode()];
   if (!tag || !text.trim()) return text;
-  if (/^\s*@(?:generate|heavy|enhance)\b/i.test(text) || /(^|\s)@(?:heavy|enhance)(\s|$)/i.test(text)) return text;
+  if (/^\s*@(?:generate|heavy|enhance|audit(?:oria)?)\b/i.test(text) || /(^|\s)@(?:heavy|enhance)(\s|$)/i.test(text)) return text;
+  if (getRouteMode() === "audit" && AUDIT_NL_RE.test(text)) return text;
   return `${tag} ${text.replace(/^\s+/, "")}`;
 }
 
 function syncChips() {
   const mode = getRouteMode();
-  [[el.btnAuto, "auto"], [el.btnHeavy, "heavy"], [el.btnEnhance, "enhance"]].forEach(([button, name]) => {
+  [[el.btnAuto, "auto"], [el.btnHeavy, "heavy"], [el.btnEnhance, "enhance"], [el.btnAudit, "audit"]].forEach(([button, name]) => {
     if (!button) return;
     const on = mode === name;
     button.classList.toggle("active", on);
@@ -2051,6 +2055,7 @@ el.btnNewChat.addEventListener("click", createChat);
 el.btnAuto.addEventListener("click", () => setRouteMode("auto"));
 el.btnHeavy.addEventListener("click", () => toggleRouteMode("heavy"));
 el.btnEnhance.addEventListener("click", () => toggleRouteMode("enhance"));
+if (el.btnAudit) el.btnAudit.addEventListener("click", () => toggleRouteMode("audit"));
 
 // Restauração do Evento Input e Enter
 el.chatInput.addEventListener("input", () => {

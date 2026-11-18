@@ -422,6 +422,7 @@ pre:hover .code-copy, .code-copy:focus-visible, .code-copy.copied { opacity: 1; 
 }
 .composer[data-mode="heavy"] { --mode: var(--warn); }
 .composer[data-mode="enhance"] { --mode: var(--violet); }
+.composer[data-mode="audit"] { --mode: var(--ok); }
 .composer[data-mode]:not([data-mode="auto"]) { border-color: color-mix(in srgb, var(--mode) 55%, var(--border-strong)); }
 .composer:focus-within { border-color: var(--accent-ring); box-shadow: 0 0 0 3px var(--accent-soft), 0 2px 14px rgba(0, 0, 0, 0.12); }
 .composer textarea {
@@ -443,6 +444,7 @@ pre:hover .code-copy, .code-copy:focus-visible, .code-copy.copied { opacity: 1; 
 .mode-btn.active { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); }
 .mode-btn[data-mode="heavy"].active { color: var(--warn); }
 .mode-btn[data-mode="enhance"].active { color: var(--violet); }
+.mode-btn[data-mode="audit"].active { color: var(--ok); }
 
 .send-btn {
   display: grid; place-items: center; width: 36px; height: 36px; flex: none;
