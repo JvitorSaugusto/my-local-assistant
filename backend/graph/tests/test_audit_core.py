@@ -157,6 +157,9 @@ class ChatCommandTests(unittest.TestCase):
         self.assertEqual(ac.parse_command("@audit falso 2 usada por reflexão"), {"cmd": "fp", "args": ["2"], "reason": "usada por reflexão"})
         self.assertEqual(ac.parse_command("@audit desfazer abc")["args"], ["abc"])
         self.assertEqual(ac.parse_command("@audit ajuda")["cmd"], "help")
+        loose = ac.parse_command("@audit o arquivo executor.py, <task_guards.py> e a pasta backend/api")
+        self.assertEqual(loose["paths"], ["executor.py", "task_guards.py", "backend/api"])
+        self.assertEqual(ac.parse_command("@audit projeto")["paths"], [])
 
     def test_expand_paths_and_select_findings(self):
         with tempfile.TemporaryDirectory() as root:

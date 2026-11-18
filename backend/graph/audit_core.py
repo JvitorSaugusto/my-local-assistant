@@ -526,7 +526,9 @@ def _parse_tagged(text: str) -> dict | None:
             names = tuple(n for n in low[6:].split(",") if n in ("ruff", "vulture", "radon", "bandit", "duplication"))
             cmd["tools"] = names or None
         else:
-            cmd["paths"].append(tok.strip("\"'"))
+            word = tok.strip("\"'`<>.,;:!?")
+            if word and word.lower() not in _NL_STOP | _NL_FOLDER | _NL_WHOLE:
+                cmd["paths"].append(word)
     return cmd
 
 
