@@ -1796,7 +1796,7 @@ function toggleRouteMode(mode) { setRouteMode(getRouteMode() === mode ? "auto" :
 function applyRouteMode(text) {
   const tag = ROUTE_TAGS[getRouteMode()];
   if (!tag || !text.trim()) return text;
-  if (/^\s*@(?:generate|heavy|enhance|audit(?:oria)?)\b/i.test(text) || /(^|\s)@(?:heavy|enhance)(\s|$)/i.test(text)) return text;
+  if (/^\s*@(?:zip|commit|pack|primer|generate|heavy|enhance|audit(?:oria)?)\b/i.test(text) || /(^|\s)@(?:heavy|enhance)(\s|$)/i.test(text)) return text;
   if (getRouteMode() === "audit" && AUDIT_NL_RE.test(text)) return text;
   return `${tag} ${text.replace(/^\s+/, "")}`;
 }

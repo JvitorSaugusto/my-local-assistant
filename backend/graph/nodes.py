@@ -125,7 +125,7 @@ def router_node(state: State):
         print("🔀 [ROUTER] Rota: 'AUDIT' (auditoria determinística)")
         return {"actual_route": "AUDIT", "enhance_before_heavy": False}
 
-    ops_text = None if (state.get("enhanced_prompt") or state.get("active_generate_task")) else detect_ops_intent(last_msg, state["messages"])
+    ops_text = None if (state.get("enhanced_prompt") or state.get("active_generate_task")) else detect_ops_intent(strip_leading_tags(last_msg).strip(), state["messages"])
     if ops_text is not None:
         if isinstance(state["messages"][-1].content, str) and ops_text != last_msg:
             state["messages"][-1].content = ops_text
