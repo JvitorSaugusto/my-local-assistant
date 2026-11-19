@@ -12,8 +12,10 @@ no arquivo; `pytest` e `literals_grounded` vão para a última parte.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
+import re
 
 _LAST_GROUP_CHECKS = {"pytest", "literals_grounded"}
 
@@ -114,10 +116,42 @@ def split_task(task: dict, max_chars: int | None = None, max_steps: int | None =
     return parts
 
 
+def drop_near_duplicates(tasks: list[dict], threshold: float = 0.8) -> tuple[list[dict], list[str]]:
+    """Descarta, dentro do mesmo lote, task quase igual a outra anterior (mesmos arquivos, título e descrição muito parecidos).
+    Auditoria e partes '(i/n)' nunca são descartadas."""
+    kept: list[dict] = []
+    dropped: list[str] = []
+    for task in tasks:
+        title = str(task.get("title") or "").lower()
+        files = frozenset(_norm(f) for f in (task.get("files") or []) if _norm(f))
+        exempt = title.startswith("auditoria:") or bool(re.search(r"\(\d+/\d+\)\s*$", title))
+        duplicate = False
+        if files and not exempt:
+            text = str(task.get("description") or "").lower()[:1500]
+            for other in kept:
+                other_files = frozenset(_norm(f) for f in (other.get("files") or []) if _norm(f))
+                if other_files != files:
+                    continue
+                if difflib.SequenceMatcher(None, title, str(other.get("title") or "").lower()).ratio() < 0.6:
+                    continue
+                if difflib.SequenceMatcher(None, text, str(other.get("description") or "").lower()[:1500]).ratio() >= threshold:
+                    duplicate = True
+                    break
+        if duplicate:
+            dropped.append(str(task.get("title") or ""))
+        else:
+            kept.append(task)
+    return kept, dropped
+
+
 def expand_tasks(tasks_data) -> list[dict]:
     """Recebe modelos pydantic (TaskCreateSchema) ou dicts e devolve dicts prontos para o TaskModel."""
+    raw = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in tasks_data]
+    if _flag("TASK_DEDUPE", True):
+        raw, dropped = drop_near_duplicates(raw)
+        for title in dropped:
+            print(f"[TASKS] duplicata descartada: {title}")
     out: list[dict] = []
-    for item in tasks_data:
-        data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+    for data in raw:
         out.extend(split_task(data))
     return out

@@ -76,3 +76,36 @@ def test_expand_tasks_accepts_dicts_and_models():
             return _task([_rep("a.py"), _rep("b.py")])
     out = ts.expand_tasks([Fake(), _task([_rep("c.py")])])
     assert len(out) == 2
+
+
+def _dtask(title, desc, files, **extra):
+    return dict(_task([], files=files), title=title, description=desc, **extra)
+
+
+def test_near_duplicate_tasks_in_same_batch_are_dropped():
+    desc = "Modificar a função register_checkout em app/routers/movements_router.py para filtrar itens defeituosos ao calcular a quantidade disponível."
+    a = _dtask("Corrigir saída de itens defeituosos", desc, ["app/routers/movements_router.py"])
+    b = _dtask("Corrigir lógica de saída para itens defeituosos", desc + " Apenas itens não defeituosos contam.", ["app/routers/movements_router.py"])
+    c = _dtask("Corrigir tela de relatório", "Ajustar o relatório mensal.", ["app/routers/reports_router.py"])
+    kept, dropped = ts.drop_near_duplicates([a, b, c])
+    assert [t["title"] for t in kept] == [a["title"], c["title"]]
+    assert dropped == [b["title"]]
+
+
+def test_audit_parts_and_different_files_are_never_dropped():
+    desc = "Corrija somente os achados abaixo " * 10
+    audit1 = _dtask("Auditoria: a.py (1 achado(s))", desc, ["a.py"])
+    audit2 = _dtask("Auditoria: a.py (1 achado(s))", desc, ["a.py"])
+    part1 = _dtask("Mudar x (1/2)", desc, ["a.py"])
+    part2 = _dtask("Mudar x (2/2)", desc, ["a.py"])
+    other = _dtask("Mudar x", desc, ["b.py"])
+    kept, dropped = ts.drop_near_duplicates([audit1, audit2, part1, part2, other])
+    assert len(kept) == 5 and dropped == []
+
+
+def test_expand_tasks_drops_duplicates_and_can_be_disabled(monkeypatch):
+    desc = "Ajustar a validação do CPF no cadastro de clientes para aceitar pontuação."
+    batch = [_dtask("Ajustar validação do CPF", desc, ["app/cpf.py"]), _dtask("Ajustar validação de CPF", desc, ["app/cpf.py"])]
+    assert len(ts.expand_tasks(batch)) == 1
+    monkeypatch.setenv("TASK_DEDUPE", "0")
+    assert len(ts.expand_tasks(batch)) == 2
