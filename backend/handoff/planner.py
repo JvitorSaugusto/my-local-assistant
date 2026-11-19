@@ -253,6 +253,10 @@ async def plan_and_check(
             dry = await dry_run_tasks(str(root), [candidate], runner=runner, thread_id=thread_id)
             result["report"] = dry["report"]
             review_warns = [
+                str(w)
+                for entry in (dry.get("results") or [])
+                for w in (entry.get("warnings") or [])
+            ] + [
                 str(item.get("detail") or "")
                 for entry in (dry.get("results") or [])
                 for item in (entry.get("log") or [])
