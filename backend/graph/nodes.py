@@ -98,7 +98,7 @@ from .webkit import strip_unverified_urls, today_label, urls_in
 from .context_builder import build_task_dossier, estimate_tokens, format_report
 from .grounding import auto_check_documents
 from .rag_bridge import rag_context
-from .answer_guard import build_answer_corpus, detect_repetition, finalize_answer, wants_raw_output
+from .answer_guard import UNVERIFIED_CODE_WARNING, UNVERIFIED_NORMAL_WARNING, build_answer_corpus, detect_repetition, finalize_answer, needs_code_reading, wants_raw_output
 from .checklist import gatherer_coverage_part
 from .heavy_rules import HEAVY_OUTPUT_RULES
 from .snippet_validator import validate_snippets
@@ -357,9 +357,26 @@ def standard_node_20b(state: State):
         if tool_text and isinstance(response.content, str):
             # links que não vieram das ferramentas (nem do usuário) são inventados: removidos
             response.content = strip_unverified_urls(response.content, tool_text + "\n" + _last_human_text(state))
+        if (
+            state.get("workspace_path")
+            and isinstance(response.content, str)
+            and needs_code_reading(_last_human_text(state), response.content)
+            and not response.content.startswith(UNVERIFIED_NORMAL_WARNING)
+        ):
+            response.content = UNVERIFIED_NORMAL_WARNING + response.content
     stamp_message(response)
 
     return {"messages": [response], "active_node": "standard_node_20b", "enhanced_prompt": None}
+
+
+_NON_LOCAL_TOOLS = {"web_search", "web_fetch", "calculate", "current_datetime", "remember_fact", "list_memories", "forget_fact"}
+
+
+def _has_local_read_tool(messages: list) -> bool:
+    return any(
+        getattr(m, "type", "") == "tool" and getattr(m, "name", "") not in _NON_LOCAL_TOOLS
+        for m in messages
+    )
 
 
 def code_node(state: State):
@@ -375,6 +392,30 @@ def code_node(state: State):
     context.extend(recent_messages)
 
     response = code_llm_with_tools.invoke(context)
+    has_workspace = bool(workspace_path) and Path(str(workspace_path)).is_dir()
+    if (
+        has_workspace
+        and not getattr(response, "tool_calls", None)
+        and not _has_local_read_tool(recent_messages)
+        and isinstance(response.content, str)
+        and needs_code_reading(_last_human_text(state), response.content)
+    ):
+        guard_msg = HumanMessage(
+            content=(
+                "SISTEMA: você afirmou uma causa de bug ou citou arquivos/símbolos do projeto sem ler nenhum arquivo "
+                "do workspace. Use as ferramentas de leitura para abrir o código real antes de diagnosticar. "
+                "Se não conseguir ler, deixe explícito que é apenas hipótese."
+            )
+        )
+        retry = code_llm_with_tools.invoke(context + [response, guard_msg])
+        if getattr(retry, "tool_calls", None):
+            response = retry
+        elif isinstance(retry.content, str) and retry.content.strip():
+            response = retry
+            if not response.content.startswith(UNVERIFIED_CODE_WARNING):
+                response.content = UNVERIFIED_CODE_WARNING + response.content
+        elif not response.content.startswith(UNVERIFIED_CODE_WARNING):
+            response.content = UNVERIFIED_CODE_WARNING + response.content
     response.name = "GPT-OSS (20B) CODE"
     response.additional_kwargs["message_tag"] = "response_code"
     web_text = _tool_text(recent_messages, only=("web_search", "web_fetch"))
