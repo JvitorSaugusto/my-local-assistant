@@ -802,7 +802,7 @@ def _related_test_files(workspace: str | None, written_files: list[str]) -> list
             rel_c = candidate.resolve().relative_to(root).as_posix()
             if rel_c in found:
                 continue
-            if rel_c in stems or any(s.removeprefix("test_") in candidate.stem for s in stems if s.startswith("test_")):
+            if rel_c in stems or candidate.name in stems or any(Path(s).stem.removeprefix("test_") in candidate.stem for s in stems if s.startswith("test_")):
                 found.append(rel_c)
     return found[:4]
 
