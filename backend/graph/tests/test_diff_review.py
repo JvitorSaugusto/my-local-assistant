@@ -100,3 +100,61 @@ class ReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_related_test_files_and_free_task_checks(tmp_path, monkeypatch):
+    from backend.graph.nodes import _related_test_files, _run_free_task_logic_checks
+    from backend.graph.task_journal import begin_journal, journal_end, record_write
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("TASK_JOURNAL_DIR", str(tmp_path / "journal"))
+    pkg = tmp_path / "tests"
+    pkg.mkdir(parents=True)
+    target = tmp_path / "sample_mod.py"
+    body = (
+        "    subtotal = qty * price\n"
+        "    discount = subtotal * 0.10\n"
+        "    final_value = subtotal - discount\n"
+        "    return round(final_value, 2)\n"
+    )
+    original_code = "def calc_total(qty, price):\n" + body
+    target.write_text(original_code, encoding="utf-8")
+    test_file = pkg / "test_sample_mod.py"
+    test_file.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n"
+        "from sample_mod import calc_total\n\n"
+        "def test_calc_total():\n"
+        "    assert calc_total(2, 50) == 90.0\n",
+        encoding="utf-8",
+    )
+
+    matches = _related_test_files(str(tmp_path), ["sample_mod.py"])
+    assert "tests/test_sample_mod.py" in matches
+
+    begin_journal(str(tmp_path), 999)
+    record_write(target)
+    target.write_text(original_code + body, encoding="utf-8")
+    task = SimpleNamespace(id=999, title="teste", description="teste")
+    blocking, _warnings = _run_free_task_logic_checks(str(tmp_path), task, [], ["sample_mod.py"])
+    journal_end(str(tmp_path))
+    assert any("duplicidade" in item for item in blocking)
+
+
+def test_filter_existing_duplicates():
+    from backend.api.task_split import filter_existing_duplicates
+
+    existing = [{
+        "title": "Corrigir cálculo de estoque",
+        "description": "Ajusta o cálculo de disponibilidade ignorando itens em reparo no endpoint de saída.",
+        "files": ["app/routers/movements_router.py"],
+    }]
+    candidates = [{
+        "title": "Corrigir cálculo de estoque",
+        "description": "Ajusta o cálculo de disponibilidade ignorando itens em reparo no endpoint de saída.",
+        "files": ["app/routers/movements_router.py"],
+    }]
+    kept, skipped = filter_existing_duplicates(candidates, existing)
+    assert kept == []
+    assert len(skipped) == 1
