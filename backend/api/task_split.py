@@ -155,3 +155,36 @@ def expand_tasks(tasks_data) -> list[dict]:
     for data in raw:
         out.extend(split_task(data))
     return out
+
+
+def filter_existing_duplicates(
+    tasks: list[dict],
+    existing_tasks: list[dict],
+    threshold: float = 0.8,
+) -> tuple[list[dict], list[str]]:
+    """Descarta tasks novas muito parecidas com tasks já salvas (mesmos arquivos, título e descrição)."""
+    kept: list[dict] = []
+    skipped: list[str] = []
+    for task in tasks:
+        title = str(task.get("title") or "").lower()
+        files = frozenset(_norm(f) for f in (task.get("files") or []) if _norm(f))
+        exempt = title.startswith("auditoria:") or bool(re.search(r"\(\d+/\d+\)\s*$", title))
+        is_dup = False
+        if files and not exempt:
+            desc = str(task.get("description") or "").lower()[:1500]
+            for existing in existing_tasks:
+                other_files = frozenset(_norm(f) for f in (existing.get("files") or []) if _norm(f))
+                if other_files != files:
+                    continue
+                other_title = str(existing.get("title") or "").lower()
+                if difflib.SequenceMatcher(None, title, other_title).ratio() < 0.6:
+                    continue
+                other_desc = str(existing.get("description") or "").lower()[:1500]
+                if difflib.SequenceMatcher(None, desc, other_desc).ratio() >= threshold:
+                    is_dup = True
+                    break
+        if is_dup:
+            skipped.append(str(task.get("title") or ""))
+        else:
+            kept.append(task)
+    return kept, skipped

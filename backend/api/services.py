@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from backend.api.schemas import ChatRequestSchema, TaskCreateSchema
 from backend.database.models import AiChatModel, TaskModel
-from backend.api.task_split import expand_tasks
+from backend.api.task_split import expand_tasks, filter_existing_duplicates
 
 
 class ChatService:
@@ -69,9 +69,19 @@ class TaskService:
             self.db = db
             
     async def create(self, tasks_data: list[TaskCreateSchema], thread_id: str) -> list[TaskModel]:
+        expanded = expand_tasks(tasks_data)
+        if expanded:
+            existing_rows = (await self.db.execute(select(TaskModel).where(TaskModel.thread_id == thread_id))).scalars().all()
+            existing_dicts = [
+                {"title": row.title, "description": row.description, "files": row.files or []}
+                for row in existing_rows
+            ]
+            expanded, skipped_dups = filter_existing_duplicates(expanded, existing_dicts)
+            for dup_title in skipped_dups:
+                print(f"[TASKS] duplicata de task já salva descartada: {dup_title}")
         new_tasks = [
-            TaskModel(**data, thread_id=thread_id) 
-            for data in expand_tasks(tasks_data)
+            TaskModel(**data, thread_id=thread_id)
+            for data in expanded
         ]
         
         self.db.add_all(new_tasks)
@@ -143,13 +153,6 @@ class TaskService:
             try:
                 from backend.graph.task_journal import discard_journal
 
-                import asyncio
-
-                from backend.graph.task_commit import commit_from_journal
-
-                note = await asyncio.to_thread(commit_from_journal, task_id, task.title)
-                if note:
-                    print(f"[COMMIT] {note}")
                 import asyncio
 
                 from backend.graph.task_commit import commit_from_journal
