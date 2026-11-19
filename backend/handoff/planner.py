@@ -252,14 +252,21 @@ async def plan_and_check(
             candidate = {**task, "steps": steps, "verify": verify}
             dry = await dry_run_tasks(str(root), [candidate], runner=runner, thread_id=thread_id)
             result["report"] = dry["report"]
-            has_review_warn = "revisão do diff:" in (dry.get("report") or "")
+            review_warns = [
+                str(item.get("detail") or "")
+                for entry in (dry.get("results") or [])
+                for item in (entry.get("log") or [])
+                if item.get("status") == "warn" or "revisão do diff" in str(item.get("label") or "").lower()
+            ]
+            has_review_warn = bool(review_warns) or "revisão do diff:" in (dry.get("report") or "")
             if dry["ok"] and not has_review_warn:
                 result.update(ok=True, task=candidate, error="")
                 return result
             if has_review_warn:
+                warn_text = "\n".join(review_warns) or dry["report"]
                 feedback = (
                     "O plano gerou alerta de risco alto na revisão do diff (possível campo/função inventada ou remoção excessiva):\n"
-                    + dry["report"]
+                    + warn_text
                     + "\nVerifique se o símbolo existe no código real. Se a descrição da task contradisser o código, devolva edits vazio e explique em `missing`."
                 )
             else:
