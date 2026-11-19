@@ -72,3 +72,53 @@ def test_finalize_answer():
 def test_wants_raw_output():
     assert ag.wants_raw_output("me dá o retorno bruto do generate_repo_map") is True
     assert ag.wants_raw_output("explique o fluxo") is False
+
+
+def test_needs_code_reading_flags_ungrounded_bug_diagnosis():
+    from backend.graph.answer_guard import needs_code_reading
+
+    assert needs_code_reading(
+        "estou com problema ao dar saída em item quebrado",
+        "No arquivo app/routers/movements_router.py, a função `register_checkout` não filtra `is_defective`.",
+    )
+    assert not needs_code_reading(
+        "qual a diferença entre lista e tupla em python?",
+        "Listas são mutáveis e tuplas são imutáveis.",
+    )
+
+
+def test_planner_rejects_diff_review_warning(tmp_path):
+    import asyncio
+    from backend.handoff.planner import Edit, Plan, plan_and_check
+
+    target = tmp_path / "mod.py"
+    target.write_text("def checkout(item):\n    return item.quantity\n", encoding="utf-8")
+
+    class FakePlannerLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return Plan(edits=[Edit(kind="replace_lines", path="mod.py", start_line=2, end_line=2, new_text="    if item.is_defective:\n        return 0\n    return item.quantity")])
+            return Plan(edits=[], missing="Campo is_defective não existe no projeto.")
+
+    def fake_runner(task, workspace, thread_id):
+        from backend.graph.executor import TaskRunResult
+        return TaskRunResult(
+            ok=True,
+            log=[{"index": 0, "total": 1, "label": "revisão do diff", "status": "warn", "detail": "risco alto: revisão do diff: mod.py: usa is_defective"}],
+        )
+
+    outcome = asyncio.run(
+        plan_and_check(
+            str(tmp_path),
+            {"title": "Filtrar quebrados", "description": "Checar is_defective", "files": ["mod.py"]},
+            llm=FakePlannerLLM(),
+            runner=fake_runner,
+            max_retries=1,
+        )
+    )
+    assert outcome["ok"] is False
+    assert "is_defective" in outcome["error"]
