@@ -5,28 +5,34 @@ import re
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from .ops_core import OPS_NAME
+from .ops_core import OPS_NAME, parse_delivery
 
 MAX_ROUNDS = 12
 MAX_HISTORY = 8
 
 COMMIT_TOOLS = {"git_commit_groups", "git_commit_files"}
 ZIP_TOOL = "build_zip_files"
+TXT_TOOL = "build_txt_files"
+DELIVERY_OK = ("Zip pronto", "TXT pronto")
+_TXT_LINK = re.compile(r"/api/handoff/packs/arquivos_[\w.-]+\.txt")
+_CLAIMS_TXT = re.compile(r"\btxt\s+(?:pronto|criado|gerado|montado)", re.I)
 _ZIP_LINK = re.compile(r"/api/handoff/zips/[\w.-]+\.zip")
 _CLAIMS_ZIP = re.compile(r"\bzip\s+(?:pronto|criado|gerado|montado)", re.I)
 NO_ZIP_MADE = "Não consegui gerar o zip desta vez. Peça de novo dizendo os nomes dos arquivos ou da pasta."
 ZIP_RETRY = (
-    "SISTEMA: você disse que gerou um zip, mas a ferramenta build_zip_files não rodou. "
-    "Chame build_zip_files com os nomes pedidos. Não escreva links; o sistema mostra o resultado real."
+    "SISTEMA: você disse que gerou um arquivo (zip ou txt), mas a ferramenta de entrega não rodou. "
+    "Chame build_zip_files (zip) ou build_txt_files (txt) com os nomes pedidos. Não escreva links; o sistema mostra o resultado real."
 )
 
 
 def _invented_zip_report(text, outputs):
     """True se o texto cita link ou diz que gerou um zip sem a ferramenta ter produzido isso."""
     known = "\n".join(outputs)
-    if any(link not in known for link in _ZIP_LINK.findall(text)):
+    links = _ZIP_LINK.findall(text) + _TXT_LINK.findall(text)
+    if any(link not in known for link in links):
         return True
-    return bool(_CLAIMS_ZIP.search(text)) and "Zip pronto" not in known
+    claims = bool(_CLAIMS_ZIP.search(text)) or bool(_CLAIMS_TXT.search(text))
+    return claims and not any(ok in known for ok in DELIVERY_OK)
 
 
 # hash curto/longo do git (precisa ter pelo menos um dígito, para não confundir com palavras como "defaced")
@@ -67,7 +73,12 @@ ZIP DE ARQUIVOS (o usuário quer receber arquivos ou pastas do projeto no chat, 
 2. Se a ferramenta devolver ERRO de nome ambíguo ou não encontrado, pergunte ao usuário o caminho completo (uma pergunta só). Nunca adivinhe e nunca troque por outro arquivo.
 3. O resultado com o link é enviado direto ao usuário. NUNCA escreva links de download nem diga que o zip está pronto sem ter chamado a ferramenta. Segredos (.env, chaves) ficam sempre de fora.
 
-Se o pedido não for sobre git, pacote nem zip, diga isso em uma frase."""
+TXT DE ARQUIVOS (o usuário pede 'em txt', '@txt', 'gera um txt' com arquivos do projeto):
+1. Chame build_txt_files UMA vez com os nomes como o usuário escreveu e with_map=true somente se ele pediu o mapa do projeto (ex.: 'com o mapa', 'inclua o mapa').
+2. Mesmas regras do ZIP: ERRO de nome ambíguo ou não encontrado, pergunte o caminho completo; nunca escreva links nem diga que o txt está pronto sem chamar a ferramenta. Arquivos inexistentes são listados pela própria ferramenta.
+3. Pedido de entregar arquivos NUNCA se resolve com git_changes_overview nem git_group_overview: use build_zip_files (ou build_txt_files se pediu txt).
+
+Se o pedido não for sobre git, pacote, zip nem txt, diga isso em uma frase."""
 
 
 def _text(content):
@@ -87,6 +98,30 @@ def build_history(messages, limit=MAX_HISTORY):
     return items[-limit:]
 
 
+async def _direct_delivery(history, by_name):
+    """Pedido claro de zip/txt (com nomes): roda a ferramenta direto, sem LLM, e devolve o resultado real (link ou ERRO)."""
+    last = next((m for m in reversed(history) if getattr(m, "type", "") == "human"), None)
+    if last is None:
+        return None
+    request = parse_delivery(_text(last.content))
+    if request is None:
+        return None
+    kind, names, with_map = request
+    if not names and not (kind == "txt" and with_map):
+        return None
+    if kind == "txt":
+        tool, args = by_name.get("build_txt_files"), {"names": names, "with_map": with_map}
+    else:
+        tool, args = by_name.get("build_zip_files"), {"names": names}
+    if tool is None:
+        return None
+    try:
+        output = str(await tool.ainvoke(args))
+    except Exception as exc:  # noqa: BLE001
+        return f"ERRO: {exc}"
+    return output.replace("Peça ao usuário o caminho completo.", "Diga o caminho completo do arquivo.")
+
+
 async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_ROUNDS):
     """Loop próprio de ferramentas. Devolve o texto final da resposta."""
     from . import ops_tools as tools_module
@@ -95,6 +130,9 @@ async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_R
         return "Selecione um diretório de trabalho para eu olhar o git e montar pacotes."
     tools_module.set_context(workspace, thread_id)
     by_name = {t.name: t for t in tools_module.OPS_TOOLS}
+    direct = await _direct_delivery(history, by_name)
+    if direct is not None:
+        return direct
     if llm is None:
         from .config import generate_llm
 
@@ -146,7 +184,7 @@ async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_R
             outputs.append(output)
             if call["name"] in COMMIT_TOOLS:
                 commit_outputs.append(output)
-            elif call["name"] == ZIP_TOOL and output.startswith("Zip pronto"):
+            elif call["name"] in (ZIP_TOOL, TXT_TOOL) and output.startswith(DELIVERY_OK):
                 zip_outputs.append(output)
             messages.append(ToolMessage(content=output[:12000], tool_call_id=call.get("id") or call["name"], name=call["name"]))
         if zip_outputs and not commit_outputs:
