@@ -53,6 +53,7 @@ REGRAS
 - new_text NÃO leva o prefixo `N: ` e deve ter a indentação exata do código ao redor (Python: 4 espaços).
 - Uma edição = um trecho contíguo. Edições do mesmo arquivo não podem se sobrepor.
 - Faça a menor mudança que cumpre a tarefa; não reescreva trechos que não precisam mudar.
+- ANTES de propor edições, confira se os campos, funções e comportamentos citados na descrição REALMENTE existem nos arquivos mostrados. Se a tarefa pedir um campo ou lógica que contradiz o código real (ex.: atributo inexistente no model), NÃO invente o campo: deixe edits vazio e explique a divergência em `missing`.
 - Se faltar contexto (arquivo/trecho não mostrado), deixe edits vazio e explique em `missing`."""
 
 
@@ -251,10 +252,18 @@ async def plan_and_check(
             candidate = {**task, "steps": steps, "verify": verify}
             dry = await dry_run_tasks(str(root), [candidate], runner=runner, thread_id=thread_id)
             result["report"] = dry["report"]
-            if dry["ok"]:
+            has_review_warn = "revisão do diff:" in (dry.get("report") or "")
+            if dry["ok"] and not has_review_warn:
                 result.update(ok=True, task=candidate, error="")
                 return result
-            feedback = "O dry-run falhou:\n" + dry["report"]
+            if has_review_warn:
+                feedback = (
+                    "O plano gerou alerta de risco alto na revisão do diff (possível campo/função inventada ou remoção excessiva):\n"
+                    + dry["report"]
+                    + "\nVerifique se o símbolo existe no código real. Se a descrição da task contradisser o código, devolva edits vazio e explique em `missing`."
+                )
+            else:
+                feedback = "O dry-run falhou:\n" + dry["report"]
         result["error"] = feedback
         messages += [("ai", plan.model_dump_json()), ("human", feedback + "\n\nCorrija e devolva o plano COMPLETO de novo (mesmas regras).")]
     return result
