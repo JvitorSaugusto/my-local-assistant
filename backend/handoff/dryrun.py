@@ -140,6 +140,13 @@ async def dry_run_tasks(
                 outcome = None
                 entry.update(status="failed", error=f"{type(exc).__name__}: {exc}")
             else:
+                warns = [
+                    str(item.get("detail") or "")
+                    for item in (getattr(outcome, "log", None) or [])
+                    if isinstance(item, dict) and item.get("status") == "warn" and item.get("detail")
+                ]
+                if warns:
+                    entry["warnings"] = warns
                 if not outcome.ok:
                     entry.update(status="failed", error=(outcome.error or "falha desconhecida"),
                                  failed_step=outcome.failed_step)
@@ -161,6 +168,8 @@ async def dry_run_tasks(
     for r in results:
         icon = {"ok": "✅", "failed": "❌", "blocked": "⏸️"}[r["status"]]
         lines.append(f"\n{icon} #{r['index']} {r['title']}")
+        for warn in r.get("warnings") or []:
+            lines.append(f"⚠️ {warn}")
         if r["status"] == "ok":
             continue
         lines.append(r["error"][:_ERR_LIMIT])
