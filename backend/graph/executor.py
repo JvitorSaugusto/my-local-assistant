@@ -45,6 +45,7 @@ from .tools import (
 )
 from .grounding import check_literals_grounded
 from .task_guards import FileSnapshot, extra_syntax_problems, run_pytest
+from .diff_review import review_changes
 
 _STEPS_ADAPTER = TypeAdapter(list[TaskStep])
 _CHECKS_ADAPTER = TypeAdapter(list[TaskCheck])
@@ -70,7 +71,7 @@ class TaskRunResult:
     log: list[dict[str, Any]] = field(default_factory=list)
 
     def report(self) -> str:
-        icons = {"ok": "✅", "skipped": "⏭️", "failed": "❌"}
+        icons = {"ok": "✅", "skipped": "⏭️", "failed": "❌", "warn": "⚠️"}
         lines = [
             f"{icons.get(item['status'], '•')} passo {item['index']}/{item['total']} "
             f"({item['label']}): {item['detail']}"
@@ -639,6 +640,9 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
                     problems.append(problem)
 
         problems.extend(run_checks(task.get("verify") or [], workspace))
+        # Revisão do diff: bloco colado em duplicidade reprova (rollback); nome inventado/apagão só avisa
+        review = review_changes(workspace, snapshot._orig)
+        problems.extend(review["blocking"])
 
     if problems:
         with _lock_for(workspace):
@@ -648,6 +652,9 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
             ("Os passos foram DESFEITOS (rollback), pois a verificação final falhou:\n" if rolled_back else "Os passos foram aplicados, mas a verificação final falhou:\n")
             + "\n".join(f"- {p}" for p in problems)
         )
+    elif review["warnings"]:
+        result.log.append({"index": 0, "total": len(steps), "label": "revisão do diff", "status": "warn",
+                           "detail": f"risco {review['risk']}: " + " | ".join(review["warnings"])})
 
     return result
 

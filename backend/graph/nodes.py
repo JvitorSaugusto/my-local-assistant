@@ -466,7 +466,12 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                     report_lines.append(
                         f"✅ #{task.id} {task.title} — {applied} passo(s) aplicado(s){extra}."
                     )
-                    commit_note = await asyncio.to_thread(commit_task, workspace_path, task.id, task.title, pre_state)
+                    review_notes = [item["detail"] for item in run.log if item["status"] == "warn"]
+                    if review_notes:
+                        report_lines.append(f"⚠️ #{task.id} REVISE antes de commitar (commit automático pulado): " + " ".join(review_notes))
+                        commit_note = None
+                    else:
+                        commit_note = await asyncio.to_thread(commit_task, workspace_path, task.id, task.title, pre_state)
                     if commit_note:
                         report_lines.append(commit_note)
                     absent = missing_listed_files(task.files, workspace_path)
