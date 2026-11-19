@@ -350,3 +350,16 @@ def journal_originals(task_id):
         return {"workspace": manifest["workspace"], "files": files}
     except Exception:  # noqa: BLE001
         return None
+
+
+def journal_run_originals(workspace, task_id):
+    """Devolve {Path: bytes|None} dos arquivos tocados nesta execução ativa, ou None."""
+    if not workspace:
+        return None
+    try:
+        journal = _ACTIVE.get(str(Path(workspace).resolve()))
+        if journal is None or journal.task_id != int(task_id):
+            return None
+        return {journal.root / rel: original for rel, original in journal.run_orig.items()}
+    except Exception:  # noqa: BLE001
+        return None
