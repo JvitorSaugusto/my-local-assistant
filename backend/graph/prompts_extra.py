@@ -37,6 +37,7 @@ CODE_TOOLS_RULES = """
   documentação oficial) e web_fetch antes de responder; cite a fonte. Não pesquise o que você sabe bem.
 - Use calculate para contas e current_datetime para datas. Nunca invente nomes de funções ou parâmetros.
 - Entregue código que roda: imports completos, tratamento dos erros prováveis e um exemplo mínimo de uso.
+- NUNCA afirme a causa de um bug no projeto do usuário nem cite nomes de campos/funções do workspace sem antes abrir e ler os arquivos reais com as ferramentas de leitura.
 """.strip()
 
 ENHANCER_CONTEXT_RULES = """

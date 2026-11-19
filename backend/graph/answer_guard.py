@@ -147,3 +147,33 @@ def finalize_answer(answer, corpus, check_names=True):
     degenerate = detect_repetition(text)
     text, invalid = ground_answer(text, corpus, check_names)
     return {"text": text, "invalid": invalid, "degenerate": degenerate}
+
+
+UNVERIFIED_CODE_WARNING = (
+    "⚠️ Aviso: nenhum arquivo do workspace foi lido nesta resposta; "
+    "o diagnóstico abaixo é apenas hipótese e não foi confirmado no código real.\n\n"
+)
+UNVERIFIED_NORMAL_WARNING = (
+    "⚠️ Aviso: o modo Normal não tem acesso aos arquivos do projeto; "
+    "qualquer causa ou código citado abaixo não foi verificado no workspace. Use o modo Code ou Heavy.\n\n"
+)
+_BUG_QUERY_RE = re.compile(
+    r"(?i)\b(erro|bug|problema|falha|quebrad\w*|n[ãa]o\s+consigo|arquivo|fun[çc][ãa]o|c[óo]digo|endpoint|rota|model|estoque|sa[íi]da)\b"
+)
+_CAUSE_CLAIM_RE = re.compile(
+    r"(?i)(no\s+arquivo|na\s+fun[çc][ãa]o|na\s+classe|no\s+m[ée]todo|o\s+problema\s+est[áa]|a\s+causa|n[ãa]o\s+filtra|n[ãa]o\s+exclui|linha\s+\d+)"
+)
+_FILE_IN_TEXT_RE = re.compile(r"\b[\w./-]+\.(?:py|js|ts|tsx|jsx|php|html|sql|json)\b", re.I)
+
+
+def needs_code_reading(user_text: str, answer_text: str) -> bool:
+    """True quando a resposta afirma causa de bug ou cita arquivos/símbolos do projeto sem evidência lida."""
+    user = user_text or ""
+    answer = answer_text or ""
+    if not _BUG_QUERY_RE.search(user):
+        return False
+    if _FILE_IN_TEXT_RE.search(answer):
+        return True
+    if _CAUSE_CLAIM_RE.search(answer):
+        return True
+    return bool(extract_identifiers(answer))
