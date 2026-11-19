@@ -160,6 +160,28 @@ def git_commit_groups(groups: list[dict]) -> str:
         return f"ERRO: {exc}"
 
 
+@tool
+def build_txt_files(names: list[str], with_map: bool = False) -> str:
+    """Junta arquivos e/ou pastas do projeto em UM .txt (cabeçalho ARQUIVO/CAMINHO + conteúdo completo de cada um) e devolve o link para baixar. Use with_map=true só se o usuário pediu o mapa do projeto junto. Arquivos inexistentes são listados no próprio .txt. Deixa de fora segredos (.env, chaves). Limite de 200 arquivos e 5 MB."""
+    root = _root()
+    if not root:
+        return "ERRO: nenhum diretório de trabalho selecionado."
+    try:
+        result = core.build_txt(root, names or [], bool(with_map))
+    except Exception as exc:  # noqa: BLE001
+        return f"ERRO ao montar o txt: {exc}"
+    if isinstance(result, str):
+        return result
+    files = result["files"]
+    shown = "\n".join(f"- {p}" for p in files[:40])
+    more = f"\n... e mais {len(files) - 40}" if len(files) > 40 else ""
+    miss = ("\nNão encontrados: " + "; ".join(result["missing"][:10])) if result["missing"] else ""
+    left = ("\nFicaram de fora: " + "; ".join(result["skipped"][:6])) if result["skipped"] else ""
+    size = result["bytes"] / 1024
+    mapa = " com mapa do projeto" if result["with_map"] else ""
+    return f"TXT pronto: {_link(result['path'])} ({len(files)} arquivo(s){mapa}, {size:.1f} KB).\n{shown}{more}{miss}{left}"
+
+
 OPS_TOOLS = [
     git_changes_overview,
     git_group_overview,
@@ -170,4 +192,5 @@ OPS_TOOLS = [
     build_context_pack,
     build_primer_file,
     build_zip_files,
+    build_txt_files,
 ]
