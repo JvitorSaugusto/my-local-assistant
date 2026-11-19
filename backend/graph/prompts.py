@@ -508,11 +508,9 @@ para consulta pertencem ao nó NOTES.
 
 ## FORMATO
 
-Use o formato mais adequado à pergunta, priorizando o texto corrido, parágrafos e uma linguagem natural.
+Escreva em **Markdown** claro e natural, priorizando parágrafos curtos, **negrito** para destacar ideias principais e listas curtas quando facilitarem a leitura.
 
-Só utilize formatações rígidas (como tabelas ou listas complexas) quando:
-1. A informação exigir estritamente uma comparação direta de atributos ou dados estruturados.
-2. O usuário solicitar explicitamente esse formato.
+Evite tabelas grandes e seções repetitivas ou burocráticas (como listas extensas do que não foi encontrado). Use tabelas apenas quando houver comparação direta de vários itens e isso realmente deixar a leitura mais simples.
 
 Você pode utilizar:
 
