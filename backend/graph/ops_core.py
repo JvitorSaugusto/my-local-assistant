@@ -16,7 +16,7 @@ _STOP = set(
 )
 _BAD_EXT = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".zip", ".rar", ".lock", ".pyc", ".woff", ".woff2")
 
-_TAG = re.compile(r"^\s*@(ops|commit|pack|primer|zip)(?!\S)[:\s]", re.I)
+_TAG = re.compile(r"^\s*@(ops|commit|pack|primer|zip|txt)(?!\S)[:\s]", re.I)
 _OTHER_TAG = re.compile(r"(?<!\S)@(heavy|enhance|generate)(?!\S)", re.I)
 _COMMIT_VERB = re.compile(
     r"\b(commita|commite|commitar|comitar|comita|comite|fa[çc]a?\s+(um\s+)?commit|faz(er)?\s+(um\s+)?commit"
@@ -34,7 +34,7 @@ _SELECTION = re.compile(
 )
 _ASKS_CHOICE = re.compile(r"responda com|quais (?:grupos|arquivos)|me diga|escolha|indique", re.I)
 _ZIP_WORD = re.compile(r"\b(zip\w*|compact(?:a|e|ar)\w*|empacot\w*)\b", re.I)
-_DELIVER_VERB = re.compile(r"\b(entreg\w+|devolv\w+|baix\w+|me\s+(?:mand|envi)\w+)\b", re.I)
+_DELIVER_VERB = re.compile(r"\b(entreg\w+|devolv\w+|baix\w+|me\s+(?:mand|envi|retorn)\w+)\b", re.I)
 _FILES_NOUN = re.compile(r"\b(arquivos?|pastas?|diret[óo]rios?)\b", re.I)
 
 
@@ -65,7 +65,11 @@ def detect_ops_intent(text, messages):
         return None
     match = _TAG.match(text)
     if match:
-        return text[match.end():].strip() or "o que você pode fazer?"
+        rest = text[match.end():].strip()
+        tag = match.group(1).lower()
+        if tag in ("zip", "txt"):
+            return f"{tag} {rest}".strip()
+        return rest or "o que você pode fazer?"
     previous = None
     for msg in reversed(list(messages or [])[:-1]):
         kind = getattr(msg, "type", "")
@@ -80,7 +84,7 @@ def detect_ops_intent(text, messages):
             return text
     if re.match(r"\s*@\w+", text):
         return None
-    if _wants_zip(text):
+    if _wants_zip(text) or _wants_txt(text):
         return text
     low = text.lower()
     if "autocommit" in low or re.search(r"#\d+", text) or "task" in low:
@@ -348,7 +352,7 @@ def save_pack(markdown, hint=""):
 
 
 def pack_file_path(name):
-    if not re.fullmatch(r"[\w.-]+\.md", str(name or "")):
+    if not re.fullmatch(r"[\w.-]+\.(?:md|txt)", str(name or "")):
         return None
     path = pack_dir() / name
     return path if path.is_file() else None
