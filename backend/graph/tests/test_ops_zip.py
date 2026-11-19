@@ -38,7 +38,7 @@ class ZipIntentTests(unittest.TestCase):
         self.assertIsNotNone(oc.detect_ops_intent("me entregue os arquivos script.js, style.css e tasks.py", []))
         self.assertIsNotNone(oc.detect_ops_intent("monta um zip da pasta backend/rag", []))
         self.assertIsNotNone(oc.detect_ops_intent("me mande a pasta static e o main.py", []))
-        self.assertEqual(oc.detect_ops_intent("@zip a.py b.py", []), "a.py b.py")
+        self.assertEqual(oc.detect_ops_intent("@zip a.py b.py", []), "zip a.py b.py")
 
     def test_does_not_hijack_other_messages(self):
         self.assertIsNone(oc.detect_ops_intent("como faço um zip em python?", []))
@@ -133,6 +133,134 @@ class ZipBuildTests(unittest.TestCase):
         result = oc.build_zip(plain, ["app.js"])
         self.assertEqual(names_in(result["path"]), ["src/app.js"])
         self.assertIn("não encontrei", oc.build_zip(plain, ["x.js"]))
+
+
+class TxtIntentTests(unittest.TestCase):
+    def test_detects_txt_and_delivery_requests(self):
+        self.assertEqual(oc.detect_ops_intent("@txt a.py b.py", []), "txt a.py b.py")
+        self.assertEqual(oc.detect_ops_intent("@zip a.py b.py", []), "zip a.py b.py")
+        self.assertIsNotNone(oc.detect_ops_intent("gera um txt com os arquivos a.py e b.py", []))
+        self.assertIsNotNone(oc.detect_ops_intent("me retorna os arquivos a.py, b.py em txt", []))
+        self.assertIsNotNone(oc.detect_ops_intent("me retorna os arquivos a.py, b.py", []))
+        self.assertIsNotNone(oc.detect_ops_intent("gera um txt", []))
+
+    def test_does_not_hijack_other_messages(self):
+        self.assertIsNone(oc.detect_ops_intent("como leio um txt em python?", []))
+        self.assertIsNone(oc.detect_ops_intent("explique o arquivo notas.txt", []))
+        self.assertIsNone(oc.detect_ops_intent("@heavy gera um txt dos arquivos", []))
+        self.assertIsNone(oc.detect_ops_intent("a função retorna os arquivos", []))
+
+    def test_parse_delivery(self):
+        self.assertEqual(oc.parse_delivery("txt a.py b.py com o mapa"), ("txt", ["a.py", "b.py"], True))
+        self.assertEqual(oc.parse_delivery("@txt a.py"), ("txt", ["a.py"], False))
+        self.assertEqual(oc.parse_delivery("me retorna os arquivos a.py, b.py em txt"), ("txt", ["a.py", "b.py"], False))
+        self.assertEqual(oc.parse_delivery("monta um zip da pasta backend/rag e o main.py"), ("zip", ["main.py", "backend/rag"], False))
+        self.assertEqual(oc.parse_delivery("me entregue os arquivos a.py e b.py"), ("zip", ["a.py", "b.py"], False))
+        self.assertEqual(oc.parse_delivery("gera um txt dos arquivos a.py e o mapa junto")[2], True)
+        self.assertIsNone(oc.parse_delivery("como faço um zip em python?"))
+        self.assertIsNone(oc.parse_delivery("explique o arquivo script.js"))
+
+
+class TxtBuildTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self._tmp.name) / "proj"
+        self.root.mkdir()
+        os.environ["TASK_PACK_DIR"] = str(pathlib.Path(self._tmp.name) / "packs")
+        git(self.root, "init", "-q")
+        git(self.root, "config", "user.email", "t@t.t")
+        git(self.root, "config", "user.name", "T")
+        write(self.root, "a.py", "x = 1")
+        write(self.root, "pkg/b.py", "b = 1")
+        write(self.root, "web/b.py", "b = 2")
+        write(self.root, "static/script.js", "var a = 1;")
+        write(self.root, "backend/rag/x.py", "x = 1")
+        write(self.root, "backend/rag/y.py", "y = 1")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "base")
+        write(self.root, ".env", "TOKEN=abc")
+        write(self.root, "backend/rag/secret.key", "k")
+        write(self.root, "node_modules/lib/x.js", "x")
+        write(self.root, "dist/out.js", "o")
+
+    def tearDown(self):
+        os.environ.pop("TASK_PACK_DIR", None)
+        self._tmp.cleanup()
+
+    def test_multiple_files_with_headers(self):
+        result = oc.build_txt(self.root, ["a.py", "script.js"])
+        self.assertIsInstance(result, dict)
+        text = result["path"].read_text(encoding="utf-8")
+        self.assertIn("ARQUIVO: a.py\nCAMINHO: a.py\n\nx = 1", text)
+        self.assertIn("ARQUIVO: script.js\nCAMINHO: static/script.js\n\nvar a = 1;", text)
+        self.assertNotIn("=== MAPA DO PROJETO ===", text)
+        self.assertTrue(result["path"].name.startswith("arquivos_") and result["path"].name.endswith(".txt"))
+        self.assertEqual(oc.pack_file_path(result["path"].name), result["path"])
+        self.assertEqual(result["files"], ["a.py", "static/script.js"])
+
+    def test_map_on_top_ignores_heavy_dirs(self):
+        result = oc.build_txt(self.root, ["a.py"], with_map=True)
+        text = result["path"].read_text(encoding="utf-8")
+        self.assertLess(text.index("=== MAPA DO PROJETO ==="), text.index("ARQUIVO: a.py"))
+        header = text.split("ARQUIVO: a.py")[0]
+        self.assertIn("script.js", header)
+        for blocked in (".git/", "node_modules", "dist", "__pycache__"):
+            self.assertNotIn(blocked, header)
+
+    def test_map_only(self):
+        result = oc.build_txt(self.root, [], with_map=True)
+        self.assertIsInstance(result, dict)
+        self.assertIn("=== MAPA DO PROJETO ===", result["path"].read_text(encoding="utf-8"))
+
+    def test_missing_files_listed_on_top_without_breaking(self):
+        result = oc.build_txt(self.root, ["a.py", "zzz.py"])
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["missing"], ["zzz.py"])
+        text = result["path"].read_text(encoding="utf-8")
+        self.assertLess(text.index("=== ARQUIVOS NÃO ENCONTRADOS ==="), text.index("ARQUIVO: a.py"))
+        self.assertIn("- zzz.py", text)
+        self.assertIn("x = 1", text)
+
+    def test_only_missing_is_error(self):
+        result = oc.build_txt(self.root, ["zzz.py"])
+        self.assertIsInstance(result, str)
+        self.assertIn("zzz.py", result)
+
+    def test_ambiguous_name_asks_for_full_path(self):
+        self.assertIn("bate com", oc.build_txt(self.root, ["b.py"]))
+
+    def test_folder_skips_secrets(self):
+        result = oc.build_txt(self.root, ["rag"])
+        text = result["path"].read_text(encoding="utf-8")
+        self.assertIn("CAMINHO: backend/rag/x.py", text)
+        self.assertIn("CAMINHO: backend/rag/y.py", text)
+        self.assertNotIn("CAMINHO: backend/rag/secret.key", text)
+        self.assertTrue(any("secret.key" in s for s in result["skipped"]))
+
+    def test_secret_only_request_is_refused(self):
+        result = oc.build_txt(self.root, [".env"])
+        self.assertIsInstance(result, str)
+        self.assertIn("segredo", result)
+        self.assertNotIn("TOKEN=abc", result)
+
+    def test_empty_request_and_limits(self):
+        self.assertIn("nenhum arquivo", oc.build_txt(self.root, []))
+        old = oc.TXT_MAX_FILES
+        oc.TXT_MAX_FILES = 1
+        try:
+            self.assertIn("limite", oc.build_txt(self.root, ["rag"]))
+        finally:
+            oc.TXT_MAX_FILES = old
+        old = oc.TXT_MAX_BYTES
+        oc.TXT_MAX_BYTES = 3
+        try:
+            self.assertIn("limite", oc.build_txt(self.root, ["a.py"]))
+        finally:
+            oc.TXT_MAX_BYTES = old
+
+    def test_pack_file_path_accepts_txt_and_rejects_paths(self):
+        self.assertIsNone(oc.pack_file_path("../x.txt"))
+        self.assertIsNone(oc.pack_file_path("nao_existe.txt"))
 
 
 if __name__ == "__main__":
