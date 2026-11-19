@@ -87,13 +87,21 @@
       ]
     },
     {
-      title: "Receber arquivos pelo chat (zip)",
+      title: "Receber arquivos pelo chat (zip e txt)",
       tips: [
+        { kind: "insert", title: "Exportar arquivos em .txt (@txt)", when: "Junta os arquivos pedidos em um único .txt (nome, caminho e código completo) e devolve o link para baixar. Ótimo para enviar contexto a outra IA sem gastar tokens abrindo zip.",
+          text: "@txt <backend/main.py> <backend/graph/nodes.py>" },
+        { kind: "insert", title: "Exportar .txt com o mapa do projeto", when: "Inclui a árvore de pastas e arquivos no topo do .txt (sem .git, venv e node_modules) seguida do código dos arquivos pedidos.",
+          text: "@txt <backend/main.py> com o mapa" },
+        { kind: "insert", title: "Só o mapa do projeto em .txt", when: "Gera um .txt contendo apenas a árvore do workspace atual para descobrir caminhos exatos.",
+          text: "@txt com o mapa" },
+        { kind: "insert", title: "Pedir arquivos em .txt em português", when: "Também funciona em linguagem natural no modo Auto, sem precisar digitar @txt.",
+          text: "me retorna os arquivos <script.js, style.css> em txt com o mapa" },
         { kind: "insert", title: "Pedir arquivos em zip", when: "Diga os nomes (simples, como script.js) e/ou pastas: o assistente junta tudo num .zip e devolve o link para baixar. Pastas inteiras e arquivos de pastas diferentes podem ir juntos. Precisa de um projeto escolhido.",
           text: "me entregue os arquivos <script.js e style.css> e a pasta <rag>" },
         { kind: "insert", title: "Zip com a tag @zip", when: "Força o modo de arquivos, sem depender de como a frase foi escrita. Se o nome for ambíguo (ex.: b.py em duas pastas), o assistente pede o caminho completo.",
           text: "@zip <script.js> backend/rag" },
-        { kind: "info", title: "O que entra e o que não entra no zip", when: "Entram arquivos rastreados e novos (respeita o .gitignore). Ficam de fora .git, venv, node_modules, .env, chaves e certificados, e o assistente avisa o que foi omitido. Limite: 500 arquivos e 50 MB. Os zips ficam guardados por 30 dias, na mesma pasta dos pacotes." }
+        { kind: "info", title: "O que entra e o que não entra (zip e txt)", when: "Entram arquivos rastreados e novos (respeita o .gitignore). Ficam de fora .git, venv, node_modules, .env, chaves e certificados; no .txt, arquivos inexistentes aparecem listados no topo sem quebrar o restante. Limites: zip até 500 arquivos/50 MB; txt até 200 arquivos/5 MB. Ficam guardados por 30 dias." }
       ]
     },
     {
