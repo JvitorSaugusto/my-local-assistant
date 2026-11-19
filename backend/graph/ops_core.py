@@ -460,3 +460,171 @@ def zip_file_path(name):
         return None
     path = pack_dir() / name
     return path if path.is_file() else None
+
+
+# --- Exportação em .txt (código dos arquivos, com mapa opcional) e leitura do pedido de entrega ---
+TXT_MAX_FILES = 200
+TXT_MAX_BYTES = 5 * 1024 * 1024
+_TXT_SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+_TXT_WORD = re.compile(r"(?<![\w.])\.?txt(?!\w)", re.I)
+_MAP_WORD = re.compile(r"(?<![\w./\\-])(mapa|[áa]rvore)(?![\w/\\-]|\.\w)", re.I)
+_DELIVERY_HEAD = re.compile(r"^\s*(?:@ops\b[:\s]*)?@?(zip|txt)\b[\s:]*(.*)$", re.I | re.S)
+_NAME_TOKEN = re.compile(r"[\w][\w./\\-]*\.[A-Za-z0-9]{1,8}(?!\w)")
+_DIR_TOKEN = re.compile(r"\b(?:pastas?|diret[óo]rios?)\s+(?:d[aoe]s?\s+)?([\w./\\-]+)", re.I)
+_DELIVERY_STOP = set(
+    "com sem o a os as e mapa mapas do da de dos das projeto junto juntos inclua incluir inclui incluindo "
+    "arvore árvore em txt zip .txt .zip um uma arquivo arquivos pasta pastas tambem também".split()
+)
+
+
+def _wants_txt(text):
+    # True se o usuário pede os arquivos do projeto em um .txt (ex.: "em txt", "gera um txt").
+    text = text or ""
+    if (_QUESTION_START.match(text) and "?" in text) or re.search(r"#\d+|autocommit", text, re.I):
+        return False
+    if _COMMIT_VERB.search(text) or not _TXT_WORD.search(text):
+        return False
+    return bool(_FILES_NOUN.search(text) or _DELIVER_VERB.search(text) or _PACK_VERB.search(text))
+
+
+def parse_delivery(text):
+    """Lê um pedido de entrega de arquivos. Devolve (tipo 'zip'|'txt', nomes, com_mapa) ou None."""
+    text = str(text or "").strip()
+    if not text:
+        return None
+    with_map = bool(_MAP_WORD.search(text))
+    head = _DELIVERY_HEAD.match(text)
+    names = []
+    if head:
+        kind, body = head.group(1).lower(), head.group(2)
+        for token in re.split(r"[\s,;]+", body):
+            token = token.strip("'\"<>`")
+            if token and token.lower() not in _DELIVERY_STOP and token not in names:
+                names.append(token)
+        return kind, names, with_map
+    if not (_wants_zip(text) or _wants_txt(text)):
+        return None
+    kind = "txt" if (_TXT_WORD.search(text) and not _ZIP_WORD.search(text)) else "zip"
+    for match in _NAME_TOKEN.finditer(text):
+        if match.group(0) not in names:
+            names.append(match.group(0))
+    for match in _DIR_TOKEN.finditer(text):
+        folder = match.group(1).rstrip(".,;")
+        if folder and folder.lower() not in _DELIVERY_STOP and folder not in names:
+            names.append(folder)
+    return kind, names, with_map
+
+
+def project_tree(root, max_entries=400):
+    """Árvore de diretórios/arquivos do workspace (sem .git, __pycache__, node_modules, venv, dist, build)."""
+    root = Path(root)
+    lines = [f"{root.name or str(root)}/"]
+    count = [0]
+
+    def walk(directory, prefix):
+        try:
+            entries = sorted(directory.iterdir(), key=lambda e: (e.is_file(), e.name.lower()))
+        except OSError:
+            return
+        entries = [e for e in entries if not (e.is_dir() and e.name in _TXT_SKIP_DIRS)]
+        for index, entry in enumerate(entries):
+            if count[0] >= max_entries:
+                if not lines[-1].endswith("..."):
+                    lines.append(prefix + "...")
+                return
+            last = index == len(entries) - 1
+            count[0] += 1
+            lines.append(f"{prefix}{'└── ' if last else '├── '}{entry.name}{'/' if entry.is_dir() else ''}")
+            if entry.is_dir() and not entry.is_symlink():
+                walk(entry, prefix + ("    " if last else "│   "))
+
+    walk(root, "")
+    return "\n".join(lines)
+
+
+def build_txt(root, names, with_map=False, hint=""):
+    """Junta arquivos/pastas pedidos em UM .txt (mapa opcional no topo). Devolve dict ou texto 'ERRO: ...'."""
+    root = Path(root)
+    names = [str(n) for n in (names or []) if str(n).strip()]
+    if not names and not with_map:
+        return "ERRO: nenhum arquivo ou pasta informado."
+    files = project_files(root)
+    dirs = sorted({d for f in files for d in _parent_dirs(f)})
+    selected, ambiguous, missing = [], {}, []
+    for raw in names:
+        name = raw.strip().replace("\\", "/").strip("'\"<>").rstrip("/")
+        if name.startswith("./"):
+            name = name[2:]
+        if not name:
+            continue
+        hits, amb, miss = resolve_names(files, [name])
+        if not hits and not amb:
+            dir_hits, amb, miss = resolve_names(dirs, [name])
+            hits = [f for d in dir_hits for f in files if f.startswith(d + "/")]
+        ambiguous.update(amb)
+        missing.extend(miss)
+        for path in hits:
+            if path not in selected:
+                selected.append(path)
+    if ambiguous:
+        return _problems_text(ambiguous, [])
+    skipped, kept = [], []
+    for path in selected:
+        if is_secret_path(path):
+            skipped.append(f"{path} (segredo)")
+        elif path.lower().endswith(_BAD_EXT):
+            skipped.append(f"{path} (binário)")
+        else:
+            kept.append(path)
+    if len(kept) > TXT_MAX_FILES:
+        return f"ERRO: {len(kept)} arquivos passam do limite de {TXT_MAX_FILES}. Peça uma pasta menor ou nomes específicos."
+    total = sum((root / p).stat().st_size for p in kept)
+    if total > TXT_MAX_BYTES:
+        return f"ERRO: {total} bytes passam do limite de {TXT_MAX_BYTES} bytes. Peça menos arquivos."
+    contents = []
+    for rel in kept:
+        data = (root / rel).read_bytes()
+        if b"\0" in data[:8000]:
+            skipped.append(f"{rel} (binário)")
+            continue
+        contents.append((rel, data.decode("utf-8", errors="replace")))
+    if not contents and not with_map:
+        detail = ", ".join(skipped + ["não encontrei: " + ", ".join(missing)] if missing else skipped)
+        return "ERRO: nada para exportar" + (": " + detail if detail else ".")
+    parts = []
+    if missing:
+        parts.append("=== ARQUIVOS NÃO ENCONTRADOS ===\n" + "\n".join(f"- {n}" for n in missing))
+    if skipped:
+        parts.append("=== ARQUIVOS IGNORADOS ===\n" + "\n".join(f"- {n}" for n in skipped))
+    if with_map:
+        parts.append("=== MAPA DO PROJETO ===\n" + project_tree(root))
+    sep = "# " + "=" * 40
+    for rel, body in contents:
+        parts.append(f"{sep}\nARQUIVO: {rel.rsplit('/', 1)[-1]}\nCAMINHO: {rel}\n\n{body.rstrip(chr(10))}\n")
+    text = "\n\n".join(parts) + "\n"
+    base = pack_dir()
+    now = time.time()
+    for old in base.glob("arquivos_*.txt"):
+        try:
+            if now - old.stat().st_mtime > 30 * 24 * 3600:
+                old.unlink()
+        except OSError:
+            continue
+    label = hint or "-".join(Path(n).stem for n in names[:3]) or "mapa"
+    slug = re.sub(r"[^a-z0-9]+", "-", str(label).lower())[:40].strip("-") or "arquivos"
+    path = base / f"arquivos_{time.strftime('%Y%m%d_%H%M%S')}_{slug}.txt"
+    tmp = path.with_name(path.name + ".part")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return {
+        "path": path,
+        "files": [rel for rel, _body in contents],
+        "skipped": skipped,
+        "missing": missing,
+        "bytes": path.stat().st_size,
+        "with_map": bool(with_map),
+    }
