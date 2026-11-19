@@ -11,6 +11,7 @@ import unittest
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from backend.graph.ops_core import detect_ops_intent
 from backend.graph.ops_node import build_history, run_ops
 
 
@@ -98,7 +99,7 @@ class OpsNodeTests(unittest.TestCase):
         self.assertIn("/api/handoff/zips/arquivos_", answer)
         self.assertIn("- a.py", answer)
         self.assertIn("- b.py", answer)
-        self.assertEqual(len(llm.seen), 1)
+        self.assertEqual(len(llm.seen), 0)
 
     def test_invented_zip_link_is_rejected(self):
         fake = "Pronto! [x.zip](/api/handoff/zips/arquivos_inventado.zip)"
@@ -106,6 +107,59 @@ class OpsNodeTests(unittest.TestCase):
         answer = self.run_ops(llm, [HumanMessage(content="me entregue o a.py")])
         self.assertIn("Não consegui gerar o zip", answer)
         self.assertIn("SISTEMA", llm.seen[1][-1].content)
+
+    def run_with_packs(self, text, llm=None):
+        with tempfile.TemporaryDirectory() as packs:
+            os.environ["TASK_PACK_DIR"] = packs
+            try:
+                return self.run_ops(llm or FakeLLM([]), [HumanMessage(content=text)])
+            finally:
+                os.environ.pop("TASK_PACK_DIR", None)
+
+    def test_txt_request_returns_link_without_llm_or_git_status(self):
+        llm = FakeLLM([])
+        answer = self.run_with_packs("me retorna os arquivos a.py e b.py em txt", llm)
+        self.assertTrue(answer.startswith("TXT pronto"))
+        self.assertIn("/api/handoff/packs/arquivos_", answer)
+        self.assertIn(".txt", answer)
+        self.assertIn("- a.py", answer)
+        self.assertIn("- b.py", answer)
+        self.assertNotIn("não commitadas", answer)
+        self.assertEqual(llm.seen, [])
+
+    def test_txt_with_map_from_tag_text(self):
+        answer = self.run_with_packs("txt a.py com o mapa")
+        self.assertTrue(answer.startswith("TXT pronto"))
+        self.assertIn("com mapa do projeto", answer)
+        answer = self.run_with_packs("@txt a.py b.py")
+        self.assertTrue(answer.startswith("TXT pronto"))
+
+    def test_txt_reports_missing_files(self):
+        answer = self.run_with_packs("txt a.py zzz.py")
+        self.assertTrue(answer.startswith("TXT pronto"))
+        self.assertIn("Não encontrados: zzz.py", answer)
+
+    def test_natural_delivery_without_zip_word_returns_zip_link(self):
+        answer = self.run_with_packs("me retorna os arquivos a.py, b.py")
+        self.assertTrue(answer.startswith("Zip pronto"))
+        self.assertIn("/api/handoff/zips/arquivos_", answer)
+        self.assertNotIn("não commitadas", answer)
+
+    def test_zip_tag_returns_link(self):
+        answer = self.run_with_packs("@zip a.py b.py")
+        self.assertTrue(answer.startswith("Zip pronto"))
+
+    def test_invented_txt_link_is_rejected(self):
+        fake = "Pronto! [x.txt](/api/handoff/packs/arquivos_inventado.txt)"
+        llm = FakeLLM([AIMessage(content=fake), AIMessage(content=fake)])
+        answer = self.run_ops(llm, [HumanMessage(content="me entregue o a.py")])
+        self.assertIn("Não consegui gerar o zip", answer)
+        self.assertIn("SISTEMA", llm.seen[1][-1].content)
+
+    def test_auto_mode_routes_delivery_requests_to_ops(self):
+        for text in ("me retorna os arquivos a.py, b.py", "me retorna os arquivos a.py, b.py em txt", "gera um txt com a.py", "@txt a.py", "@zip a.py"):
+            self.assertIsNotNone(detect_ops_intent(text, []), text)
+        self.assertIsNone(detect_ops_intent("como leio um txt em python?", []))
 
     def test_history_keeps_only_human_and_plain_ai(self):
         class M:
