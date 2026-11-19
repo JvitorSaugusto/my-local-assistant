@@ -12,7 +12,7 @@ from . import memory, webkit
 
 
 @tool
-def web_search(query: str, max_results: int = 5) -> str:
+def web_search(query: str, max_results: int = 8) -> str:
     """Pesquisa na internet e devolve título, link e trecho dos melhores resultados.
 
     Use para informação ATUAL ou verificável: notícias, preços, versões e mudanças de bibliotecas, documentação oficial,
