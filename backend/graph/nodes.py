@@ -53,7 +53,10 @@ from .prompts import (
     ROUTER_NODE_PROMPT,
     STANDARD_NODE_PROMPT,
 )
-from .task_journal import begin_journal, journal_end, journal_rollback, syntax_problems_for_paths
+import os
+from .diff_review import review_changes
+from .task_guards import run_pytest
+from .task_journal import begin_journal, journal_end, journal_rollback, journal_run_originals, syntax_problems_for_paths
 from .task_commit import capture_originals, commit_task
 from .ops_core import detect_ops_intent
 from .map_shortcut import project_map_message
@@ -774,6 +777,55 @@ def _count_write_rounds(task_messages) -> int:
     return sum(1 for m in task_messages if getattr(m, "type", "") == "ai" and _has_write_call([m]))
 
 
+def _related_test_files(workspace: str | None, written_files: list[str]) -> list[str]:
+    """Localiza arquivos de teste (test_*.py) relacionados aos arquivos alterados no modo livre."""
+    if not workspace or not written_files:
+        return []
+    root = Path(workspace).resolve()
+    stems = set()
+    for rel in written_files:
+        norm = _norm_path(rel)
+        if not norm.endswith(".py"):
+            continue
+        stem = Path(norm).stem
+        if stem.startswith("test_"):
+            stems.add(norm)
+        else:
+            stems.add(f"test_{stem}.py")
+    found: list[str] = []
+    for base in (root / "tests", root / "backend" / "graph" / "tests", root / "backend" / "handoff" / "tests", root / "backend" / "rag" / "tests", root):
+        if not base.is_dir():
+            continue
+        for candidate in base.rglob("test_*.py"):
+            if any(part in {"venv", ".venv", "node_modules", "__pycache__", ".git"} for part in candidate.parts):
+                continue
+            rel_c = candidate.resolve().relative_to(root).as_posix()
+            if rel_c in found:
+                continue
+            if rel_c in stems or any(s.removeprefix("test_") in candidate.stem for s in stems if s.startswith("test_")):
+                found.append(rel_c)
+    return found[:4]
+
+
+def _run_free_task_logic_checks(workspace: str | None, task, task_messages, written_files: list[str]) -> tuple[list[str], list[str]]:
+    """Executa review_changes e testes relacionados no fechamento do modo livre. Devolve (blocking_problems, warnings)."""
+    blocking: list[str] = []
+    warnings: list[str] = []
+    if not workspace:
+        return blocking, warnings
+    originals = journal_run_originals(workspace, task.id)
+    if originals:
+        review = review_changes(workspace, originals)
+        blocking.extend(review.get("blocking") or [])
+        warnings.extend(review.get("warnings") or [])
+    if (os.getenv("TASK_LOGIC_TESTS") or "1").strip().lower() not in ("0", "false", "no", "off"):
+        for test_rel in _related_test_files(workspace, written_files):
+            failures = run_pytest(workspace, test_rel, timeout=60)
+            if failures:
+                blocking.extend(failures)
+    return blocking, warnings
+
+
 async def _pytest_snapshot(task, workspace: str, writes: int) -> str:
     """Para tasks sobre testes: o SISTEMA roda o pytest e entrega o resultado no dossiê (refeito a cada
     edição), em vez de o modelo gastar rodadas descobrindo o que falha."""
@@ -1293,6 +1345,24 @@ async def _generate_node_impl(state: State):
                     problems.append(
                         "Valores do documento sem respaldo nas fontes:\n"
                         + "\n".join(f"- {item}" for item in grounding_failures)
+                    )
+
+                _written_now = _extract_written_files(task_messages)
+                _logic_block, _logic_warn = await asyncio.to_thread(
+                    _run_free_task_logic_checks, workspace, task, task_messages, _written_now
+                )
+                if _logic_block:
+                    problems.append(
+                        "Revisão de diff / testes de lógica falharam:\n"
+                        + "\n".join(f"- {item}" for item in _logic_block)
+                    )
+                if _logic_warn and final_status == "completed":
+                    messages_to_return.append(
+                        AIMessage(
+                            content="⚠️ Revisão do diff apontou pontos de atenção: " + " | ".join(_logic_warn),
+                            name="Qwen3-Coder (Generate)",
+                            additional_kwargs={"message_tag": "internal_review_warning", "created_at": now_iso()},
+                        )
                     )
 
             if problems and final_status == "completed":
