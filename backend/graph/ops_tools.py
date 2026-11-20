@@ -52,7 +52,7 @@ def git_diff_files(paths: list[str]) -> str:
 
 @tool
 def git_commit_files(paths: list[str], message: str) -> str:
-    """Commita SOMENTE os arquivos indicados com a mensagem dada (formato 'tipo: resumo', em português, até 72 caracteres na primeira linha). Recusa main/master e arquivos de segredo."""
+    """Commita SOMENTE os arquivos indicados seguindo Conventional Commits: 'tipo: resumo' ou 'tipo(escopo): resumo' (tipos: feat, fix, refactor, docs, test, chore, style, perf, build, ci), no imperativo em português, até 72 caracteres na primeira linha. Recusa main/master e arquivos de segredo."""
     try:
         return core.commit_paths(_root(), paths, message)
     except Exception as exc:  # noqa: BLE001
@@ -153,7 +153,7 @@ def git_group_overview() -> str:
 
 @tool
 def git_commit_groups(groups: list[dict]) -> str:
-    '''Faz VÁRIOS commits de uma vez, um por grupo. Cada item: {"paths": [arquivos], "message": "tipo: resumo"}. Valida tudo antes: se um grupo for inválido, nenhum commit é feito. Recusa main/master e segredos.'''
+    '''Faz VÁRIOS commits de uma vez, um por grupo, seguindo Conventional Commits. Cada item: {"paths": [arquivos], "message": "tipo(escopo): resumo curto em português"} usando apenas os tipos feat, fix, refactor, docs, test, chore, style, perf, build ou ci (até 72 caracteres na 1ª linha). Valida tudo antes: se um grupo for inválido, nenhum commit é feito. Recusa main/master e segredos.'''
     try:
         return ops_groups.commit_groups(_root(), groups)
     except Exception as exc:  # noqa: BLE001
