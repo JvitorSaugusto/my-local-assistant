@@ -6,8 +6,14 @@ from typing import Annotated
 from backend.api.services import TaskService
 from backend.api.schemas import TaskBulkDeleteSchema, TaskCreateSchema, TaskResponseSchema
 from backend.database.config import get_db
+from pydantic import BaseModel
 from backend.graph.context_builder import task_changes
+from backend.graph.task_commit import enabled as autocommit_enabled, set_enabled as set_autocommit_enabled
 from backend.graph.task_journal import journal_diff, journal_revert
+
+
+class AutoCommitPayload(BaseModel):
+    enabled: bool
 
 
 task_router = APIRouter()
@@ -100,3 +106,13 @@ async def revert_task(task_id: int, workspace: str, service: TaskServiceDep):
             detail="Não há diário de alterações para esta tarefa (não rodou em modo dinâmico, já foi aprovada ou já foi desfeita).",
         )
     return outcome
+
+
+@task_router.get("/autocommit")
+async def get_autocommit_status():
+    return {"enabled": autocommit_enabled()}
+
+
+@task_router.put("/autocommit")
+async def update_autocommit_status(payload: AutoCommitPayload):
+    return {"enabled": set_autocommit_enabled(payload.enabled)}

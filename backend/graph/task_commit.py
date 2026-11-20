@@ -18,8 +18,19 @@ _PATH_OPS = {"create_file", "replace_text", "append", "write_markdown", "create_
 _MULTI_OPS = {"extract_zip", "copy_upload"}
 
 
+_RUNTIME_ENABLED: bool | None = None
+
+
 def enabled():
+    if _RUNTIME_ENABLED is not None:
+        return _RUNTIME_ENABLED
     return os.getenv("TASK_AUTOCOMMIT", "0") == "1"
+
+
+def set_enabled(value: bool | None) -> bool:
+    global _RUNTIME_ENABLED
+    _RUNTIME_ENABLED = bool(value) if value is not None else None
+    return enabled()
 
 
 def _git(root, *args):
