@@ -74,6 +74,9 @@
         <div class="topbar-actions">
           <button id="btn-autocommit" class="top-btn" type="button" aria-pressed="false" aria-label="Alternar commit automático" title="Ligar ou desligar commit automático das tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M3 12h6M15 12h6"/></svg><span class="top-btn-label" id="autocommit-label">Auto-commit: Off</span></button>
           <button id="btn-pin" class="top-btn hidden" type="button" aria-pressed="false" aria-label="Fixar projeto nesta conversa" title="Fixar o projeto e as fontes atuais nesta conversa"><span aria-hidden="true">📌</span></button>
+          <button id="btn-toggle-artifacts" class="top-btn hidden" type="button" aria-label="Abrir painel de artefatos" title="Arquivos (.txt e .md) gerados nesta conversa">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg><span class="top-btn-label">Artefatos</span><span id="artifacts-badge" class="badge hidden">0</span>
+          </button>
           <button id="btn-toggle-tasks" class="top-btn hidden" type="button" aria-label="Abrir painel de tarefas">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/></svg><span class="top-btn-label">Tarefas</span><span id="tasks-badge" class="badge hidden">0</span>
           </button>
@@ -159,6 +162,7 @@
         <div class="drawer-head">
           <div class="tabs" role="tablist">
             <button class="tab active" type="button" role="tab" data-tab="tasks">Tarefas</button>
+            <button class="tab" type="button" role="tab" data-tab="artifacts">Artefatos</button>
             <button class="tab" type="button" role="tab" data-tab="queue">Fila rápida</button>
             <button class="tab" type="button" role="tab" data-tab="project">Projeto</button>
           </div>
@@ -208,6 +212,13 @@
             </div>
 
             <div id="tasks-list" class="tasks-list"></div>
+          </section>
+
+          <!-- Aba: artefatos -->
+          <section class="tab-panel hidden" data-panel="artifacts">
+            <h3 class="panel-title">Artefatos da conversa</h3>
+            <p class="panel-desc">Arquivos .txt e .md gerados neste chat. Toque para abrir o conteúdo completo, copiar ou baixar.</p>
+            <div id="artifacts-list" class="artifacts-list"></div>
           </section>
 
           <!-- Aba: fila rápida -->
@@ -312,6 +323,27 @@
     </div>
   </form>
 </dialog>
+<dialog id="artifact-modal" class="modal artifact-modal">
+  <div class="artifact-modal-head">
+    <div class="artifact-modal-titlewrap">
+      <span id="artifact-modal-badge" class="artifact-kind-badge">TXT</span>
+      <div>
+        <h3 id="artifact-modal-title">Arquivo</h3>
+        <small id="artifact-modal-meta" class="artifact-modal-meta"></small>
+      </div>
+    </div>
+    <div class="artifact-modal-actions">
+      <button type="button" id="btn-artifact-wrap" class="btn btn-ghost btn-sm" aria-pressed="false" title="Quebrar linhas longas">Quebrar linhas</button>
+      <button type="button" id="btn-artifact-copy" class="btn btn-secondary btn-sm">Copiar</button>
+      <a id="btn-artifact-download" class="btn btn-primary btn-sm" href="#" download>Baixar</a>
+      <button type="button" id="btn-artifact-close" class="icon-btn" aria-label="Fechar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+  </div>
+  <div class="artifact-modal-body">
+    <pre id="artifact-modal-pre" class="artifact-viewer-pre"><code id="artifact-modal-code"></code></pre>
+  </div>
+</dialog>
+
 <script src="/static/tips.js?v=2" defer></script>
 </body>
 </html>

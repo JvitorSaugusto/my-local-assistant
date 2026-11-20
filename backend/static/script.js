@@ -18,6 +18,10 @@ const API = {
   autocommit: "/api/tasks/autocommit",
   handoffPlan: "/api/handoff/plan",
   handoffDryrun: "/api/handoff/dryrun",
+  packContent: (name) => `/api/handoff/packs/${encodeURIComponent(name)}/content`,
+  packDownload: (name) => `/api/handoff/packs/${encodeURIComponent(name)}`,
+  threadArtifacts: (threadId) => `/api/handoff/artifacts/${encodeURIComponent(threadId)}`,
+  deleteArtifact: (threadId, name) => `/api/handoff/artifacts/${encodeURIComponent(threadId)}/${encodeURIComponent(name)}`,
   ragScope: "/api/rag/scope",
   ragLinks: "/api/rag/links",
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
@@ -1126,7 +1130,9 @@ async function openChat(id) {
   }
   const requestChatId = id;
   state.tasksSig = null;
+  document.getElementById("btn-toggle-artifacts")?.classList.remove("hidden");
   await loadTasks(chat.thread_id);
+  loadArtifacts(chat.thread_id);
 
   try {
     const data = await api(API.messages(chat.thread_id));
@@ -1151,6 +1157,7 @@ function showWelcome() {
   el.chatView.classList.add("hidden");
   el.welcome.classList.remove("hidden");
   el.btnToggleTasks.classList.add("hidden");
+  document.getElementById("btn-toggle-artifacts")?.classList.add("hidden");
   document.getElementById("btn-pin")?.classList.add("hidden");
   const chatTools_ = document.getElementById("chat-tools");
   if (chatTools_) chatTools_.style.display = "none";
@@ -1242,7 +1249,10 @@ function appendMessage(role, content, modelName = null, meta = {}) {
     });
   }
   el.messages.appendChild(wrap);
-  if (!isUser) enhanceCodeBlocks(wrap);
+  if (!isUser) {
+    enhanceCodeBlocks(wrap);
+    enhanceArtifactLinks(wrap);
+  }
   return wrap;
 }
 
