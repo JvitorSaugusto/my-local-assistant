@@ -29,6 +29,17 @@ def _zip_link(path):
     return f"[{path.name}](/api/handoff/zips/{path.name})"
 
 
+async def _save_artifact(path, kind="md"):
+    if not _THREAD.get():
+        return
+    try:
+        from backend.handoff.artifacts import record_artifact
+
+        await record_artifact(_THREAD.get(), path.name, kind, path.name, path.stat().st_size)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @tool
 def git_changes_overview() -> str:
     """Lista os arquivos com alterações NÃO commitadas do projeto (modificados, novos, removidos) com linhas +/-. Use antes de qualquer commit."""
@@ -95,6 +106,7 @@ async def build_context_pack(problem: str, files: list[str], instructions: str =
     except Exception as exc:  # noqa: BLE001
         return f"ERRO ao montar o pacote: {exc}"
     path = core.save_pack(result["markdown"], problem)
+    await _save_artifact(path, "md")
     left = "; ".join(result.get("omitted", [])[:4]) or "nada relevante"
     return (
         f"Pacote pronto: {_link(path)} (~{result['est_tokens']} tokens, {len(result['files'])} arquivo(s) no pacote, "
@@ -115,6 +127,7 @@ async def build_primer_file() -> str:
     except Exception as exc:  # noqa: BLE001
         return f"ERRO ao gerar o primer: {exc}"
     path = core.save_pack(result["markdown"], "primer")
+    await _save_artifact(path, "md")
     return f"Primer pronto: {_link(path)} (~{result['est_tokens']} tokens). Copie o link exatamente como está."
 
 

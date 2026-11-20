@@ -198,11 +198,34 @@ async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_R
     return "Não consegui concluir em poucos passos. Diga quais arquivos você quer e eu continuo."
 
 
+async def _record_artifacts_from_text(thread_id: str | None, text: str) -> None:
+    if not thread_id or not text:
+        return
+    matches = _TXT_LINK.findall(text) + re.findall(r"/api/handoff/packs/[\w.-]+\.md", text)
+    if not matches:
+        return
+    try:
+        from pathlib import Path
+        from backend.graph.ops_core import pack_file_path
+        from backend.handoff.artifacts import record_artifact
+
+        for link in dict.fromkeys(matches):
+            fname = link.rsplit("/", 1)[-1]
+            p = pack_file_path(fname)
+            size = p.stat().st_size if p else 0
+            await record_artifact(thread_id, fname, Path(fname).suffix.lstrip(".").lower(), fname, size)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def ops_node(state, config=None):
     from .node_helpers import now_iso
 
+    configurable = (config or {}).get("configurable") or {}
+    thread_id = state.get("thread_id") or configurable.get("thread_id")
     history = build_history(state.get("messages"))
-    text = await run_ops(history, state.get("workspace_path") or "", state.get("thread_id"))
+    text = await run_ops(history, state.get("workspace_path") or "", thread_id)
+    await _record_artifacts_from_text(thread_id, text)
     reply = AIMessage(
         content=text,
         name=OPS_NAME,
