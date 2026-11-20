@@ -763,3 +763,10 @@ dialog.modal::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Botão de commit automático na topbar */
+#btn-autocommit.active {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+  color: var(--ok);
+}

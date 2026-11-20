@@ -15,6 +15,7 @@ const API = {
   taskDiff: (taskId) => `/api/tasks/${taskId}/diff`,
   revertTask: (taskId) => `/api/tasks/${taskId}/revert`,
   bulkDeleteTasks: "/api/tasks/bulk/delete",
+  autocommit: "/api/tasks/autocommit",
   handoffPlan: "/api/handoff/plan",
   handoffDryrun: "/api/handoff/dryrun",
   ragScope: "/api/rag/scope",
@@ -2310,6 +2311,56 @@ document.addEventListener('click', (event) => {
     return;
   }
 });
+
+// Commit automático (toggle na topbar)
+const AUTOCOMMIT_KEY = "assistant_autocommit_enabled";
+state.autocommit = false;
+
+function renderAutocommitButton() {
+  const btn = document.getElementById("btn-autocommit");
+  const lbl = document.getElementById("autocommit-label");
+  if (!btn) return;
+  const on = Boolean(state.autocommit);
+  btn.classList.toggle("active", on);
+  btn.setAttribute("aria-pressed", String(on));
+  btn.title = on ? "Commit automático LIGADO (clique para desativar)" : "Commit automático DESLIGADO (clique para ativar)";
+  if (lbl) lbl.textContent = on ? "Auto-commit: On" : "Auto-commit: Off";
+}
+
+async function initAutocommit() {
+  let saved = null;
+  try {
+    const raw = localStorage.getItem(AUTOCOMMIT_KEY);
+    if (raw === "1" || raw === "0") saved = raw === "1";
+  } catch {}
+  try {
+    if (saved !== null) {
+      const res = await api(API.autocommit, { method: "PUT", body: JSON.stringify({ enabled: saved }) });
+      state.autocommit = Boolean(res?.enabled);
+    } else {
+      const res = await api(API.autocommit);
+      state.autocommit = Boolean(res?.enabled);
+    }
+  } catch {
+    state.autocommit = Boolean(saved);
+  }
+  renderAutocommitButton();
+}
+
+async function toggleAutocommit() {
+  const next = !state.autocommit;
+  try {
+    const res = await api(API.autocommit, { method: "PUT", body: JSON.stringify({ enabled: next }) });
+    state.autocommit = Boolean(res?.enabled);
+  } catch {
+    state.autocommit = next;
+  }
+  try { localStorage.setItem(AUTOCOMMIT_KEY, state.autocommit ? "1" : "0"); } catch {}
+  renderAutocommitButton();
+}
+
+document.getElementById("btn-autocommit")?.addEventListener("click", toggleAutocommit);
+initAutocommit();
 
 // Iniciar app
 el.btnTheme.addEventListener("click", toggleTheme);
