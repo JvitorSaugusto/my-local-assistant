@@ -2750,3 +2750,217 @@ el.importTasksForm.addEventListener('submit', async (event) => {
     console.error('Erro na importação:', error);
   }
 });
+
+// ============================================================
+// ARTEFATOS DA CONVERSA E MODAL DE VISUALIZAÇÃO (.txt / .md)
+// ============================================================
+
+state.artifacts = [];
+state.activeArtifact = null;
+
+function extractPackFilename(href) {
+  const match = String(href || "").match(/\/api\/handoff\/packs\/([\w.-]+\.(?:txt|md))(?:$|[?#])/i);
+  return match ? match[1] : null;
+}
+
+function enhanceArtifactLinks(container) {
+  if (!container) return;
+  container.querySelectorAll('a[href*="/api/handoff/packs/"]').forEach((anchor) => {
+    const filename = extractPackFilename(anchor.getAttribute("href"));
+    if (!filename) return;
+    const kind = filename.split(".").pop().toUpperCase();
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "artifact-card";
+    card.dataset.artifactName = filename;
+    card.title = "Clique para visualizar o conteúdo completo, copiar ou baixar";
+    card.innerHTML = `
+      <span class="artifact-card-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></span>
+      <span class="artifact-card-info">
+        <b class="artifact-card-name">${escapeHtml(filename)}</b>
+        <small>Clique para abrir, copiar ou baixar</small>
+      </span>
+      <span class="artifact-kind-badge ${kind.toLowerCase()}">${escapeHtml(kind)}</span>
+    `;
+    anchor.replaceWith(card);
+  });
+}
+
+function collectArtifactsFromDom() {
+  const found = [];
+  el.messages.querySelectorAll("[data-artifact-name]").forEach((node) => {
+    const filename = node.dataset.artifactName;
+    if (filename && !found.some((item) => item.filename === filename)) {
+      found.push({
+        filename,
+        kind: filename.split(".").pop().toLowerCase(),
+        title: filename,
+        size_bytes: 0,
+        exists: true,
+        url: API.packDownload(filename),
+      });
+    }
+  });
+  return found;
+}
+
+async function loadArtifacts(threadId = null) {
+  const chat = state.chats.find((c) => c.id === state.activeId);
+  const thread = threadId ?? chat?.thread_id;
+  if (!thread) {
+    state.artifacts = [];
+    renderArtifacts([]);
+    return;
+  }
+  let remote = [];
+  try {
+    const data = await api(API.threadArtifacts(thread));
+    remote = Array.isArray(data?.artifacts) ? data.artifacts : [];
+  } catch {}
+  const fromMessages = collectArtifactsFromDom();
+  const merged = [...remote];
+  for (const item of fromMessages) {
+    if (!merged.some((r) => r.filename === item.filename)) merged.push(item);
+  }
+  state.artifacts = merged;
+  renderArtifacts(merged);
+}
+
+function renderArtifacts(items) {
+  const list = document.getElementById("artifacts-list");
+  const badge = document.getElementById("artifacts-badge");
+  const count = items.length;
+  if (badge) {
+    badge.textContent = String(count);
+    badge.classList.toggle("hidden", count === 0);
+  }
+  if (!list) return;
+  if (!count) {
+    list.innerHTML = '<div class="tasks-empty">Nenhum artefato (.txt ou .md) gerado nesta conversa ainda.</div>';
+    return;
+  }
+  list.innerHTML = items.map((item) => {
+    const kind = String(item.kind || "txt").toUpperCase();
+    const size = item.size_bytes ? formatBytes(item.size_bytes) : "";
+    const expired = item.exists === false;
+    return `
+      <article class="artifact-item" data-artifact-name="${escapeHtml(item.filename)}">
+        <div class="artifact-item-top">
+          <span class="artifact-kind-badge ${escapeHtml(kind.toLowerCase())}">${escapeHtml(kind)}</span>
+          <b class="artifact-item-name" title="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</b>
+          ${size ? `<small class="artifact-item-size">${escapeHtml(size)}</small>` : ""}
+        </div>
+        <div class="artifact-item-actions">
+          <button type="button" class="btn btn-primary btn-sm" data-art-act="open" data-artifact-name="${escapeHtml(item.filename)}" ${expired ? "disabled" : ""}>${expired ? "Expirado" : "Abrir"}</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-art-act="copy" data-artifact-name="${escapeHtml(item.filename)}" ${expired ? "disabled" : ""}>Copiar</button>
+          <a class="btn btn-ghost btn-sm" href="${escapeHtml(API.packDownload(item.filename))}" download="${escapeHtml(item.filename)}">Baixar</a>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+async function openArtifactModal(filename) {
+  const modal = document.getElementById("artifact-modal");
+  const titleEl = document.getElementById("artifact-modal-title");
+  const badgeEl = document.getElementById("artifact-modal-badge");
+  const metaEl = document.getElementById("artifact-modal-meta");
+  const codeEl = document.getElementById("artifact-modal-code");
+  const dlEl = document.getElementById("btn-artifact-download");
+  if (!modal || !codeEl) return;
+
+  const kind = filename.split(".").pop().toUpperCase();
+  state.activeArtifact = { filename, content: "" };
+  titleEl.textContent = filename;
+  badgeEl.textContent = kind;
+  badgeEl.className = `artifact-kind-badge ${kind.toLowerCase()}`;
+  metaEl.textContent = "Carregando conteúdo…";
+  codeEl.textContent = "";
+  if (dlEl) {
+    dlEl.href = API.packDownload(filename);
+    dlEl.setAttribute("download", filename);
+  }
+  if (!modal.open) modal.showModal();
+
+  try {
+    const data = await api(API.packContent(filename));
+    const content = String(data?.content ?? "");
+    state.activeArtifact = { filename, content };
+    metaEl.textContent = `${data?.lines ?? 0} linha(s) · ${formatBytes(data?.size_bytes ?? content.length)}`;
+    codeEl.textContent = content;
+  } catch (err) {
+    metaEl.textContent = "Erro ao carregar";
+    codeEl.textContent = err.message || "Não foi possível ler o arquivo.";
+  }
+}
+
+async function copyArtifactByName(filename, button = null) {
+  try {
+    let content = state.activeArtifact?.filename === filename ? state.activeArtifact.content : null;
+    if (content == null) {
+      const data = await api(API.packContent(filename));
+      content = String(data?.content ?? "");
+    }
+    const ok = await copyText(content);
+    if (button) {
+      const prev = button.textContent;
+      button.textContent = ok ? "Copiado ✓" : "Falhou";
+      setTimeout(() => { button.textContent = prev; }, 1600);
+    }
+  } catch (err) {
+    alert("Não foi possível copiar o conteúdo: " + err.message);
+  }
+}
+
+document.getElementById("btn-toggle-artifacts")?.addEventListener("click", async () => {
+  if (el.app.classList.contains("drawer-open") && state.drawerTab === "artifacts") {
+    closeDrawer();
+    return;
+  }
+  openDrawer("artifacts");
+  await loadArtifacts();
+});
+
+document.getElementById("btn-artifact-close")?.addEventListener("click", () => {
+  document.getElementById("artifact-modal")?.close();
+});
+
+document.getElementById("btn-artifact-copy")?.addEventListener("click", (event) => {
+  if (state.activeArtifact?.filename) {
+    copyArtifactByName(state.activeArtifact.filename, event.currentTarget);
+  }
+});
+
+document.getElementById("btn-artifact-wrap")?.addEventListener("click", (event) => {
+  const pre = document.getElementById("artifact-modal-pre");
+  if (!pre) return;
+  const wrapped = pre.classList.toggle("wrapped");
+  event.currentTarget.setAttribute("aria-pressed", String(wrapped));
+});
+
+document.getElementById("artifact-modal")?.addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+document.addEventListener("click", (event) => {
+  const actBtn = event.target.closest("[data-art-act]");
+  if (actBtn) {
+    const filename = actBtn.dataset.artifactName;
+    if (!filename) return;
+    if (actBtn.dataset.artAct === "open") openArtifactModal(filename);
+    else if (actBtn.dataset.artAct === "copy") copyArtifactByName(filename, actBtn);
+    return;
+  }
+  const card = event.target.closest(".artifact-card");
+  if (card && card.dataset.artifactName) {
+    event.preventDefault();
+    openArtifactModal(card.dataset.artifactName);
+  }
+});
+
+const _origRefreshMessages = refreshMessages;
+refreshMessages = async function (chat) {
+  const ok = await _origRefreshMessages(chat);
+  if (ok && chat?.thread_id) loadArtifacts(chat.thread_id);
+  return ok;
+};
