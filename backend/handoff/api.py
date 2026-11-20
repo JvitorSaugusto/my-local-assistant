@@ -54,15 +54,51 @@ async def pack(payload: PackRequest):
 
 @handoff_router.get("/packs/{name}")
 async def download_pack(name: str):
-    """Baixa um pacote .md gerado pelo chat (só da pasta de pacotes, sem caminhos)."""
+    """Baixa um pacote .md ou .txt gerado pelo chat (só da pasta de pacotes, sem caminhos)."""
     from fastapi.responses import FileResponse
 
     from backend.graph.ops_core import pack_file_path
 
     path = pack_file_path(name)
     if path is None:
-        raise HTTPException(status_code=404, detail="Pacote não encontrado.")
-    return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=path.name)
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado.")
+    media = "text/plain; charset=utf-8" if path.suffix.lower() == ".txt" else "text/markdown; charset=utf-8"
+    return FileResponse(path, media_type=media, filename=path.name)
+
+
+@handoff_router.get("/packs/{name}/content")
+async def read_pack_content(name: str):
+    """Devolve o conteúdo completo de um artefato .txt ou .md para exibição em modal."""
+    from backend.graph.ops_core import pack_file_path
+
+    path = pack_file_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado ou expirado.")
+    content = path.read_text(encoding="utf-8", errors="replace")
+    return {
+        "filename": path.name,
+        "kind": path.suffix.lstrip(".").lower() or "txt",
+        "content": content,
+        "size_bytes": path.stat().st_size,
+        "lines": len(content.splitlines()),
+    }
+
+
+@handoff_router.get("/artifacts/{thread_id}")
+async def get_thread_artifacts(thread_id: str):
+    """Lista os artefatos (.txt e .md) gerados na conversa."""
+    from .artifacts import list_artifacts
+
+    return {"artifacts": await list_artifacts(thread_id)}
+
+
+@handoff_router.delete("/artifacts/{thread_id}/{name}")
+async def remove_thread_artifact(thread_id: str, name: str):
+    """Remove um artefato da lista da conversa."""
+    from .artifacts import delete_artifact
+
+    removed = await delete_artifact(thread_id, name)
+    return {"removed": removed}
 
 
 @handoff_router.get("/zips/{name}")
