@@ -169,6 +169,54 @@ class OpsNodeTests(unittest.TestCase):
         history = build_history([M("human", "oi"), M("ai", "", [{"name": "x"}]), M("tool", "r"), M("ai", "resposta")])
         self.assertEqual([m.content for m in history], ["oi", "resposta"])
 
+    def test_direct_commit_overview_lists_groups_without_llm(self):
+        llm = FakeLLM([])
+        answer = asyncio.run(
+            run_ops([HumanMessage(content="commite meus arquivos")], str(self.root), "t1", llm=llm, direct_commit=True)
+        )
+        self.assertIn("Grupo 1:", answer)
+        self.assertIn("a.py", answer)
+        self.assertIn("b.py", answer)
+        self.assertEqual(llm.seen, [])
+
+    def test_direct_commit_todos_commits_without_loop(self):
+        llm = FakeLLM([AIMessage(content='[{"group": 1, "message": "feat: atualizar arquivos base"}]')])
+        history = [
+            HumanMessage(content="commite meus arquivos"),
+            AIMessage(content='Pergunta: Qual(is) grupo(s) ou arquivo(s) você quer commitar? Responda com "todos" ou números.'),
+            HumanMessage(content="todos"),
+        ]
+        answer = asyncio.run(run_ops(history, str(self.root), "t1", llm=llm, direct_commit=True))
+        self.assertIn("Commit ", answer)
+        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "feat: atualizar arquivos base")
+        self.assertEqual(git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(len(llm.seen), 1)
+
+    def test_direct_commit_by_number_and_cancel(self):
+        (self.root / "components").mkdir()
+        (self.root / "lib").mkdir()
+        (self.root / "components" / "shell.tsx").write_text("export const A = 1;\n")
+        (self.root / "lib" / "api.ts").write_text("export const B = 2;\n")
+        git(self.root, "add", "a.py", "b.py")
+        git(self.root, "commit", "-qm", "chore: limpa raiz")
+
+        llm = FakeLLM([AIMessage(content='[{"group": 1, "message": "feat(components): adicionar shell"}]')])
+        history = [
+            AIMessage(content="Grupo 1: components\nGrupo 2: lib\n\nQuais grupos ou arquivos você quer commitar? Responda com todos."),
+            HumanMessage(content="1"),
+        ]
+        answer = asyncio.run(run_ops(history, str(self.root), "t1", llm=llm, direct_commit=True))
+        self.assertIn("components/shell.tsx", answer)
+        self.assertIn("Ficaram sem commit", answer)
+        self.assertIn("lib/api.ts", git(self.root, "status", "--porcelain", "-uall"))
+
+        cancel_history = [
+            AIMessage(content="Ficaram sem commit (1): lib/api.ts\n\nDeseja commitar mais alguma coisa?"),
+            HumanMessage(content="cancelar"),
+        ]
+        canceled = asyncio.run(run_ops(cancel_history, str(self.root), "t1", llm=FakeLLM([]), direct_commit=True))
+        self.assertIn("nenhum commit foi feito", canceled.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
