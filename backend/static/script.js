@@ -2338,21 +2338,11 @@ function renderAutocommitButton() {
 }
 
 async function initAutocommit() {
-  let saved = null;
   try {
-    const raw = localStorage.getItem(AUTOCOMMIT_KEY);
-    if (raw === "1" || raw === "0") saved = raw === "1";
-  } catch {}
-  try {
-    if (saved !== null) {
-      const res = await api(API.autocommit, { method: "PUT", body: JSON.stringify({ enabled: saved }) });
-      state.autocommit = Boolean(res?.enabled);
-    } else {
-      const res = await api(API.autocommit);
-      state.autocommit = Boolean(res?.enabled);
-    }
-  } catch {
-    state.autocommit = Boolean(saved);
+    const res = await api(API.autocommit);
+    state.autocommit = Boolean(res?.enabled);
+  } catch (err) {
+    console.warn("Falha ao consultar autocommit:", err);
   }
   renderAutocommitButton();
 }
@@ -2362,10 +2352,10 @@ async function toggleAutocommit() {
   try {
     const res = await api(API.autocommit, { method: "PUT", body: JSON.stringify({ enabled: next }) });
     state.autocommit = Boolean(res?.enabled);
-  } catch {
-    state.autocommit = next;
+    try { localStorage.setItem(AUTOCOMMIT_KEY, state.autocommit ? "1" : "0"); } catch {}
+  } catch (err) {
+    alert("Não foi possível alterar o commit automático: " + err.message);
   }
-  try { localStorage.setItem(AUTOCOMMIT_KEY, state.autocommit ? "1" : "0"); } catch {}
   renderAutocommitButton();
 }
 

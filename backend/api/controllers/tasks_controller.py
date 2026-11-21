@@ -23,6 +23,17 @@ async def get_task_service(db: Annotated[AsyncSession, Depends(get_db)]) -> Task
 
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 
+
+@task_router.get("/autocommit")
+async def get_autocommit_status():
+    return {"enabled": autocommit_enabled()}
+
+
+@task_router.put("/autocommit")
+async def update_autocommit_status(payload: AutoCommitPayload):
+    return {"enabled": set_autocommit_enabled(payload.enabled)}
+
+
 @task_router.post("/{thread_id}", response_model=list[TaskResponseSchema], status_code=201)
 async def create_tasks(tasks_data: list[TaskCreateSchema], thread_id: str, service: TaskServiceDep):
     return await service.create(tasks_data, thread_id)
@@ -107,12 +118,3 @@ async def revert_task(task_id: int, workspace: str, service: TaskServiceDep):
         )
     return outcome
 
-
-@task_router.get("/autocommit")
-async def get_autocommit_status():
-    return {"enabled": autocommit_enabled()}
-
-
-@task_router.put("/autocommit")
-async def update_autocommit_status(payload: AutoCommitPayload):
-    return {"enabled": set_autocommit_enabled(payload.enabled)}

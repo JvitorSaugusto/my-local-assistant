@@ -21,7 +21,27 @@ _MULTI_OPS = {"extract_zip", "copy_upload"}
 _RUNTIME_ENABLED: bool | None = None
 
 
+def _state_file() -> Path | None:
+    raw = os.getenv("TASK_AUTOCOMMIT_FILE")
+    if raw:
+        return Path(raw)
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    return Path.home() / ".assistente_local" / "autocommit.state"
+
+
 def enabled():
+    state_file = _state_file()
+    if state_file is not None:
+        try:
+            if state_file.is_file():
+                raw = state_file.read_text(encoding="utf-8").strip().lower()
+                if raw in ("1", "true", "on"):
+                    return True
+                if raw in ("0", "false", "off"):
+                    return False
+        except OSError:
+            pass
     if _RUNTIME_ENABLED is not None:
         return _RUNTIME_ENABLED
     return os.getenv("TASK_AUTOCOMMIT", "0") == "1"
@@ -30,6 +50,16 @@ def enabled():
 def set_enabled(value: bool | None) -> bool:
     global _RUNTIME_ENABLED
     _RUNTIME_ENABLED = bool(value) if value is not None else None
+    state_file = _state_file()
+    if state_file is not None:
+        try:
+            if value is None:
+                state_file.unlink(missing_ok=True)
+            else:
+                state_file.parent.mkdir(parents=True, exist_ok=True)
+                state_file.write_text("1" if value else "0", encoding="utf-8")
+        except OSError:
+            pass
     return enabled()
 
 
