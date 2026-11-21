@@ -63,6 +63,44 @@ async def audit_node(state: State, config: RunnableConfig):
                 text += "\n\nIgnorados: " + "; ".join(errors)
             return _reply(text)
 
+        if command["cmd"] == "fix":
+            paths, errors = ac.expand_paths(workspace, command["paths"]) if command["paths"] else (None, [])
+            if command["paths"] and not paths:
+                return _reply("Nenhum arquivo .py/.js encontrado nos caminhos informados:\n" + "\n".join(f"- {e}" for e in errors))
+            if command["incremental"]:
+                changed = await asyncio.to_thread(ac.changed_files, workspace, command["base"])
+                if changed is None:
+                    return _reply("Este diretório não é um repositório git; informe os arquivos ou rode `@audit fix` sem `diff`.")
+                paths = [f for f in changed if f.endswith(".py")] if paths is None else [f for f in paths if f in set(changed)]
+            elif paths is None:
+                last_saved = await asyncio.to_thread(ac.load_last, workspace, thread_id)
+                spacing_files = sorted({f["file"] for f in (last_saved or {}).get("findings") or [] if f.get("tool") == "spacing"})
+                if spacing_files:
+                    paths = spacing_files
+            result = await asyncio.to_thread(ac.fix_spacing, workspace, paths)
+            fixed = result["fixed"]
+            if not fixed:
+                msg = f"Nenhum erro de espaçamento de linhas em branco encontrado em {result['checked']} arquivo(s) .py."
+            else:
+                total_lines = sum(item["inserted_lines"] for item in fixed)
+                body = "\n".join(
+                    f"- `{item['file']}` — {item['issues']} ajuste(s) (+{item['inserted_lines']} linha(s) em branco)"
+                    for item in fixed
+                )
+                msg = f"## Auditoria — Linhas em branco corrigidas\n\n{body}\n\nTotal: {len(fixed)} arquivo(s), +{total_lines} linha(s) em branco."
+                last_saved = await asyncio.to_thread(ac.load_last, workspace, thread_id)
+                if last_saved and last_saved.get("findings"):
+                    fixed_set = {item["file"] for item in fixed}
+                    last_saved["findings"] = [
+                        f for f in last_saved["findings"]
+                        if not (f.get("tool") == "spacing" and f.get("file") in fixed_set)
+                    ]
+                    await asyncio.to_thread(ac.save_last, workspace, thread_id, last_saved)
+            all_errors = errors + (result.get("errors") or [])
+            if all_errors:
+                msg += "\n\nAvisos:\n" + "\n".join(f"- {e}" for e in all_errors)
+            return _reply(msg)
+
         last = await asyncio.to_thread(ac.load_last, workspace, thread_id)
         if not last or not last.get("findings"):
             return _reply("Não há relatório de auditoria nesta conversa. Rode `@audit` primeiro.")
