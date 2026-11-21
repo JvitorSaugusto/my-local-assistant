@@ -16,7 +16,7 @@ _STOP = set(
 )
 _BAD_EXT = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".zip", ".rar", ".lock", ".pyc", ".woff", ".woff2")
 
-_TAG = re.compile(r"^\s*@(ops|commit|pack|primer|zip|txt)(?!\S)[:\s]", re.I)
+_TAG = re.compile(r"^\s*@(ops|commit|pack|primer|zip|txt)(?!\S)(?:[:\s]|$)", re.I)
 _OTHER_TAG = re.compile(r"(?<!\S)@(heavy|enhance|generate)(?!\S)", re.I)
 _COMMIT_VERB = re.compile(
     r"\b(commita|commite|commitar|comitar|comita|comite|fa[çc]a?\s+(um\s+)?commit|faz(er)?\s+(um\s+)?commit"
@@ -69,6 +69,8 @@ def detect_ops_intent(text, messages):
         tag = match.group(1).lower()
         if tag in ("zip", "txt"):
             return f"{tag} {rest}".strip()
+        if tag == "commit" and not rest:
+            return "commite meus arquivos"
         return rest or "o que você pode fazer?"
     previous = None
     for msg in reversed(list(messages or [])[:-1]):
