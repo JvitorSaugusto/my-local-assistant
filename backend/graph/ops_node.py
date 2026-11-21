@@ -1,10 +1,13 @@
 """Nó do chat para git e pacotes de contexto: pergunta, lê as mudanças reais e só então age."""
 from __future__ import annotations
 
+import json
 import re
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from . import ops_core as core
+from . import ops_groups
 from .ops_core import OPS_NAME, parse_delivery
 
 MAX_ROUNDS = 12
@@ -122,7 +125,210 @@ async def _direct_delivery(history, by_name):
     return output.replace("Peça ao usuário o caminho completo.", "Diga o caminho completo do arquivo.")
 
 
-async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_ROUNDS):
+_GENERIC_COMMIT_REQ = re.compile(
+    r"^\s*(?:@?(?:commit|ops)\b[:\s]*)?(?:por\s+favor[,\s]+)?"
+    r"(?:(?:pode|poderia|consegue)\s+)?"
+    r"(?:(?:quero|preciso)\s+(?:de\s+)?)?"
+    r"(?:(?:fa[çc]a|faz(?:er)?|d[êe])\s+(?:os?\s+|uns?\s+|um\s+)?)?"
+    r"(?:commits?|commita[r]?|commite|comita[r]?|comite)"
+    r"(?:\s+(?:os\s+|meus\s+|as\s+|minhas\s+)?(?:arquivos?|altera[çc][õo]es|mudan[çc]as|grupos?|tudo|todos))?"
+    r"(?:\s+por\s+favor)?\s*[.!?]*\s*$",
+    re.I,
+)
+_COMMIT_CHOICE_PROMPT = re.compile(
+    r"qua(?:l\(is\)|is)\s+(?:grupos?|arquivos?)|responda\s+com\b.*\btodos\b|deseja\s+commitar",
+    re.I,
+)
+_COMMIT_MORE_PROMPT = re.compile(r"deseja\s+commitar\s+mais\s+alguma\s+coisa", re.I)
+_COMMIT_CANCEL = re.compile(r"^\s*(?:n[ãa]o|nenhum|cancela\w*|deixa|para\w*)\s*[.!?]*\s*$", re.I)
+_COMMIT_ALL = re.compile(
+    r"^\s*(?:todos|todas|tudo|sim|ok|pode|manda|commita\s+tudo|todos\s+os\s+grupos)\s*[.!?]*\s*$",
+    re.I,
+)
+_COMMIT_NUMS = re.compile(r"^\s*(?:grupos?\s*)?\d+(?:\s*(?:,|e|\s)\s*\d+)*\s*[.!?]*\s*$", re.I)
+_CONVENTIONAL_PREFIX = re.compile(
+    r"^(feat|fix|refactor|docs|test|chore|style|perf|build|ci)(\([a-z0-9._/-]+\))?:\s+\S",
+    re.I,
+)
+
+_COMMIT_MSG_PROMPT = (
+    "Você gera mensagens de commit no padrão Conventional Commits a partir de diffs reais do git.\n"
+    "Responda SOMENTE com um array JSON válido no formato:\n"
+    '[{"group": 1, "message": "tipo(escopo): resumo curto no imperativo em português"}]\n'
+    "Regras:\n"
+    "- Use apenas os tipos: feat, fix, refactor, docs, test, chore, style, perf, build ou ci.\n"
+    "- Escopo entre parênteses é opcional e curto (ex.: feat(ops): ... ou fix: ...).\n"
+    "- Primeira linha em português, no imperativo, até 72 caracteres, sem ponto final.\n"
+    "- Baseie cada mensagem APENAS no diff fornecido para aquele grupo.\n"
+    "- Nenhum texto fora do JSON."
+)
+
+
+def _prev_ai_text(history) -> str:
+    last_human_idx = next(
+        (i for i in range(len(history) - 1, -1, -1) if getattr(history[i], "type", "") == "human"),
+        None,
+    )
+    if last_human_idx is None:
+        return ""
+    for msg in reversed(history[:last_human_idx]):
+        if getattr(msg, "type", "") == "ai":
+            return _text(msg.content)
+    return ""
+
+
+def _format_commit_overview(workspace: str) -> str:
+    if not core.is_repo(workspace):
+        return "ERRO: não é um repositório git."
+    branch = core.current_branch(workspace)
+    if branch in core.PROTECTED_BRANCHES:
+        return f"Você está na branch protegida '{branch}'. Troque para uma branch de trabalho antes de commitar."
+    groups, skipped = ops_groups.group_changes(core.git_changes(workspace))
+    overview = ops_groups.format_groups(groups, skipped, branch)
+    if not groups:
+        return overview
+    return (
+        f"{overview}\n\n"
+        "Quais grupos ou arquivos você quer commitar? "
+        "Responda com **todos**, números dos grupos (ex.: `1 2`), nomes de arquivo ou **cancelar**."
+    )
+
+
+def _fallback_commit_message(group: dict) -> str:
+    label = str(group.get("label") or "").strip()
+    paths = list(group.get("paths") or [])
+    items = list(group.get("items") or [])
+    if label == "docs" or (paths and all(p.lower().endswith(".md") for p in paths)):
+        return "docs: atualizar documentação"
+    if paths and all("test" in p.lower() for p in paths):
+        return "test: atualizar testes"
+    all_new = bool(items) and all(i.get("status") == "novo" for i in items)
+    kind = "feat" if all_new else "chore"
+    scope = re.sub(r"[^a-z0-9._/-]+", "-", label.split("/")[-1].lower()).strip("-")[:20]
+    prefix = f"{kind}({scope})" if scope and scope != "(raiz)" else kind
+    action = "adicionar" if all_new else "atualizar"
+    target = paths[0].rsplit("/", 1)[-1] if len(paths) == 1 else f"{len(paths)} arquivos"
+    return f"{prefix}: {action} {target}"[:72]
+
+
+def _parse_commit_messages(raw: str, group_numbers: list[int]) -> dict[int, str]:
+    parsed: dict[int, str] = {}
+    text = raw or ""
+    fenced = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL | re.I)
+    bracket = re.search(r"\[.*\]", text, re.DOTALL)
+    candidate = fenced.group(1) if fenced else (bracket.group(0) if bracket else "")
+    if not candidate:
+        return parsed
+    try:
+        data = json.loads(candidate)
+    except ValueError:
+        return parsed
+    if not isinstance(data, list):
+        return parsed
+    for pos, item in enumerate(data):
+        if not isinstance(item, dict):
+            continue
+        msg = str(item.get("message") or "").strip().splitlines()[0].strip() if item.get("message") else ""
+        if not msg:
+            continue
+        raw_num = item.get("group")
+        if isinstance(raw_num, int) or (isinstance(raw_num, str) and raw_num.isdigit()):
+            num = int(raw_num)
+        elif pos < len(group_numbers):
+            num = group_numbers[pos]
+        else:
+            num = None
+        if num in group_numbers:
+            parsed[num] = msg[:72]
+    return parsed
+
+
+async def _build_commit_messages(workspace: str, numbered_groups: list[tuple[int, dict]], llm=None) -> list[dict]:
+    sections = []
+    for num, group in numbered_groups:
+        diff = core.diff_text(workspace, group["paths"], per_file=2000, total=5000)
+        sections.append(
+            f"=== GRUPO {num} ({group['label']}) ===\n"
+            f"Arquivos: {', '.join(group['paths'])}\n"
+            f"{diff}"
+        )
+    prompt = "\n\n".join(sections)[:24000]
+    model = llm
+    if model is None:
+        from .config import generate_llm
+
+        model = generate_llm
+    messages_by_num: dict[int, str] = {}
+    try:
+        reply = await model.ainvoke([SystemMessage(content=_COMMIT_MSG_PROMPT), HumanMessage(content=prompt)])
+        messages_by_num = _parse_commit_messages(_text(reply.content), [num for num, _ in numbered_groups])
+    except Exception:  # noqa: BLE001
+        messages_by_num = {}
+
+    plan = []
+    for num, group in numbered_groups:
+        msg = messages_by_num.get(num, "").strip()
+        if not msg or not _CONVENTIONAL_PREFIX.match(msg):
+            msg = _fallback_commit_message(group)
+        plan.append({"paths": group["paths"], "message": msg})
+    return plan
+
+
+async def _direct_commit(history, workspace: str, llm=None) -> str | None:
+    """Fluxo determinístico para listar grupos e commitar seleção (evita loop e perda de lista no LLM)."""
+    last = next((m for m in reversed(history) if getattr(m, "type", "") == "human"), None)
+    if last is None:
+        return None
+    text = _text(last.content).strip()
+    if not text:
+        return None
+
+    if _GENERIC_COMMIT_REQ.match(text):
+        return _format_commit_overview(workspace)
+
+    prev_ai = _prev_ai_text(history)
+    if not prev_ai or not _COMMIT_CHOICE_PROMPT.search(prev_ai):
+        return None
+
+    if _COMMIT_CANCEL.match(text):
+        return "Ok, nenhum commit foi feito."
+
+    if _COMMIT_MORE_PROMPT.search(prev_ai) and re.fullmatch(r"\s*(?:sim|ok|pode|quero)\s*[.!?]*\s*", text, re.I):
+        return _format_commit_overview(workspace)
+
+    is_all = bool(_COMMIT_ALL.match(text))
+    is_nums = bool(_COMMIT_NUMS.match(text))
+    if not is_all and not is_nums:
+        return None
+
+    if not core.is_repo(workspace):
+        return "ERRO: não é um repositório git."
+    branch = core.current_branch(workspace)
+    if branch in core.PROTECTED_BRANCHES:
+        return f"Você está na branch protegida '{branch}'. Troque para uma branch de trabalho antes de commitar."
+
+    groups, skipped = ops_groups.group_changes(core.git_changes(workspace))
+    if not groups:
+        return ops_groups.format_groups(groups, skipped, branch)
+
+    if is_all:
+        chosen = [(idx, grp) for idx, grp in enumerate(groups, 1)]
+    else:
+        nums = list(dict.fromkeys(int(n) for n in re.findall(r"\d+", text)))
+        invalid = [n for n in nums if n < 1 or n > len(groups)]
+        if invalid:
+            overview = ops_groups.format_groups(groups, skipped, branch)
+            return f"Grupo(s) inválido(s): {', '.join(map(str, invalid))}.\n\n{overview}"
+        chosen = [(n, groups[n - 1]) for n in nums]
+
+    plan = await _build_commit_messages(workspace, chosen, llm=llm)
+    report = ops_groups.commit_groups(workspace, plan)
+    if "Ficaram sem commit" in report:
+        report += "\n\nDeseja commitar mais alguma coisa?"
+    return report
+
+
+async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_ROUNDS, direct_commit=None):
     """Loop próprio de ferramentas. Devolve o texto final da resposta."""
     from . import ops_tools as tools_module
 
@@ -133,6 +339,11 @@ async def run_ops(history, workspace, thread_id=None, llm=None, max_rounds=MAX_R
     direct = await _direct_delivery(history, by_name)
     if direct is not None:
         return direct
+    use_direct_commit = (llm is None) if direct_commit is None else direct_commit
+    if use_direct_commit:
+        committed = await _direct_commit(history, workspace, llm=llm)
+        if committed is not None:
+            return committed
     if llm is None:
         from .config import generate_llm
 
