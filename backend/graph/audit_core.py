@@ -200,6 +200,189 @@ def ast_duplicates(workspace: str, files: list[str], min_nodes: int = 40) -> lis
     return out
 
 
+# ── espaçamento de linhas em branco (E301 / E302 / E305) ─────────────────
+
+_DEF_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _stmt_start_line(stmt: ast.AST) -> int:
+    decs = getattr(stmt, "decorator_list", None) or []
+    return min([stmt.lineno] + [d.lineno for d in decs])
+
+
+def _block_start_line(lines: list[str], prev_end: int, code_start: int, col_offset: int) -> int:
+    """Recua para incluir comentários diretamente colados acima do bloco (mesma indentação)."""
+    start = code_start
+    while start - 1 > prev_end:
+        above = lines[start - 2]
+        stripped = above.lstrip(" ")
+        indent = len(above) - len(stripped)
+        if stripped.startswith("#") and indent == col_offset:
+            start -= 1
+        else:
+            break
+    return start
+
+
+def _blank_lines_between(lines: list[str], prev_end: int, block_start: int, code_start: int) -> tuple[int, int]:
+    """Devolve (blanks_imediatos_antes_do_bloco, maior_sequencia_de_blanks_no_intervalo)."""
+    immediate = 0
+    idx = block_start - 2
+    while idx >= prev_end:
+        if not lines[idx].strip():
+            immediate += 1
+            idx -= 1
+        else:
+            break
+    best = run = 0
+    for line_no in range(prev_end + 1, code_start):
+        if not lines[line_no - 1].strip():
+            run += 1
+            if run > best:
+                best = run
+        else:
+            run = 0
+    return immediate, best
+
+
+def _collect_spacing_issues(lines: list[str]) -> list[dict]:
+    """Encontra faltas de linhas em branco (E302/E305 no topo; E301 em métodos de classe)."""
+    try:
+        tree = ast.parse("\n".join(lines))
+    except SyntaxError:
+        return []
+    issues: list[dict] = []
+
+    def check_body(body: list[ast.stmt], required_def: int, required_after: int, rule_before: str, rule_after: str) -> None:
+        for prev, curr in zip(body, body[1:]):
+            prev_is_def = isinstance(prev, _DEF_NODES)
+            curr_is_def = isinstance(curr, _DEF_NODES)
+            if curr_is_def:
+                req, rule = required_def, rule_before
+            elif prev_is_def:
+                req, rule = required_after, rule_after
+            else:
+                continue
+            prev_end = getattr(prev, "end_lineno", None) or prev.lineno
+            code_start = _stmt_start_line(curr)
+            if code_start <= prev_end:
+                continue
+            block_start = _block_start_line(lines, prev_end, code_start, getattr(curr, "col_offset", 0))
+            immediate, max_gap = _blank_lines_between(lines, prev_end, block_start, code_start)
+            if max_gap >= req:
+                continue
+            insert_at = block_start if immediate < req else code_start
+            existing = immediate if insert_at == block_start else 0
+            if insert_at == code_start:
+                idx = code_start - 2
+                while idx >= prev_end and not lines[idx].strip():
+                    existing += 1
+                    idx -= 1
+            missing = req - existing
+            if missing <= 0:
+                continue
+            label = (
+                "classe/função de topo" if rule == "E302"
+                else "após classe/função de topo" if rule == "E305"
+                else "método/bloco em classe"
+            )
+            issues.append({
+                "line": code_start,
+                "end_line": curr.lineno,
+                "insert_before": insert_at,
+                "missing": missing,
+                "rule": rule,
+                "message": f"esperado {req} linha(s) em branco ({label}), encontrado {max_gap}",
+            })
+
+    check_body(tree.body, 2, 2, "E302", "E305")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            check_body(node.body, 1, 1, "E301", "E301")
+    issues.sort(key=lambda item: (item["insert_before"], item["line"]))
+    return issues
+
+
+def ast_spacing_findings(workspace: str, files: list[str]) -> list[dict]:
+    out: list[dict] = []
+    for rel in files:
+        if not rel.endswith(".py"):
+            continue
+        lines = _read_lines(Path(workspace, rel))
+        if lines is None:
+            continue
+        for item in _collect_spacing_issues(lines):
+            out.append(_finding(rel, item["line"], "style", "low", "high", "spacing", item["rule"], item["message"], item["end_line"]))
+    return out
+
+
+def _read_text_meta(path: Path) -> tuple[str, str, str] | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    eol = "\r\n" if b"\r\n" in data else "\n"
+    if data.startswith(b"\xef\xbb\xbf"):
+        try:
+            return data.decode("utf-8-sig"), "utf-8-sig", eol
+        except UnicodeDecodeError:
+            pass
+    for enc in ("utf-8", "cp1252", "latin-1"):
+        try:
+            return data.decode(enc), enc, eol
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def fix_spacing(workspace: str, files: list[str] | None = None) -> dict:
+    """Insere linhas em branco faltantes (E301/E302/E305) em arquivos .py validando sintaxe antes de gravar."""
+    root = Path(workspace).resolve()
+    targets = [_norm(p) for p in files] if files is not None else project_code_files(str(root))
+    py_files = [f for f in targets if f.endswith(".py")]
+    fixed: list[dict] = []
+    errors: list[str] = []
+    for rel in py_files:
+        try:
+            target = (root / rel).resolve()
+            target.relative_to(root)
+        except ValueError:
+            errors.append(f"{rel}: fora do projeto")
+            continue
+        if not target.is_file():
+            continue
+        meta = _read_text_meta(target)
+        if meta is None:
+            errors.append(f"{rel}: erro ao ler arquivo")
+            continue
+        text, enc, eol = meta
+        lines = text.replace("\r\n", "\n").split("\n")
+        issues = _collect_spacing_issues(lines)
+        if not issues:
+            continue
+        updated = list(lines)
+        inserted = 0
+        for item in sorted(issues, key=lambda x: x["insert_before"], reverse=True):
+            pos = item["insert_before"] - 1
+            missing = item["missing"]
+            updated[pos:pos] = [""] * missing
+            inserted += missing
+        new_text = "\n".join(updated)
+        try:
+            ast.parse(new_text)
+        except SyntaxError as exc:
+            errors.append(f"{rel}: sintaxe inválida após ajuste ({exc})")
+            continue
+        final_text = new_text.replace("\n", eol) if eol != "\n" else new_text
+        try:
+            target.write_bytes(final_text.encode(enc))
+        except OSError as exc:
+            errors.append(f"{rel}: erro ao salvar ({exc})")
+            continue
+        fixed.append({"file": rel, "issues": len(issues), "inserted_lines": inserted})
+    return {"fixed": fixed, "checked": len(py_files), "errors": errors}
+
+
 # ── validação contra o código real ────────────────────────────────────────
 
 def _fingerprint(f: dict) -> str:
@@ -408,7 +591,7 @@ def _run_tool(name: str, workspace: str, files: list[str]) -> tuple[list[dict], 
 
 
 def run_audit(workspace: str, paths: list[str] | None = None, incremental: bool = False, base: str | None = None,
-              tools: tuple[str, ...] = ("ruff", "vulture", "radon", "bandit", "duplication"),
+              tools: tuple[str, ...] = ("ruff", "vulture", "radon", "bandit", "duplication", "spacing"),
               min_confidence: str = "low", use_registry: bool = True) -> dict:
     root = str(Path(workspace).resolve())
     status: dict[str, str] = {}
@@ -423,6 +606,10 @@ def run_audit(workspace: str, paths: list[str] | None = None, incremental: bool 
     for tool in tools:
         if tool == "duplication":
             raw.extend(ast_duplicates(root, files))
+            status[tool] = "ok"
+            continue
+        if tool == "spacing":
+            raw.extend(ast_spacing_findings(root, files))
             status[tool] = "ok"
             continue
         found, st = _run_tool(tool, root, files)
@@ -483,7 +670,8 @@ AUDIT_HELP = (
     "- `@audit diff` — só o que mudou (git diff + arquivos novos); `@audit diff base=main` compara com a branch\n"
     "- `@audit backend/api backend/graph/nodes.py` — só essas pastas/arquivos\n"
     "- `min=medium` — mostra só achados com confiança média ou alta (padrão: todos)\n"
-    "- `tools=ruff,bandit` — escolhe as ferramentas (ruff, vulture, radon, bandit, duplication)\n"
+    "- `tools=ruff,bandit` — escolhe as ferramentas (ruff, vulture, radon, bandit, duplication, spacing)\n"
+    "- `@audit fix` — corrige automaticamente linhas em branco faltantes em `.py` (`@audit fix diff` ou `@audit fix arquivo.py`)\n"
     "- `@audit tasks` — transforma o último relatório em tasks (`@audit tasks 1 3 5` escolhe pelos números)\n"
     "- `@audit falso 4 motivo` — marca o achado nº 4 (ou o id) como falso positivo; não volta mais\n"
     "- `@audit desfazer <id>` — tira do registro de falsos positivos\n"
@@ -511,6 +699,19 @@ def _parse_tagged(text: str) -> dict | None:
         return {"cmd": "fp", "args": tokens[1:2], "reason": " ".join(tokens[2:])}
     if head in ("desfazer", "unfp"):
         return {"cmd": "unfp", "args": tokens[1:2]}
+    if head in ("fix", "corrigir", "format", "formatar", "linhas"):
+        fix_cmd = {"cmd": "fix", "incremental": False, "base": None, "paths": []}
+        for tok in tokens[1:]:
+            low = tok.lower()
+            if low in ("diff", "incremental"):
+                fix_cmd["incremental"] = True
+            elif low.startswith("base="):
+                fix_cmd["base"] = tok[5:] or None
+            else:
+                word = tok.strip("\"'`<>.,;:!?")
+                if word and word.lower() not in _NL_STOP | _NL_FOLDER | _NL_WHOLE:
+                    fix_cmd["paths"].append(word)
+        return fix_cmd
     cmd = {"cmd": "run", "incremental": False, "base": None, "min": "low", "tools": None, "paths": []}
     for tok in tokens:
         low = tok.lower()
@@ -523,7 +724,7 @@ def _parse_tagged(text: str) -> dict | None:
         elif low.startswith("min=") and low[4:] in CONFIDENCE:
             cmd["min"] = low[4:]
         elif low.startswith("tools="):
-            names = tuple(n for n in low[6:].split(",") if n in ("ruff", "vulture", "radon", "bandit", "duplication"))
+            names = tuple(n for n in low[6:].split(",") if n in ("ruff", "vulture", "radon", "bandit", "duplication", "spacing"))
             cmd["tools"] = names or None
         else:
             word = tok.strip("\"'`<>.,;:!?")
@@ -668,6 +869,8 @@ def format_report(result: dict, limit: int = 25, max_chars: int = 12000) -> str:
     if len(findings) > limit:
         lines.append(f"\n… e mais {len(findings) - limit} achado(s) (use `min=medium` ou filtre por pasta).")
     if findings:
-        lines.append("\nPróximos passos: `@audit tasks` cria as tasks; `@audit falso <número>` registra um falso positivo.")
+        has_spacing = any(f.get("tool") == "spacing" for f in findings)
+        fix_hint = "`@audit fix` corrige linhas em branco automaticamente; " if has_spacing else ""
+        lines.append(f"\nPróximos passos: {fix_hint}`@audit tasks` cria as tasks; `@audit falso <número>` registra um falso positivo.")
     text = "\n".join(lines)
     return text if len(text) <= max_chars else text[:max_chars] + "\n… (relatório cortado)"
