@@ -12,6 +12,8 @@ from backend.api.chat_title import schedule_title
 from backend.api.chat_rotation import chat_size, maybe_rotate_chat, release_active_tasks
 from backend.api.history import build_clean_history
 from backend.api.live_thoughts import live_snapshot, run_graph_live
+from backend.api.quick_queue import list_workspace_files, quick_queue_manager
+from backend.api.quick_queue import list_workspace_files, quick_queue_manager
 from backend.graph.config import State
 from backend.graph.node_helpers import now_iso
 
@@ -30,10 +32,18 @@ class ChatPayload(BaseModel):
     preset: str = "default"
 
 
+class QueueItemPayload(BaseModel):
+    prompt: str
+    files: list[str] = []
+
+
 class BatchPayload(BaseModel):
     thread_id: str
-    prompts: list[str]
-    workspace_path: str
+    prompts: list[str] = []
+    items: list[QueueItemPayload] = []
+    workspace_path: str = ""
+    preset: str = "default"
+    stop_on_error: bool = True
 
 
 class RewindPayload(BaseModel):
@@ -214,14 +224,46 @@ async def get_chat_history(thread_id: str, app_graph: CompiledGraphDep):
     return {"messages": build_clean_history(state.values["messages"])}
 
 
-@ai_router.post("/batch/")
-async def send_tasks_background(payload: BatchPayload):
-    from tasks import run_langgraph_task
+@ai_router.get("/workspace-files")
+async def get_workspace_files(workspace_path: str = "", q: str = ""):
+    files = await asyncio.to_thread(list_workspace_files, workspace_path, q, 80)
+    return {"files": files}
 
-    for prompt in payload.prompts:
-        run_langgraph_task.delay(payload.thread_id, prompt, payload.workspace_path,)
+
+@ai_router.get("/{thread_id}/batch")
+async def get_batch_status(thread_id: str):
+    return quick_queue_manager.get_status(thread_id)
+
+
+@ai_router.post("/{thread_id}/batch/stop")
+async def stop_batch_queue(thread_id: str):
+    return await quick_queue_manager.stop(thread_id)
+
+
+@ai_router.post("/batch/")
+async def send_tasks_background(payload: BatchPayload, app_graph: CompiledGraphDep):
+    raw_items = [
+        {"prompt": item.prompt, "files": item.files}
+        for item in payload.items
+    ] if payload.items else [
+        {"prompt": prompt, "files": []}
+        for prompt in payload.prompts
+    ]
+    try:
+        queue = await quick_queue_manager.start(
+            app_graph=app_graph,
+            thread_id=payload.thread_id,
+            items=raw_items,
+            workspace_path=payload.workspace_path,
+            preset=payload.preset,
+            stop_on_error=payload.stop_on_error,
+            running_registry=RUNNING,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "status": "sucesso",
-        "message": f"{len(payload.prompts)} tarefa(s) enviada(s)."
+        "message": f"{queue['total']} comando(s) iniciado(s) na fila.",
+        "queue": queue,
     }
