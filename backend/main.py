@@ -6,9 +6,13 @@ from backend.api.controllers.tasks_controller import task_router
 from backend.api.controllers.upload_controller import upload_router
 from backend.api.controllers.pins_controller import pins_router
 from backend.api.controllers.workspaces_controller import workspaces_router
+from backend.api.controllers.settings_controller import settings_router
 from backend.rag import rag_startup
 from backend.rag.api import rag_router
 from backend.handoff.api import handoff_router
+from backend.api.controllers.memory_controller import memory_router
+from backend.api.controllers.monitor_controller import monitor_router
+from backend.api.docker_monitor import monitor_manager
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from contextlib import asynccontextmanager
@@ -38,6 +42,7 @@ async def lifespan(app: FastAPI):
         app.state.langgraph_checkpointer = checkpointer
         
         app.state.compiled_graph = build_graph().compile(checkpointer=checkpointer)
+        monitor_manager.bind_graph(app.state.compiled_graph)
 
         await rag_startup()  # prepara o schema do RAG; nunca derruba o app
         
@@ -75,6 +80,9 @@ app.include_router(task_router, prefix="/api/tasks", tags=["Tarefas"])
 app.include_router(upload_router, prefix="/api/uploads", tags=["Uploads"])
 app.include_router(pins_router, prefix="/api/pins", tags=["Pins"])
 app.include_router(workspaces_router, prefix="/api/workspaces", tags=["Workspaces"])
+app.include_router(settings_router, prefix="/api/settings", tags=["Settings"])
 
 app.include_router(rag_router, prefix="/api/rag", tags=["RAG"])
 app.include_router(handoff_router, prefix="/api/handoff", tags=["Handoff"])
+app.include_router(memory_router, prefix="/api/memories", tags=["Memories"])
+app.include_router(monitor_router, prefix="/api/monitor", tags=["Monitor"])
