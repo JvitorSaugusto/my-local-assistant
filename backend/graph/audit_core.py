@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib
+import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SEVERITY = {"low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -28,13 +31,42 @@ CONFIDENCE = {"low": 1, "medium": 2, "high": 3}
 SKIP_DIRS = {".git", ".venv", "venv", "env", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", "alembic"}
 CODE_EXT = (".py", ".js")
 _BUG_RULES = ("E9", "F63", "F7", "F82")
+INSTALLABLE_TOOLS = ("ruff", "vulture", "radon", "bandit")
+DEFAULT_AUDIT_TOOLS = ("ruff", "vulture", "radon", "bandit", "duplication", "spacing")
 
 
 def _timeout() -> int:
     try:
-        return int(os.getenv("AUDIT_TOOL_TIMEOUT", "") or 120)
+        from backend.api.settings_store import get_setting
+
+        val = get_setting("audit_tool_timeout", None)
+        if val is not None:
+            return max(0, int(val))
+    except Exception:
+        pass
+    raw = os.getenv("AUDIT_TOOL_TIMEOUT", "").strip()
+    if raw == "0":
+        return 0
+    try:
+        return int(raw or 180)
     except ValueError:
-        return 120
+        return 180
+
+
+def _chunk_size() -> int:
+    try:
+        from backend.api.settings_store import get_setting
+
+        val = get_setting("audit_chunk_size", None)
+        if val is not None:
+            return max(10, min(int(val), 200))
+    except Exception:
+        pass
+    try:
+        val = int(os.getenv("AUDIT_CHUNK_SIZE", "") or 40)
+        return max(10, min(val, 200))
+    except ValueError:
+        return 40
 
 
 def _norm(path) -> str:
@@ -50,9 +82,11 @@ def _rel(path: str, workspace: str) -> str:
     return p
 
 
-def _run(cmd: list[str], cwd: str) -> subprocess.CompletedProcess | None:
+def _run(cmd: list[str], cwd: str, timeout: int | None = None) -> subprocess.CompletedProcess | None:
+    limit = _timeout() if timeout is None else timeout
+    run_timeout = None if (limit is not None and limit <= 0) else limit
     try:
-        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace", timeout=_timeout(),
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace", timeout=run_timeout,
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -168,12 +202,14 @@ class _Normalize(ast.NodeTransformer):
         return ast.copy_location(ast.Constant(value=type(node.value).__name__), node)
 
 
-def ast_duplicates(workspace: str, files: list[str], min_nodes: int = 40) -> list[dict]:
+def ast_duplicates(workspace: str, files: list[str], min_nodes: int = 40, progress_cb=None) -> list[dict]:
     seen: dict[str, tuple[str, int, str]] = {}
     out = []
-    for rel in files:
-        if not rel.endswith(".py"):
-            continue
+    py_files = [rel for rel in files if rel.endswith(".py")]
+    total = len(py_files)
+    for idx, rel in enumerate(py_files, start=1):
+        if progress_cb and (idx == 1 or idx % 25 == 0 or idx == total):
+            progress_cb("duplication", f"{idx}/{total} arquivo(s) .py verificados")
         lines = _read_lines(Path(workspace, rel))
         if lines is None:
             continue
@@ -303,11 +339,13 @@ def _collect_spacing_issues(lines: list[str]) -> list[dict]:
     return issues
 
 
-def ast_spacing_findings(workspace: str, files: list[str]) -> list[dict]:
+def ast_spacing_findings(workspace: str, files: list[str], progress_cb=None) -> list[dict]:
     out: list[dict] = []
-    for rel in files:
-        if not rel.endswith(".py"):
-            continue
+    py_files = [rel for rel in files if rel.endswith(".py")]
+    total = len(py_files)
+    for idx, rel in enumerate(py_files, start=1):
+        if progress_cb and (idx == 1 or idx % 25 == 0 or idx == total):
+            progress_cb("spacing", f"{idx}/{total} arquivo(s) .py verificados")
         lines = _read_lines(Path(workspace, rel))
         if lines is None:
             continue
@@ -390,22 +428,29 @@ def _fingerprint(f: dict) -> str:
     return hashlib.sha1(base.encode("utf-8", "replace")).hexdigest()[:12]
 
 
-def _word_hits(workspace: str, name: str, skip_file: str, skip_line: int, limit: int = 1500) -> int:
-    pat = re.compile(r"\b" + re.escape(name) + r"\b")
-    hits = checked = 0
+def _build_word_index(workspace: str, limit: int = 1500) -> dict[str, list[str]]:
+    index: dict[str, list[str]] = {}
     for base, dirs, names in os.walk(workspace):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for n in names:
             if not n.endswith((".py", ".js", ".html")):
                 continue
-            checked += 1
-            if checked > limit:
-                return hits
+            if len(index) >= limit:
+                return index
             rel = os.path.relpath(os.path.join(base, n), workspace).replace("\\", "/")
-            lines = _read_lines(Path(base, n)) or []
-            for i, text in enumerate(lines, start=1):
-                if pat.search(text) and not (rel == skip_file and i == skip_line):
-                    hits += 1
+            index[rel] = _read_lines(Path(base, n)) or []
+    return index
+
+
+def _word_hits(workspace: str, name: str, skip_file: str, skip_line: int, limit: int = 1500,
+               file_index: dict[str, list[str]] | None = None) -> int:
+    pat = re.compile(r"\b" + re.escape(name) + r"\b")
+    pool = file_index if file_index is not None else _build_word_index(workspace, limit=limit)
+    hits = 0
+    for rel, lines in pool.items():
+        for i, text in enumerate(lines, start=1):
+            if pat.search(text) and not (rel == skip_file and i == skip_line):
+                hits += 1
     return hits
 
 
@@ -424,11 +469,16 @@ def _decorated_def(workspace: str, rel: str, line: int) -> bool:
     return False
 
 
-def validate_findings(workspace: str, findings: list[dict]) -> tuple[list[dict], list[str]]:
+def validate_findings(workspace: str, findings: list[dict], progress_cb=None) -> tuple[list[dict], list[str]]:
     """Preenche snippet/id com o código real e descarta o que não confere. Devolve (válidos, motivos_descartes)."""
     root = Path(workspace).resolve()
     good, dropped = [], []
-    for f in findings:
+    has_vulture = any(f.get("tool") == "vulture" for f in findings)
+    word_index = _build_word_index(str(root)) if has_vulture else None
+    total = len(findings)
+    for idx, f in enumerate(findings, start=1):
+        if progress_cb and total and (idx == 1 or idx % 50 == 0 or idx == total):
+            progress_cb("Validando achados", f"{idx}/{total} achado(s) conferidos no código real")
         rel = f["file"]
         try:
             target = (root / rel).resolve()
@@ -460,7 +510,7 @@ def validate_findings(workspace: str, findings: list[dict]) -> tuple[list[dict],
                 dropped.append(f"{rel}:{f['line']}: teste")
                 continue
             if name:
-                hits = _word_hits(workspace, name, rel, f["line"])
+                hits = _word_hits(workspace, name, rel, f["line"], file_index=word_index)
                 if hits:
                     f["confidence"] = "low"
                     f["note"] = f"'{name}' aparece {hits}x em outros pontos do projeto; confirme antes de apagar"
@@ -548,27 +598,82 @@ def changed_files(workspace: str, base: str | None = None) -> list[str] | None:
 
 # ── execução das ferramentas ──────────────────────────────────────────────
 
-def _chunks(items: list[str], size: int = 80):
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
+def _chunks(items: list[str], size: int | None = None):
+    step = _chunk_size() if size is None else size
+    for i in range(0, len(items), step):
+        yield items[i:i + step]
 
 
 def _tool_cmd(name: str) -> list[str] | None:
+    bin_dir = Path(sys.executable).resolve().parent
+    local_names = (f"{name}.exe", name) if os.name == "nt" else (name,)
+    for candidate in local_names:
+        local_exe = bin_dir / candidate
+        if local_exe.is_file():
+            return [str(local_exe)]
     exe = shutil.which(name)
     if exe:
         return [exe]
+    if importlib.util.find_spec(name) is not None:
+        return [sys.executable, "-m", name]
     return None
 
 
-def _run_tool(name: str, workspace: str, files: list[str]) -> tuple[list[dict], str]:
+def missing_tools(tools: tuple[str, ...] | list[str] = INSTALLABLE_TOOLS) -> list[str]:
+    """Ferramentas externas de auditoria ausentes no ambiente Python do assistente."""
+    return [t for t in tools if t in INSTALLABLE_TOOLS and _tool_cmd(t) is None]
+
+
+def install_tools(tools: list[str], progress_cb=None) -> dict:
+    """Instala bibliotecas de auditoria permitidas no ambiente Python atual (sys.executable -m pip)."""
+    allowed = [t for t in dict.fromkeys(tools) if t in INSTALLABLE_TOOLS]
+    installed: list[str] = []
+    already: list[str] = []
+    failed: dict[str, str] = {}
+    total = len(allowed)
+    for idx, pkg in enumerate(allowed, start=1):
+        if _tool_cmd(pkg) is not None:
+            already.append(pkg)
+            if progress_cb:
+                progress_cb("Instalando libs", f"{idx}/{total}: {pkg} já instalado")
+            continue
+        if progress_cb:
+            progress_cb("Instalando libs", f"{idx}/{total}: executando pip install {pkg}...")
+        res = _run([sys.executable, "-m", "pip", "install", pkg], os.getcwd(), timeout=300)
+        importlib.invalidate_caches()
+        if res is None:
+            failed[pkg] = "timeout ou falha ao executar pip"
+            continue
+        if res.returncode != 0:
+            detail = (res.stderr or res.stdout or "").strip().splitlines()
+            failed[pkg] = (detail[-1] if detail else f"código {res.returncode}")[:220]
+            continue
+        if _tool_cmd(pkg) is None:
+            failed[pkg] = "instalado mas executável/módulo não encontrado"
+            continue
+        installed.append(pkg)
+        if progress_cb:
+            progress_cb("Instalando libs", f"{idx}/{total}: {pkg} instalado com sucesso")
+    return {"installed": installed, "already": already, "failed": failed}
+
+
+def _run_tool(name: str, workspace: str, files: list[str], progress_cb=None) -> tuple[list[dict], str]:
     py = [f for f in files if f.endswith(".py")]
     if not py:
         return [], "sem arquivos .py"
     base = _tool_cmd(name)
     if base is None:
         return [], "ausente (pip install " + name + ")"
+    chunks = list(_chunks(py))
+    total_chunks = len(chunks)
+    total_py = len(py)
     found: list[dict] = []
-    for chunk in _chunks(py):
+    timeouts = 0
+    done_files = 0
+    for idx, chunk in enumerate(chunks, start=1):
+        if progress_cb:
+            pct = int((done_files / total_py) * 100) if total_py else 0
+            progress_cb(name, f"lote {idx}/{total_chunks} ({done_files}/{total_py} arquivos · {pct}%)")
         if name == "ruff":
             res = _run(base + ["check", "--select", "E9,F,B,PERF", "--no-cache", "--isolated", "--output-format=json"] + chunk, workspace)
             if res is not None and res.returncode == 2 and "output-format" in (res.stderr or ""):
@@ -582,19 +687,28 @@ def _run_tool(name: str, workspace: str, files: list[str]) -> tuple[list[dict], 
             res, ok, parser = _run(base + ["-q", "-f", "json"] + chunk, workspace), (0, 1), parse_bandit
         else:
             return [], "ferramenta desconhecida"
+        done_files += len(chunk)
         if res is None:
-            return found, "timeout ou falha ao executar"
+            timeouts += 1
+            continue
         if res.returncode not in ok:
             return found, f"erro (código {res.returncode}): {(res.stderr or res.stdout or '').strip()[:200]}"
         found.extend(parser(res.stdout, workspace))
+    if progress_cb:
+        progress_cb(name, f"concluído ({total_py}/{total_py} arquivos · {len(found)} achado(s) bruto(s))")
+    if timeouts:
+        return found, f"parcial ({timeouts}/{total_chunks} lote(s) com timeout)"
     return found, "ok"
 
 
 def run_audit(workspace: str, paths: list[str] | None = None, incremental: bool = False, base: str | None = None,
-              tools: tuple[str, ...] = ("ruff", "vulture", "radon", "bandit", "duplication", "spacing"),
-              min_confidence: str = "low", use_registry: bool = True) -> dict:
+              tools: tuple[str, ...] = DEFAULT_AUDIT_TOOLS,
+              min_confidence: str = "low", use_registry: bool = True, progress_cb=None) -> dict:
+    started = time.perf_counter()
     root = str(Path(workspace).resolve())
     status: dict[str, str] = {}
+    if progress_cb:
+        progress_cb("Descobrindo arquivos", "listando arquivos de código do workspace...")
     files = [_norm(p) for p in paths] if paths else project_code_files(root)
     if incremental:
         changed = changed_files(root, base)
@@ -602,28 +716,38 @@ def run_audit(workspace: str, paths: list[str] | None = None, incremental: bool 
             status["incremental"] = "não é repositório git: auditoria completa"
         else:
             files = [f for f in files if f in set(changed)]
+    py_count = sum(1 for f in files if f.endswith(".py"))
+    if progress_cb:
+        progress_cb("Descobrindo arquivos", f"{len(files)} arquivo(s) de código ({py_count} .py)")
     raw: list[dict] = []
     for tool in tools:
         if tool == "duplication":
-            raw.extend(ast_duplicates(root, files))
+            raw.extend(ast_duplicates(root, files, progress_cb=progress_cb))
             status[tool] = "ok"
             continue
         if tool == "spacing":
-            raw.extend(ast_spacing_findings(root, files))
+            raw.extend(ast_spacing_findings(root, files, progress_cb=progress_cb))
             status[tool] = "ok"
             continue
-        found, st = _run_tool(tool, root, files)
+        found, st = _run_tool(tool, root, files, progress_cb=progress_cb)
         raw.extend(found)
         status[tool] = st
-    valid, dropped = validate_findings(root, raw)
+    valid, dropped = validate_findings(root, raw, progress_cb=progress_cb)
     registry = load_false_positives(root) if use_registry else {}
     kept = [f for f in valid if f["id"] not in registry and CONFIDENCE[f["confidence"]] >= CONFIDENCE.get(min_confidence, 1)]
     unique: dict[str, dict] = {}
     for f in kept:
         unique.setdefault(f["id"], f)
     ordered = sorted(unique.values(), key=lambda f: (-SEVERITY[f["severity"]], -CONFIDENCE[f["confidence"]], f["file"], f["line"]))
-    return {"findings": ordered, "tools": status, "files": len(files), "dropped": dropped,
-            "ignored_false_positives": len([f for f in valid if f["id"] in registry])}
+    return {
+        "findings": ordered,
+        "tools": status,
+        "files": len(files),
+        "audited_files": list(files),
+        "elapsed_seconds": round(time.perf_counter() - started, 1),
+        "dropped": dropped,
+        "ignored_false_positives": len([f for f in valid if f["id"] in registry]),
+    }
 
 
 # ── achados -> tasks importáveis ──────────────────────────────────────────
@@ -672,18 +796,56 @@ AUDIT_HELP = (
     "- `min=medium` — mostra só achados com confiança média ou alta (padrão: todos)\n"
     "- `tools=ruff,bandit` — escolhe as ferramentas (ruff, vulture, radon, bandit, duplication, spacing)\n"
     "- `@audit fix` — corrige automaticamente linhas em branco faltantes em `.py` (`@audit fix diff` ou `@audit fix arquivo.py`)\n"
+    "- `@audit pdf` — gera/baixa o relatório completo em PDF do último `@audit` (também salvo em Artefatos)\n"
+    "- `@audit instalar` — instala via `pip` as ferramentas de auditoria ausentes no ambiente do assistente\n"
     "- `@audit tasks` — transforma o último relatório em tasks (`@audit tasks 1 3 5` escolhe pelos números)\n"
     "- `@audit falso 4 motivo` — marca o achado nº 4 (ou o id) como falso positivo; não volta mais\n"
     "- `@audit desfazer <id>` — tira do registro de falsos positivos\n"
 )
 
 
-def parse_command(text: str) -> dict | None:
-    """None se a mensagem não é um comando de auditoria (@audit ou pedido em linguagem natural)."""
+_INSTALL_YES = re.compile(
+    r"^\s*(?:sim|s|ok|pode|pode\s+instalar|instala|instale|instalar|claro|manda|yes|bora)\s*[.!?]*\s*$",
+    re.I,
+)
+_INSTALL_NO = re.compile(
+    r"^\s*(?:n[ãa]o|n|continuar|pular|sem\s+instalar|s[óo]\s+rodar|rodar\s+mesmo\s+assim|no)\s*[.!?]*\s*$",
+    re.I,
+)
+
+
+def _parse_install_followup(text: str, messages) -> dict | None:
+    if not messages:
+        return None
+    prev_ai = None
+    for msg in reversed(list(messages)[:-1]):
+        kind = getattr(msg, "type", "")
+        if kind == "tool" or (kind == "ai" and getattr(msg, "tool_calls", None)):
+            continue
+        if kind == "ai":
+            prev_ai = msg
+        break
+    if prev_ai is None:
+        return None
+    prev_text = str(getattr(prev_ai, "content", "") or "")
+    if "@audit instalar" not in prev_text:
+        return None
+    if _INSTALL_YES.match(text):
+        return {"cmd": "install", "args": []}
+    if _INSTALL_NO.match(text):
+        return {"cmd": "continue"}
+    return None
+
+
+def parse_command(text: str, messages=None) -> dict | None:
+    """None se a mensagem não é um comando de auditoria (@audit, pedido natural ou resposta a instalação)."""
     text = str(text or "")
-    if not AUDIT_TAG.search(text[:TAG_LOOKAHEAD]):
-        return _parse_natural(text)
-    return _parse_tagged(text)
+    if AUDIT_TAG.search(text[:TAG_LOOKAHEAD]):
+        return _parse_tagged(text)
+    natural = _parse_natural(text)
+    if natural is not None:
+        return natural
+    return _parse_install_followup(text, messages)
 
 
 def _parse_tagged(text: str) -> dict | None:
@@ -699,6 +861,12 @@ def _parse_tagged(text: str) -> dict | None:
         return {"cmd": "fp", "args": tokens[1:2], "reason": " ".join(tokens[2:])}
     if head in ("desfazer", "unfp"):
         return {"cmd": "unfp", "args": tokens[1:2]}
+    if head in ("pdf", "relatorio", "relatório"):
+        return {"cmd": "pdf"}
+    if head in ("instalar", "install", "pip"):
+        return {"cmd": "install", "args": tokens[1:]}
+    if head in ("continuar", "skip", "pular"):
+        return {"cmd": "continue"}
     if head in ("fix", "corrigir", "format", "formatar", "linhas"):
         fix_cmd = {"cmd": "fix", "incremental": False, "base": None, "paths": []}
         for tok in tokens[1:]:
@@ -821,6 +989,33 @@ def load_last(workspace: str, thread_id: str) -> dict | None:
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def _pending_install_path(workspace: str, thread_id: str) -> Path:
+    return audit_dir(workspace) / f"pending_install_{re.sub(r'[^A-Za-z0-9_.-]', '_', str(thread_id))[:80]}.json"
+
+
+def save_pending_install(workspace: str, thread_id: str, payload: dict) -> None:
+    path = _pending_install_path(workspace, thread_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_pending_install(workspace: str, thread_id: str) -> dict | None:
+    try:
+        data = json.loads(_pending_install_path(workspace, thread_id).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def clear_pending_install(workspace: str, thread_id: str) -> None:
+    try:
+        _pending_install_path(workspace, thread_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def select_findings(findings: list[dict], args: list[str]) -> list[dict]:
