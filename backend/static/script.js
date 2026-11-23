@@ -14,6 +14,11 @@ const API = {
   updateTask: (taskId) => `/api/tasks/${taskId}`,
   deleteTask: (taskId) => `/api/tasks/${taskId}`,
   retryTask: (taskId) => `/api/tasks/${taskId}/retry`,
+  healTask: (taskId) => `/api/tasks/${taskId}/heal`,
+  taskAutoPlan: (threadId) => `/api/tasks/${threadId}/auto-plan`,
+  taskCheckpoint: (threadId) => `/api/tasks/${threadId}/checkpoint`,
+  taskCheckpointRollback: (threadId) => `/api/tasks/${threadId}/checkpoint/rollback`,
+  autonomy: "/api/tasks/autonomy",
   taskDiff: (taskId) => `/api/tasks/${taskId}/diff`,
   revertTask: (taskId) => `/api/tasks/${taskId}/revert`,
   bulkDeleteTasks: "/api/tasks/bulk/delete",
@@ -35,6 +40,9 @@ const API = {
   monitorStop: "/api/monitor/stop",
   monitorBuild: "/api/monitor/build",
   monitorTestRoutes: "/api/monitor/test-routes",
+  gitStatus: "/api/monitor/git/status",
+  gitDiff: "/api/monitor/git/diff",
+  gitCommit: "/api/monitor/git/commit",
   ragScope: "/api/rag/scope",
   ragLinks: "/api/rag/links",
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
@@ -46,6 +54,12 @@ const API = {
   releaseTasks: (threadId) => `/api/ai/${threadId}/release-tasks`,
   rewind: (threadId) => `/api/ai/${threadId}/rewind`,
   batch: "/api/ai/batch/",
+  batchStatus: (threadId) => `/api/ai/${threadId}/batch`,
+  batchStop: (threadId) => `/api/ai/${threadId}/batch/stop`,
+  workspaceFiles: "/api/ai/workspace-files",
+  batchStatus: (threadId) => `/api/ai/${threadId}/batch`,
+  batchStop: (threadId) => `/api/ai/${threadId}/batch/stop`,
+  workspaceFiles: "/api/ai/workspace-files",
   upload: (threadId) => `/api/uploads/${encodeURIComponent(threadId)}`,
 };
 
@@ -864,7 +878,7 @@ function renderTasks(tasks) {
         <span class="task-meta"><span class="task-priority p-${escapeHtml(task.priority || "medium")}">${escapeHtml(PRIORITY_LABEL[task.priority || "medium"] || task.priority)}</span><span class="task-mode">${steps.length ? "determinística" : "modo livre"}</span></span>
         <span class="task-footer-right">
           ${canPlan ? `<button type="button" class="btn btn-ghost btn-sm btn-plan-task" data-task-id="${task.id}" title="O modelo local indica as linhas e o sistema monta e valida os passos">${steps.length ? "Replanejar" : "Planejar"}</button>` : ""}
-          ${failed ? `<button type="button" class="btn btn-ghost btn-sm btn-retry-task" data-task-id="${task.id}">Reiniciar</button>` : ""}
+          ${failed ? `<button type="button" class="btn btn-secondary btn-sm btn-retry-task" data-task-id="${task.id}" title="Envia o erro para a IA corrigir automaticamente">Corrigir erro</button>` : ""}
           ${inReview ? `<button type="button" class="btn btn-ghost btn-sm btn-diff-task" data-task-id="${task.id}">Ver alterações</button><button type="button" class="btn btn-primary btn-sm btn-approve-task" data-task-id="${task.id}">Aprovar</button><button type="button" class="btn btn-ghost btn-sm btn-reject-task" data-task-id="${task.id}">Reprovar</button>` : ""}
         </span>
       </div>
@@ -2452,7 +2466,7 @@ startPolling();
 // ANEXOS DAS TAREFAS + PROMPT PARA GERAR MICROTASKS
 // ============================================================
 
-const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele possui dois modos de execução: DETERMINÍSTICO (padrão) e DINÂMICO (via LLM).\n\nREGRAS DE OURO PARA MODO DETERMINÍSTICO (Edições e Operações de Arquivo)\n- Na maioria das vezes, ele executa as tarefas de forma determinística: aplica exatamente o que você escrever e roda as verificações. Ele não interpreta nem corrige. Cada passo precisa ter o texto/código FINAL e EXATO.\n- Para alterar um arquivo existente (replace_text), preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Para remover arquivos obsoletos use delete_file (com rollback automático).\n\nREGRAS PARA MODO DINÂMICO / LLM (Documentação, Refatoração, Análise)\n- O assistente TEM capacidade de leitura, interpretação e geração de código/texto por conta própria.\n- Se a tarefa exigir análise de arquivos que acabaram de ser modificados, geração de documentação, ou refatoração complexa onde um \"replace_text\" determinístico seria inviável, DEIXE O ARRAY \"steps\" VAZIO: \"steps\": [].\n- Quando \"steps\" estiver vazio, o assistente usará o texto que você colocar no campo \"description\" como um prompt para executar a tarefa usando sua própria inteligência (LLM). Descreva EXATAMENTE o que ele deve ler e o que deve gerar.\n- DOCUMENTAÇÃO QUE VAI PARA OUTRA PESSOA: prefira o modo determinístico com write_markdown e o texto FINAL escrito por você a partir do código real que eu colei. Se usar o modo dinâmico, liste em \"files\" TODOS os arquivos-fonte e inclua em \"verify\" a checagem literals_grounded.\n- O modo dinâmico monta o contexto sozinho (git diff, arquivos, constantes referenciadas) e confere por código se os valores citados existem nas fontes.\n\nFORMATO DO JSON\n- Responda SOMENTE com um array JSON válido (sem comentários e sem texto fora do JSON). Entregue-o FORMATADO e legível: indentado com 2 espaços, uma propriedade por linha e um objeto por tarefa, dentro de UM único bloco de código ```json (nunca em uma linha só, sem prosa antes ou depois do bloco).\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n- Formato de cada objeto no array:\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz (se for dinâmica, seja extremamente detalhista aqui)\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados/lidos)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações (ou vazio [] para tarefas dinâmicas)... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\" - USE APENAS EM MODO DETERMINÍSTICO)\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" }\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n- move_file: { \"op\": \"move_file\", \"source\": \"caminho/antigo.py\", \"destination\": \"caminho/novo.py\", \"overwrite\": false }\n- delete_file: { \"op\": \"delete_file\", \"path\": \"caminho/obsoleto.py\" } (remove arquivo com rollback automático se a task falhar)\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- file_not_exists: { \"type\": \"file_not_exists\", \"path\": \"...\" } (confirma que arquivo movido/apagado não existe mais)\n- ts_check: { \"type\": \"ts_check\", \"path\": \"dashboard/app/page.tsx\" } (roda tsc --noEmit no projeto TypeScript/Next.js)\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\n- pytest: { \"type\": \"pytest\", \"path\": \"tests/test_x.py\" } (roda o arquivo de teste; use quando a task criar ou alterar testes)\n- literals_grounded: { \"type\": \"literals_grounded\", \"path\": \"doc.md\", \"sources\": [\"app/views.py\"], \"allow\": [] } (confere por código se valores entre aspas, headers e códigos HTTP do documento existem nas fontes)\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLOS\n\nTarefa Determinística (Edição exata):\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" }\n    ]\n  }\n]\n\nTarefa Dinâmica (Análise/Geração usando IA do assistente):\n[\n  {\n    \"title\": \"Documentar API\",\n    \"description\": \"Leia o arquivo app/views.py e crie um arquivo README.md detalhando os endpoints encontrados, métodos HTTP, payloads e retornos.\",\n    \"reason\": \"Facilitar o consumo da API pelo frontend.\",\n    \"files\": [\"app/views.py\", \"README.md\"],\n    \"priority\": \"medium\",\n    \"steps\": [],\n    \"verify\": [\n      { \"type\": \"file_exists\", \"path\": \"README.md\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
+const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele possui dois modos de execução: DETERMINÍSTICO (padrão) e DINÂMICO (via LLM).\n\nREGRAS DE OURO PARA MODO DETERMINÍSTICO (Edições e Operações de Arquivo)\n- Na maioria das vezes, ele executa as tarefas de forma determinística: aplica exatamente o que você escrever e roda as verificações. Ele não interpreta nem corrige. Cada passo precisa ter o texto/código FINAL e EXATO.\n- Para alterar um arquivo existente (replace_text), preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Para remover arquivos obsoletos use delete_file (com rollback automático). ATENÇÃO DE ESCAPE NO JSON: dentro de strings de código Python/JS, use \\n (duplo escape) para quebras de linha literais; nunca deixe quebra de linha real dentro de aspas simples ou duplas.\n\nREGRAS PARA MODO DINÂMICO / LLM (Documentação, Refatoração, Análise)\n- O assistente TEM capacidade de leitura, interpretação e geração de código/texto por conta própria.\n- Se a tarefa exigir análise de arquivos que acabaram de ser modificados, geração de documentação, ou refatoração complexa onde um \"replace_text\" determinístico seria inviável, DEIXE O ARRAY \"steps\" VAZIO: \"steps\": [].\n- Quando \"steps\" estiver vazio, o assistente usará o texto que você colocar no campo \"description\" como um prompt para executar a tarefa usando sua própria inteligência (LLM). Descreva EXATAMENTE o que ele deve ler e o que deve gerar.\n- DOCUMENTAÇÃO QUE VAI PARA OUTRA PESSOA: prefira o modo determinístico com write_markdown e o texto FINAL escrito por você a partir do código real que eu colei. Se usar o modo dinâmico, liste em \"files\" TODOS os arquivos-fonte e inclua em \"verify\" a checagem literals_grounded.\n- O modo dinâmico monta o contexto sozinho (git diff, arquivos, constantes referenciadas) e confere por código se os valores citados existem nas fontes.\n\nFORMATO DO JSON\n- Responda SOMENTE com um array JSON válido (sem comentários e sem texto fora do JSON). Entregue-o FORMATADO e legível: indentado com 2 espaços, uma propriedade por linha e um objeto por tarefa, dentro de UM único bloco de código ```json (nunca em uma linha só, sem prosa antes ou depois do bloco).\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n- Formato de cada objeto no array:\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz (se for dinâmica, seja extremamente detalhista aqui)\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados/lidos)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações (ou vazio [] para tarefas dinâmicas)... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\" - USE APENAS EM MODO DETERMINÍSTICO)\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" }\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n- move_file: { \"op\": \"move_file\", \"source\": \"caminho/antigo.py\", \"destination\": \"caminho/novo.py\", \"overwrite\": false }\n- delete_file: { \"op\": \"delete_file\", \"path\": \"caminho/obsoleto.py\" } (remove arquivo com rollback automático se a task falhar)\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- file_not_exists: { \"type\": \"file_not_exists\", \"path\": \"...\" } (confirma que arquivo movido/apagado não existe mais)\n- ts_check: { \"type\": \"ts_check\", \"path\": \"dashboard/app/page.tsx\" } (roda tsc --noEmit no projeto TypeScript/Next.js)\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\n- pytest: { \"type\": \"pytest\", \"path\": \"tests/test_x.py\" } (roda o arquivo de teste; use quando a task criar ou alterar testes)\n- literals_grounded: { \"type\": \"literals_grounded\", \"path\": \"doc.md\", \"sources\": [\"app/views.py\"], \"allow\": [] } (confere por código se valores entre aspas, headers e códigos HTTP do documento existem nas fontes)\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLOS\n\nTarefa Determinística (Edição exata):\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" }\n    ]\n  }\n]\n\nTarefa Dinâmica (Análise/Geração usando IA do assistente):\n[\n  {\n    \"title\": \"Documentar API\",\n    \"description\": \"Leia o arquivo app/views.py e crie um arquivo README.md detalhando os endpoints encontrados, métodos HTTP, payloads e retornos.\",\n    \"reason\": \"Facilitar o consumo da API pelo frontend.\",\n    \"files\": [\"app/views.py\", \"README.md\"],\n    \"priority\": \"medium\",\n    \"steps\": [],\n    \"verify\": [\n      { \"type\": \"file_exists\", \"path\": \"README.md\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
 
 const TASK_ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".zip", ".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx"];
 state.taskUploads = [];
@@ -3731,6 +3745,7 @@ document.getElementById("btn-rt-run")?.addEventListener("click", async (event) =
   const btn = event.currentTarget;
   const baseUrl = String(document.getElementById("rt-base-url")?.value || "").trim();
   const routes = String(document.getElementById("rt-routes")?.value || "").trim();
+  const authHeader = String(document.getElementById("rt-auth-header")?.value || "").trim();
   const box = document.getElementById("rt-results");
   const diagBtn = document.getElementById("btn-rt-diagnose");
   if (!baseUrl || !box) return;
@@ -3742,7 +3757,7 @@ document.getElementById("btn-rt-run")?.addEventListener("click", async (event) =
   try {
     const res = await api(API.monitorTestRoutes, {
       method: "POST",
-      body: JSON.stringify({ base_url: baseUrl, routes }),
+      body: JSON.stringify({ base_url: baseUrl, routes, auth_header: authHeader }),
     });
     state.lastRouteReport = res;
     const rows = [
@@ -3774,4 +3789,705 @@ const _origSetDrawerTabMon = setDrawerTab;
 setDrawerTab = function (tab) {
   _origSetDrawerTabMon(tab);
   if (tab === "monitor") refreshMonitorStatus();
+};
+
+// ============================================================
+// MONITOR AO VIVO, HISTÓRICO DE ROTAS/AUTH E GIT RÁPIDO
+// ============================================================
+
+const ROUTE_PREFS_STORE = "assistant_route_tester_prefs";
+let monitorPollTimer = null;
+let _lastSeenMonitorSig = "";
+
+function _loadRoutePrefs() {
+  try { return JSON.parse(localStorage.getItem(ROUTE_PREFS_STORE) || "{}") || {}; }
+  catch { return {}; }
+}
+
+function _saveRoutePrefs(workspace, data) {
+  if (!workspace) return;
+  const all = _loadRoutePrefs();
+  all[workspace] = { ...(all[workspace] || {}), ...data };
+  try { localStorage.setItem(ROUTE_PREFS_STORE, JSON.stringify(all)); } catch {}
+}
+
+function restoreRouteTesterPrefs() {
+  const urlEl = document.getElementById("rt-base-url");
+  const routesEl = document.getElementById("rt-routes");
+  const authEl = document.getElementById("rt-auth-header");
+  if (!urlEl || !routesEl) return;
+  const prefs = _loadRoutePrefs()[state.workspacePath || "__default__"] || {};
+  if (prefs.base_url) urlEl.value = prefs.base_url;
+  if (prefs.routes !== undefined) routesEl.value = prefs.routes;
+  if (authEl && prefs.auth_header !== undefined) authEl.value = prefs.auth_header;
+}
+
+["rt-base-url", "rt-routes", "rt-auth-header"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("input", () => {
+    _saveRoutePrefs(state.workspacePath || "__default__", {
+      base_url: document.getElementById("rt-base-url")?.value || "",
+      routes: document.getElementById("rt-routes")?.value || "",
+      auth_header: document.getElementById("rt-auth-header")?.value || "",
+    });
+  });
+});
+
+async function pollMonitorLive() {
+  if (!state.workspacePath) return;
+  try {
+    const data = await api(`${API.monitorStatus}?workspace_path=${encodeURIComponent(state.workspacePath)}`);
+    const mon = data?.active;
+    const isMonitorTabOpen = !document.querySelector('[data-panel="monitor"]')?.classList.contains("hidden");
+    if (isMonitorTabOpen) {
+      await refreshMonitorStatus();
+    }
+    if (!mon) return;
+    const sig = `${mon.errors_detected || 0}|${mon.last_build_at || ""}`;
+    if (_lastSeenMonitorSig && sig !== _lastSeenMonitorSig) {
+      const chat = activeChatOrNull();
+      if (chat && (!mon.thread_id || mon.thread_id === chat.thread_id) && !state.sending) {
+        await openChat(chat.id);
+      }
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        const title = mon.last_error ? `Erro Docker em ${mon.project_name}` : `Build Docker em ${mon.project_name}`;
+        new Notification(title, { body: "Confira o diagnóstico no chat do Assistente Local." });
+      }
+    }
+    _lastSeenMonitorSig = sig;
+  } catch {}
+}
+
+function startMonitorPolling() {
+  if (monitorPollTimer) clearInterval(monitorPollTimer);
+  monitorPollTimer = setInterval(pollMonitorLive, 4000);
+}
+
+async function refreshGitQuickStatus() {
+  const branchEl = document.getElementById("git-quick-branch");
+  const listEl = document.getElementById("git-quick-files");
+  const diffPre = document.getElementById("git-quick-diff");
+  const commitBtn = document.getElementById("btn-git-commit");
+  if (!branchEl || !listEl) return;
+
+  if (!state.workspacePath) {
+    branchEl.textContent = "Sem projeto";
+    listEl.innerHTML = '<div class="tasks-empty">Selecione um projeto para ver o status do Git.</div>';
+    if (diffPre) diffPre.classList.add("hidden");
+    if (commitBtn) commitBtn.disabled = true;
+    return;
+  }
+
+  branchEl.textContent = "Lendo…";
+  try {
+    const data = await api(`${API.gitStatus}?workspace_path=${encodeURIComponent(state.workspacePath)}`);
+    branchEl.textContent = data.branch || "(detached)";
+    const files = data.files || [];
+    if (commitBtn) commitBtn.disabled = files.length === 0;
+    if (!files.length) {
+      listEl.innerHTML = '<div class="tasks-empty">Working tree limpo (sem alterações pendentes).</div>';
+      if (diffPre) diffPre.classList.add("hidden");
+      return;
+    }
+    listEl.innerHTML = files.slice(0, 40).map((f) => `
+      <button type="button" class="git-file-row" data-git-file="${escapeHtml(f.path)}" title="Clique para ver o diff deste arquivo">
+        <span class="git-st">${escapeHtml(f.status)}</span>
+        <code>${escapeHtml(f.path)}</code>
+      </button>
+    `).join("");
+  } catch (err) {
+    branchEl.textContent = "Sem Git";
+    listEl.innerHTML = `<div class="tasks-empty">${escapeHtml(err.message)}</div>`;
+    if (commitBtn) commitBtn.disabled = true;
+  }
+}
+
+async function loadGitQuickDiff(filePath = "") {
+  const diffPre = document.getElementById("git-quick-diff");
+  if (!diffPre || !state.workspacePath) return;
+  diffPre.classList.remove("hidden");
+  diffPre.textContent = "Carregando diff…";
+  try {
+    const qs = `workspace_path=${encodeURIComponent(state.workspacePath)}` + (filePath ? `&file=${encodeURIComponent(filePath)}` : "");
+    const data = await api(`${API.gitDiff}?${qs}`);
+    diffPre.textContent = data.diff || "(sem alterações no diff)";
+  } catch (err) {
+    diffPre.textContent = "Erro ao carregar diff: " + err.message;
+  }
+}
+
+document.getElementById("btn-git-refresh")?.addEventListener("click", refreshGitQuickStatus);
+document.getElementById("btn-git-diff-all")?.addEventListener("click", () => loadGitQuickDiff(""));
+document.getElementById("git-quick-files")?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-git-file]");
+  if (!btn) return;
+  loadGitQuickDiff(btn.dataset.gitFile || "");
+});
+
+document.getElementById("btn-git-commit")?.addEventListener("click", async (event) => {
+  const btn = event.currentTarget;
+  const input = document.getElementById("git-commit-msg");
+  const msg = String(input?.value || "").trim();
+  if (!state.workspacePath) return;
+  if (!msg) return alert("Digite uma mensagem de commit primeiro.");
+  btn.disabled = true;
+  try {
+    await api(API.gitCommit, {
+      method: "POST",
+      body: JSON.stringify({ workspace_path: state.workspacePath, message: msg }),
+    });
+    if (input) input.value = "";
+    appendNotice(`Commit realizado: "${msg}"`);
+    await refreshGitQuickStatus();
+  } catch (err) {
+    alert("Falha ao commitar: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+const _origSetDrawerTabGit = setDrawerTab;
+setDrawerTab = function (tab) {
+  _origSetDrawerTabGit(tab);
+  if (tab === "project") refreshGitQuickStatus();
+  if (tab === "monitor") restoreRouteTesterPrefs();
+};
+
+restoreRouteTesterPrefs();
+startMonitorPolling();
+
+// ============================================================
+// FILA RÁPIDA SEQUENCIAL (CARDS, ARQUIVOS, PROGRESSO E ROTINAS)
+// ============================================================
+
+const QQ_TEMPLATES_STORE = "assistant_quick_queue_templates";
+state.quickQueueDraft = [];     // [{ prompt, files: [] }]
+state.quickQueueDraftFiles = []; // arquivos vinculados ao rascunho atual
+state.quickQueueRun = null;      // estado vindo do servidor
+let qqPollTimer = null;
+let _qqLastDoneCount = -1;
+
+const QQ_STATUS_LABELS = {
+  pending: "Na fila",
+  running: "Executando…",
+  done: "Concluído",
+  failed: "Falhou",
+  cancelled: "Cancelado",
+};
+
+function _loadQqTemplates() {
+  try { return JSON.parse(localStorage.getItem(QQ_TEMPLATES_STORE) || "{}") || {}; }
+  catch { return {}; }
+}
+
+function _saveQqTemplates(map) {
+  try { localStorage.setItem(QQ_TEMPLATES_STORE, JSON.stringify(map)); } catch {}
+}
+
+function renderQqTemplates() {
+  const sel = document.getElementById("qq-template-select");
+  const delBtn = document.getElementById("btn-qq-del-tpl");
+  if (!sel) return;
+  const current = sel.value;
+  const templates = _loadQqTemplates();
+  const names = Object.keys(templates).sort();
+  sel.innerHTML = '<option value="">Rotinas salvas…</option>' +
+    names.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)} (${templates[n].length})</option>`).join("");
+  if (current && templates[current]) sel.value = current;
+  if (delBtn) delBtn.classList.toggle("hidden", !sel.value);
+}
+
+function renderQqDraftFiles() {
+  const box = document.getElementById("qq-draft-files");
+  if (!box) return;
+  box.classList.toggle("hidden", state.quickQueueDraftFiles.length === 0);
+  box.innerHTML = state.quickQueueDraftFiles.map((file, idx) => `
+    <span class="qq-chip">
+      <span title="${escapeHtml(file)}">${escapeHtml(file.split("/").pop() || file)}</span>
+      <button type="button" data-qq-rm-file="${idx}" aria-label="Remover arquivo">×</button>
+    </span>
+  `).join("");
+}
+
+function renderQuickQueue() {
+  const listEl = document.getElementById("qq-list");
+  const progEl = document.getElementById("qq-progress");
+  const progFill = document.getElementById("qq-progress-fill");
+  const stopBtn = document.getElementById("btn-stop-batch");
+  const runBtn = document.getElementById("btn-send-batch");
+  const statusEl = document.getElementById("batch-status");
+  if (!listEl) return;
+
+  const run = state.quickQueueRun;
+  const isRunning = Boolean(run?.running);
+  if (stopBtn) stopBtn.classList.toggle("hidden", !isRunning);
+  if (runBtn) runBtn.disabled = isRunning;
+
+  if (run && run.items && run.items.length) {
+    const completed = (run.done || 0) + (run.failed || 0) + (run.cancelled || 0);
+    const pct = run.total ? Math.round((100 * completed) / run.total) : 0;
+    if (progEl) progEl.classList.remove("hidden");
+    if (progFill) progFill.style.width = `${pct}%`;
+    if (statusEl) {
+      statusEl.textContent = isRunning
+        ? `Executando ${completed + 1}/${run.total}…`
+        : `Finalizado: ${run.done}/${run.total} OK` + (run.failed ? ` · ${run.failed} falha(s)` : "");
+    }
+    listEl.innerHTML = run.items.map((item, i) => `
+      <article class="qq-card status-${escapeHtml(item.status)}">
+        <div class="qq-card-head">
+          <span class="qq-idx">#${i + 1}</span>
+          <span class="qq-badge ${escapeHtml(item.status)}">${escapeHtml(QQ_STATUS_LABELS[item.status] || item.status)}</span>
+          ${item.elapsed_seconds != null ? `<small class="qq-time">${item.elapsed_seconds}s</small>` : ""}
+        </div>
+        <div class="qq-card-text">${escapeHtml(item.prompt)}</div>
+        ${item.files?.length ? `<div class="qq-file-chips">${item.files.map((f) => `<span class="qq-chip readonly">${escapeHtml(f)}</span>`).join("")}</div>` : ""}
+        ${item.error ? `<div class="qq-card-err">${escapeHtml(item.error)}</div>` : ""}
+      </article>
+    `).join("");
+    return;
+  }
+
+  if (progEl) progEl.classList.add("hidden");
+  if (statusEl) {
+    statusEl.textContent = state.quickQueueDraft.length
+      ? `${state.quickQueueDraft.length} comando(s) pronto(s)`
+      : "";
+  }
+  if (!state.quickQueueDraft.length) {
+    listEl.innerHTML = '<div class="tasks-empty">Nenhum comando na fila. Escreva acima e clique em <b>+ Adicionar</b> (ou Ctrl+Enter).</div>';
+    return;
+  }
+
+  listEl.innerHTML = state.quickQueueDraft.map((item, i) => `
+    <article class="qq-card">
+      <div class="qq-card-head">
+        <span class="qq-idx">#${i + 1}</span>
+        <span class="qq-card-tools">
+          <button type="button" class="btn-icon-task" data-qq-up="${i}" ${i === 0 ? "disabled" : ""} title="Subir">↑</button>
+          <button type="button" class="btn-icon-task" data-qq-down="${i}" ${i === state.quickQueueDraft.length - 1 ? "disabled" : ""} title="Descer">↓</button>
+          <button type="button" class="btn-icon-task" data-qq-edit="${i}" title="Editar">${ICON.pencil}</button>
+          <button type="button" class="btn-icon-task" data-qq-del="${i}" title="Remover">${ICON.trash}</button>
+        </span>
+      </div>
+      <div class="qq-card-text">${escapeHtml(item.prompt)}</div>
+      ${item.files?.length ? `<div class="qq-file-chips">${item.files.map((f) => `<span class="qq-chip readonly">${escapeHtml(f)}</span>`).join("")}</div>` : ""}
+    </article>
+  `).join("");
+}
+
+function addDraftToQuickQueue() {
+  const raw = String(el.batchInput?.value || "").trim();
+  if (!raw) return;
+  if (state.quickQueueRun && !state.quickQueueRun.running) {
+    state.quickQueueRun = null;
+  }
+  // Separa por linha contendo apenas "---" (permite colar código com Enter à vontade)
+  const blocks = raw.split(/\r?\n[ \t]*---+[ \t]*\r?\n/).map((b) => b.trim()).filter(Boolean);
+  const files = [...state.quickQueueDraftFiles];
+  blocks.forEach((block, idx) => {
+    // Ignora blocos compostos só de comentários (# ...)
+    const meaningful = block.split("\n").some((line) => line.trim() && !line.trim().startsWith("#"));
+    if (!meaningful) return;
+    state.quickQueueDraft.push({ prompt: block, files: idx === 0 ? files : [] });
+  });
+  el.batchInput.value = "";
+  state.quickQueueDraftFiles = [];
+  renderQqDraftFiles();
+  renderQuickQueue();
+}
+
+async function pollQuickQueueStatus() {
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+  try {
+    const data = await api(API.batchStatus(chat.thread_id));
+    if (data && data.total > 0) {
+      state.quickQueueRun = data;
+      renderQuickQueue();
+      const doneNow = (data.done || 0) + (data.failed || 0);
+      if (doneNow !== _qqLastDoneCount) {
+        _qqLastDoneCount = doneNow;
+        await refreshMessages(chat);
+        scrollToBottom();
+      }
+      if (!data.running && qqPollTimer) {
+        clearInterval(qqPollTimer);
+        qqPollTimer = null;
+        await refreshMessages(chat);
+        refreshChatSize(chat);
+      }
+    }
+  } catch {}
+}
+
+function startQqPolling() {
+  if (qqPollTimer) clearInterval(qqPollTimer);
+  qqPollTimer = setInterval(pollQuickQueueStatus, 2000);
+}
+
+sendBatch = async function () {
+  if (String(el.batchInput?.value || "").trim()) {
+    addDraftToQuickQueue();
+  }
+  if (!state.quickQueueDraft.length) {
+    alert("Adicione pelo menos um comando à fila antes de executar.");
+    return;
+  }
+  if (state.activeId == null) {
+    await createChat();
+    if (state.activeId == null) return;
+  }
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+
+  const stopOnError = Boolean(document.getElementById("qq-stop-on-error")?.checked);
+  const items = state.quickQueueDraft.map((item) => ({ prompt: item.prompt, files: item.files || [] }));
+
+  try {
+    const data = await api(API.batch, {
+      method: "POST",
+      body: JSON.stringify({
+        thread_id: chat.thread_id,
+        items,
+        workspace_path: state.workspacePath || "",
+        preset: getChatPreset(),
+        stop_on_error: stopOnError,
+      }),
+    });
+    state.quickQueueDraft = [];
+    state.quickQueueRun = data?.queue || null;
+    _qqLastDoneCount = 0;
+    renderQuickQueue();
+    startQqPolling();
+  } catch (err) {
+    alert("Não foi possível iniciar a fila: " + err.message);
+  }
+};
+
+document.getElementById("btn-qq-add")?.addEventListener("click", addDraftToQuickQueue);
+el.batchInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    addDraftToQuickQueue();
+  }
+});
+
+document.getElementById("btn-stop-batch")?.addEventListener("click", async () => {
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+  try {
+    const res = await api(API.batchStop(chat.thread_id), { method: "POST" });
+    if (res?.queue) state.quickQueueRun = res.queue;
+    renderQuickQueue();
+  } catch (err) {
+    alert("Falha ao parar fila: " + err.message);
+  }
+});
+
+document.getElementById("btn-clear-batch")?.addEventListener("click", () => {
+  if (state.quickQueueRun?.running) return alert("Pare a fila antes de limpar.");
+  state.quickQueueDraft = [];
+  state.quickQueueRun = null;
+  state.quickQueueDraftFiles = [];
+  if (el.batchInput) el.batchInput.value = "";
+  renderQqDraftFiles();
+  renderQuickQueue();
+});
+
+document.getElementById("qq-draft-files")?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-qq-rm-file]");
+  if (!btn) return;
+  state.quickQueueDraftFiles.splice(Number(btn.dataset.qqRmFile), 1);
+  renderQqDraftFiles();
+});
+
+document.getElementById("qq-list")?.addEventListener("click", (event) => {
+  const up = event.target.closest("[data-qq-up]");
+  if (up) {
+    const i = Number(up.dataset.qqUp);
+    if (i > 0) {
+      [state.quickQueueDraft[i - 1], state.quickQueueDraft[i]] = [state.quickQueueDraft[i], state.quickQueueDraft[i - 1]];
+      renderQuickQueue();
+    }
+    return;
+  }
+  const down = event.target.closest("[data-qq-down]");
+  if (down) {
+    const i = Number(down.dataset.qqDown);
+    if (i < state.quickQueueDraft.length - 1) {
+      [state.quickQueueDraft[i + 1], state.quickQueueDraft[i]] = [state.quickQueueDraft[i], state.quickQueueDraft[i + 1]];
+      renderQuickQueue();
+    }
+    return;
+  }
+  const edit = event.target.closest("[data-qq-edit]");
+  if (edit) {
+    const i = Number(edit.dataset.qqEdit);
+    const item = state.quickQueueDraft.splice(i, 1)[0];
+    if (item && el.batchInput) {
+      el.batchInput.value = item.prompt;
+      state.quickQueueDraftFiles = [...(item.files || [])];
+      renderQqDraftFiles();
+      el.batchInput.focus();
+    }
+    renderQuickQueue();
+    return;
+  }
+  const del = event.target.closest("[data-qq-del]");
+  if (del) {
+    state.quickQueueDraft.splice(Number(del.dataset.qqDel), 1);
+    renderQuickQueue();
+  }
+});
+
+// Seletor de arquivos do projeto para a Fila Rápida
+async function loadQqWorkspaceFiles(query = "") {
+  const list = document.getElementById("qq-file-picker-list");
+  if (!list) return;
+  if (!state.workspacePath) {
+    list.innerHTML = '<div class="tasks-empty">Selecione um projeto na aba Projeto primeiro.</div>';
+    return;
+  }
+  list.innerHTML = '<div class="tasks-empty">Buscando arquivos…</div>';
+  try {
+    const data = await api(`${API.workspaceFiles}?workspace_path=${encodeURIComponent(state.workspacePath)}&q=${encodeURIComponent(query)}`);
+    const files = data?.files || [];
+    if (!files.length) {
+      list.innerHTML = '<div class="tasks-empty">Nenhum arquivo encontrado.</div>';
+      return;
+    }
+    list.innerHTML = files.map((f) => `<button type="button" class="qq-pick-row" data-pick-file="${escapeHtml(f)}">${escapeHtml(f)}</button>`).join("");
+  } catch (err) {
+    list.innerHTML = `<div class="tasks-empty">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+document.getElementById("btn-qq-pick-file")?.addEventListener("click", () => {
+  const picker = document.getElementById("qq-file-picker");
+  if (!picker) return;
+  const opening = picker.classList.toggle("hidden") === false;
+  if (opening) {
+    const inp = document.getElementById("qq-file-search");
+    if (inp) { inp.value = ""; inp.focus(); }
+    loadQqWorkspaceFiles("");
+  }
+});
+
+document.getElementById("qq-file-search")?.addEventListener("input", (event) => {
+  loadQqWorkspaceFiles(event.currentTarget.value);
+});
+
+document.getElementById("qq-file-picker-list")?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-pick-file]");
+  if (!btn) return;
+  const path = btn.dataset.pickFile;
+  if (path && !state.quickQueueDraftFiles.includes(path)) {
+    state.quickQueueDraftFiles.push(path);
+    renderQqDraftFiles();
+  }
+});
+
+// Upload de arquivo externo direto para um item da Fila Rápida
+document.getElementById("btn-qq-upload")?.addEventListener("click", () => {
+  document.getElementById("qq-upload-input")?.click();
+});
+
+document.getElementById("qq-upload-input")?.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (!files.length) return;
+  if (state.activeId == null) await createChat();
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+  for (const file of files) {
+    const form = new FormData();
+    form.append("workspace_path", state.workspacePath || "");
+    form.append("file", file);
+    try {
+      const res = await fetch(API.upload(chat.thread_id), { method: "POST", body: form });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      if (data?.path && !state.quickQueueDraftFiles.includes(data.path)) {
+        state.quickQueueDraftFiles.push(data.path);
+      }
+    } catch (err) {
+      alert(`Falha ao anexar ${file.name}: ${err.message}`);
+    }
+  }
+  renderQqDraftFiles();
+});
+
+// Rotinas salvas (templates)
+document.getElementById("btn-qq-save-tpl")?.addEventListener("click", () => {
+  const source = state.quickQueueDraft.length
+    ? state.quickQueueDraft
+    : (state.quickQueueRun?.items || []).map((i) => ({ prompt: i.prompt, files: i.files || [] }));
+  if (!source.length) return alert("Adicione comandos à fila antes de salvar como rotina.");
+  const name = prompt("Nome da rotina (ex.: Revisão + Rotas + Git):");
+  if (!name || !name.trim()) return;
+  const templates = _loadQqTemplates();
+  templates[name.trim()] = source;
+  _saveQqTemplates(templates);
+  renderQqTemplates();
+});
+
+document.getElementById("qq-template-select")?.addEventListener("change", (event) => {
+  const name = event.currentTarget.value;
+  document.getElementById("btn-qq-del-tpl")?.classList.toggle("hidden", !name);
+  if (!name) return;
+  const templates = _loadQqTemplates();
+  const items = templates[name];
+  if (Array.isArray(items) && items.length) {
+    if (state.quickQueueRun && !state.quickQueueRun.running) state.quickQueueRun = null;
+    state.quickQueueDraft = items.map((i) => ({ prompt: i.prompt, files: [...(i.files || [])] }));
+    renderQuickQueue();
+  }
+});
+
+document.getElementById("btn-qq-del-tpl")?.addEventListener("click", () => {
+  const sel = document.getElementById("qq-template-select");
+  const name = sel?.value;
+  if (!name || !confirm(`Excluir a rotina "${name}"?`)) return;
+  const templates = _loadQqTemplates();
+  delete templates[name];
+  _saveQqTemplates(templates);
+  sel.value = "";
+  renderQqTemplates();
+});
+
+const _origSetDrawerTabQq = setDrawerTab;
+setDrawerTab = function (tab) {
+  _origSetDrawerTabQq(tab);
+  if (tab === "queue") {
+    renderQqTemplates();
+    renderQuickQueue();
+    pollQuickQueueStatus();
+  }
+};
+
+renderQqTemplates();
+renderQuickQueue();
+
+// ============================================================
+// AUTONOMIA (CONFIGURAÇÕES), AUTO-PLAN, AUTO-CORREÇÃO E CHECKPOINT
+// ============================================================
+
+async function loadAutonomySettingsIntoModal() {
+  try {
+    const data = await api(API.autonomy);
+    const cfg = data?.autonomy || {};
+    const elPlan = document.getElementById("cfg-auto-plan");
+    const elHeal = document.getElementById("cfg-auto-heal");
+    const elRetries = document.getElementById("cfg-verify-retries");
+    const elRo = document.getElementById("cfg-chat-readonly");
+    if (elPlan) elPlan.checked = Boolean(cfg.auto_plan_tasks ?? true);
+    if (elHeal) elHeal.checked = Boolean(cfg.auto_heal_failed_tasks ?? true);
+    if (elRetries) elRetries.value = String(cfg.max_verify_retries ?? 3);
+    if (elRo) elRo.checked = Boolean(cfg.chat_readonly_mode ?? false);
+  } catch {}
+}
+
+const _origLoadSettingsModalAuto = loadSettingsModal;
+loadSettingsModal = async function () {
+  await _origLoadSettingsModalAuto();
+  await loadAutonomySettingsIntoModal();
+};
+
+document.getElementById("settings-form")?.addEventListener("submit", async () => {
+  try {
+    await api(API.autonomy, {
+      method: "PUT",
+      body: JSON.stringify({
+        auto_plan_tasks: Boolean(document.getElementById("cfg-auto-plan")?.checked),
+        auto_heal_failed_tasks: Boolean(document.getElementById("cfg-auto-heal")?.checked),
+        max_verify_retries: Number(document.getElementById("cfg-verify-retries")?.value ?? 3),
+        chat_readonly_mode: Boolean(document.getElementById("cfg-chat-readonly")?.checked),
+      }),
+    });
+  } catch (err) {
+    console.warn("Falha ao salvar autonomia:", err);
+  }
+});
+
+async function refreshBatchCheckpoint() {
+  const btn = document.getElementById("btn-rollback-batch");
+  const chat = activeChatOrNull();
+  if (!btn) return;
+  if (!chat?.thread_id) {
+    btn.classList.add("hidden");
+    return;
+  }
+  try {
+    const data = await api(API.taskCheckpoint(chat.thread_id));
+    const cp = data?.checkpoint;
+    btn.classList.toggle("hidden", !cp);
+    if (cp) {
+      btn.title = `Voltar o repositório para o commit ${cp.short_sha} (antes do último lote)`;
+    }
+  } catch {
+    btn.classList.add("hidden");
+  }
+}
+
+document.getElementById("btn-rollback-batch")?.addEventListener("click", async () => {
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+  if (!confirm("Desfazer TODAS as alterações do último lote de tasks (git reset --hard para o checkpoint)?")) return;
+  try {
+    const res = await api(API.taskCheckpointRollback(chat.thread_id), { method: "POST" });
+    appendNotice(`Lote desfeito: repositório restaurado para ${res.short_sha}.`);
+    await refreshBatchCheckpoint();
+    if (typeof refreshGitQuickStatus === "function") refreshGitQuickStatus();
+  } catch (err) {
+    alert("Não foi possível desfazer o lote: " + err.message);
+  }
+});
+
+document.getElementById("btn-auto-plan-all")?.addEventListener("click", async (event) => {
+  const btn = event.currentTarget;
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+  if (!state.workspacePath) return alert("Selecione um projeto na aba Projeto antes de planejar.");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Planejando…";
+  try {
+    const res = await api(API.taskAutoPlan(chat.thread_id), {
+      method: "POST",
+      body: JSON.stringify({ workspace_path: state.workspacePath }),
+    });
+    const pCount = (res?.planned || []).length;
+    const fCount = (res?.kept_free || []).length;
+    appendNotice(`Auto-planejamento concluído: ${pCount} virou determinística, ${fCount} ficou no modo livre.`);
+    state.tasksSig = null;
+    await loadTasks(chat.thread_id);
+  } catch (err) {
+    alert("Falha ao planejar pendentes: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+});
+
+retryTaskAction = async function (taskId) {
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+  try {
+    await api(API.healTask(taskId), { method: "POST" });
+    state.tasksSig = null;
+    await loadTasks(chat.thread_id);
+    closeDrawerIfOverlay();
+    await sendMessage(`@generate ${taskId}`);
+    await loadTasks(chat.thread_id);
+    refreshBatchCheckpoint();
+  } catch (error) {
+    alert("Não foi possível enviar a tarefa para auto-correção: " + error.message);
+    loadTasks(chat.thread_id);
+  }
+};
+
+const _origLoadTasksCp = loadTasks;
+loadTasks = async function (threadId = null) {
+  await _origLoadTasksCp(threadId);
+  refreshBatchCheckpoint();
 };

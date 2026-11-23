@@ -79,7 +79,6 @@
         <button id="sidebar-toggle" class="icon-btn" type="button" aria-label="Alternar barra lateral" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
         <h2 id="chat-title" class="topbar-title">Assistente Local</h2>
         <div class="topbar-actions">
-          <button id="btn-autocommit" class="top-btn" type="button" aria-pressed="false" aria-label="Alternar commit automático" title="Ligar ou desligar commit automático das tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M3 12h6M15 12h6"/></svg><span class="top-btn-label" id="autocommit-label">Auto-commit: Off</span></button>
           <button id="btn-pin" class="top-btn hidden" type="button" aria-pressed="false" aria-label="Fixar projeto nesta conversa" title="Fixar o projeto e as fontes atuais nesta conversa"><span aria-hidden="true">📌</span></button>
           <button id="btn-toggle-artifacts" class="top-btn hidden" type="button" aria-label="Abrir painel de artefatos" title="Arquivos (.txt, .md e .pdf) gerados nesta conversa">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg><span class="top-btn-label">Artefatos</span><span id="artifacts-badge" class="badge hidden">0</span>
@@ -242,15 +241,44 @@
 
           <!-- Aba: fila rápida -->
           <section class="tab-panel hidden" data-panel="queue">
-            <h3 class="panel-title">Fila de prompts em background</h3>
-            <p class="panel-desc">Deixe tarefas pesadas rodando enquanto você conversa. Separe cada tarefa com uma linha em branco.</p>
-            <div id="batch-panel" class="batch-panel">
-              <textarea id="batch-input" rows="8" placeholder="Analise a arquitetura X...&#10;&#10;Crie um guia completo sobre Y..."></textarea>
-              <div class="batch-actions">
-                <button id="btn-send-batch" class="btn btn-primary" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 20h16"/></svg> Enviar para a fila</button>
-                <span id="batch-status" class="batch-status"></span>
+            <h3 class="panel-title">Fila rápida sequencial</h3>
+            <p class="panel-desc">Monte comandos em sequência (cole código à vontade — Enter quebra linha normal; use <code>---</code> numa linha só se quiser colar vários de uma vez).</p>
+
+            <div class="qq-templates-row">
+              <select id="qq-template-select" class="qq-select" aria-label="Rotinas salvas">
+                <option value="">Rotinas salvas…</option>
+              </select>
+              <button type="button" id="btn-qq-save-tpl" class="btn btn-ghost btn-sm" title="Salvar fila atual como rotina reutilizável">Salvar</button>
+              <button type="button" id="btn-qq-del-tpl" class="btn btn-ghost btn-sm hidden" title="Excluir rotina selecionada">Excluir</button>
+            </div>
+
+            <div id="batch-panel" class="qq-composer">
+              <textarea id="batch-input" rows="5" placeholder="Digite ou cole código/prompt aqui… (Ctrl+Enter adiciona à fila)&#10;Ex.: @heavy Revise o fluxo de autenticação e liste riscos"></textarea>
+              <div id="qq-draft-files" class="qq-file-chips hidden"></div>
+              <div class="qq-composer-bar">
+                <button type="button" id="btn-qq-pick-file" class="btn btn-ghost btn-sm" title="Vincular arquivo do projeto ativo">+ Arquivo</button>
+                <button type="button" id="btn-qq-upload" class="btn btn-ghost btn-sm" title="Anexar arquivo externo a este comando">Anexar</button>
+                <input type="file" id="qq-upload-input" multiple hidden accept=".md,.txt,.py,.json,.csv,.pdf,.docx" />
+                <span class="bar-spacer"></span>
+                <button type="button" id="btn-qq-add" class="btn btn-secondary btn-sm">+ Adicionar</button>
+              </div>
+              <div id="qq-file-picker" class="qq-file-picker hidden">
+                <input id="qq-file-search" type="search" placeholder="Filtrar arquivos do projeto…" autocomplete="off" />
+                <div id="qq-file-picker-list" class="qq-file-picker-list"></div>
               </div>
             </div>
+
+            <div class="qq-run-bar">
+              <label class="qq-check"><input type="checkbox" id="qq-stop-on-error" checked /><span>Parar se falhar</span></label>
+              <span id="batch-status" class="batch-status"></span>
+            </div>
+            <div class="qq-actions">
+              <button id="btn-send-batch" class="btn btn-primary btn-sm" type="button">Executar fila</button>
+              <button id="btn-stop-batch" class="btn btn-ghost btn-danger-soft btn-sm hidden" type="button">Parar fila</button>
+              <button id="btn-clear-batch" class="btn btn-ghost btn-sm" type="button">Limpar</button>
+            </div>
+            <div id="qq-progress" class="qq-progress hidden"><div id="qq-progress-fill" class="qq-progress-fill"></div></div>
+            <div id="qq-list" class="qq-list"></div>
           </section>
 
           <!-- Aba: projeto -->
@@ -277,6 +305,23 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
               <span><b>Indexar repositório (RAG)</b><small>Busca semântica em projetos grandes, por classe e função.</small></span>
             </a>
+
+            <div class="git-quick-card">
+              <div class="git-quick-head">
+                <h3 class="panel-title" style="margin:0">Git rápido</h3>
+                <span id="git-quick-branch" class="git-branch-pill">—</span>
+              </div>
+              <div class="monitor-actions">
+                <button type="button" id="btn-git-refresh" class="btn btn-ghost btn-sm">Atualizar</button>
+                <button type="button" id="btn-git-diff-all" class="btn btn-secondary btn-sm">Ver diff</button>
+              </div>
+              <div id="git-quick-files" class="git-files-list"><div class="tasks-empty">Clique em Atualizar para ver alterações.</div></div>
+              <pre id="git-quick-diff" class="mon-logs hidden"></pre>
+              <div class="git-commit-row">
+                <input id="git-commit-msg" type="text" placeholder="Mensagem do commit manual…" autocomplete="off" />
+                <button type="button" id="btn-git-commit" class="btn btn-primary btn-sm" disabled>Commitar</button>
+              </div>
+            </div>
           </section>
 
           <!-- Aba: monitor (Docker + Rotas) -->
@@ -301,6 +346,7 @@
             <div class="monitor-card">
               <input id="rt-base-url" type="text" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000" autocomplete="off" />
               <textarea id="rt-routes" rows="3" placeholder="Opcional: /api/health, /api/users (vazio = auto via /openapi.json)"></textarea>
+              <input id="rt-auth-header" type="text" placeholder="Opcional: Bearer <token> ou Cookie: sessionid=..." autocomplete="off" />
               <div class="monitor-actions">
                 <button type="button" id="btn-rt-run" class="btn btn-primary btn-sm">Testar rotas</button>
                 <button type="button" id="btn-rt-diagnose" class="btn btn-secondary btn-sm hidden">Diagnosticar falhas no chat</button>
@@ -315,6 +361,10 @@
             <span id="tasks-selected-count" class="tasks-selected-count">0 selecionada(s)</span>
             <button id="btn-delete-selected" class="btn btn-ghost btn-danger-soft btn-sm" type="button" disabled>Excluir</button>
             <button id="btn-execute-selected" class="btn btn-primary btn-sm" type="button" disabled>Executar</button>
+          </div>
+          <div class="monitor-actions" style="margin-bottom:6px">
+            <button id="btn-auto-plan-all" class="btn btn-secondary btn-sm" type="button" style="flex:1" title="Converte pendentes elegíveis em determinísticas (com dry-run) e mantém as demais no modo livre">Planejar pendentes (Auto)</button>
+            <button id="btn-rollback-batch" class="btn btn-ghost btn-danger-soft btn-sm hidden" type="button" title="Volta o repositório para o checkpoint antes do último lote">Desfazer lote</button>
           </div>
           <button id="btn-execute-tasks" class="btn btn-primary btn-block" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5v15l12-7.5-12-7.5Z"/></svg> Executar pendentes</button>
         </div>
@@ -414,6 +464,22 @@
         <span><b>Commit automático das tasks</b><small>Cria commit automático após aplicar microtasks.</small></span>
         <input type="checkbox" id="cfg-autocommit" />
       </label>
+      <label class="setting-toggle">
+        <span><b>Auto-planejar tasks elegíveis</b><small>Converte tasks de 1–3 arquivos em determinísticas quando passam no dry-run.</small></span>
+        <input type="checkbox" id="cfg-auto-plan" checked />
+      </label>
+      <label class="setting-toggle">
+        <span><b>Auto-corrigir tasks com falha (IA)</b><small>Quando uma task determinística falhar, envia automaticamente para a IA corrigir com o erro.</small></span>
+        <input type="checkbox" id="cfg-auto-heal" checked />
+      </label>
+      <label class="setting-toggle">
+        <span><b>Modo Somente Leitura no chat livre</b><small>Trava edições de arquivo no modo Code (apenas leitura e diagnóstico).</small></span>
+        <input type="checkbox" id="cfg-chat-readonly" />
+      </label>
+      <div class="form-group">
+        <label for="cfg-verify-retries">Tentativas de auto-correção no Quality Gate (1 a 5)</label>
+        <input type="number" id="cfg-verify-retries" min="1" max="5" step="1" value="3" />
+      </div>
       <div class="settings-grid">
         <div class="form-group">
           <label for="cfg-audit-timeout">Timeout da Auditoria (seg · 0 = ilimitado)</label>

@@ -1103,3 +1103,125 @@ dialog.modal.memories-modal[open] { display: flex; flex-direction: column; }
 .rt-row.fail b { color: var(--danger); }
 .rt-row code { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
 .rt-row small { color: var(--muted); font-size: 11px; word-break: break-word; }
+
+/* ── Polimento dos inputs na aba Monitor ── */
+.monitor-card input[type="text"],
+.monitor-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.45 var(--mono);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.monitor-card textarea {
+  resize: vertical;
+  min-height: 70px;
+}
+.monitor-card input[type="text"]::placeholder,
+.monitor-card textarea::placeholder {
+  color: var(--muted);
+  font-family: inherit;
+}
+.monitor-card input[type="text"]:focus,
+.monitor-card textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+/* ── Git rápido na aba Projeto ── */
+.git-quick-card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); margin-top: 12px;
+}
+.git-quick-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.git-branch-pill {
+  font: 600 11.5px var(--mono); padding: 2px 8px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-ring);
+}
+.git-files-list { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
+.git-file-row {
+  display: flex; align-items: center; gap: 8px; text-align: left; width: 100%;
+  padding: 5px 8px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer;
+}
+.git-file-row:hover { border-color: var(--accent-ring); background: var(--surface-3); }
+.git-st { font: 700 11px var(--mono); color: var(--accent); min-width: 18px; }
+.git-file-row code { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-commit-row { display: flex; gap: 6px; }
+.git-commit-row input {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 12.5px;
+}
+.git-commit-row input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
+
+/* ── Fila Rápida Sequencial (cards, arquivos, progresso e rotinas) ── */
+.qq-templates-row { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+.qq-select {
+  flex: 1; min-width: 0; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 12.5px;
+}
+.qq-composer {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+}
+.qq-composer textarea {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font: 13px/1.45 var(--mono); resize: vertical; outline: none;
+}
+.qq-composer textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
+.qq-composer-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.qq-file-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.qq-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  padding: 2px 8px; border-radius: 999px; font: 11.5px var(--mono);
+  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-ring);
+}
+.qq-chip.readonly { background: var(--surface-3); color: var(--text-secondary); border-color: var(--border); }
+.qq-chip button { background: none; border: 0; color: inherit; cursor: pointer; padding: 0 2px; font-size: 13px; }
+.qq-file-picker {
+  display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border);
+}
+.qq-file-picker input {
+  width: 100%; box-sizing: border-box; padding: 6px 9px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 12.5px;
+}
+.qq-file-picker-list { display: flex; flex-direction: column; gap: 3px; max-height: 140px; overflow-y: auto; }
+.qq-pick-row {
+  text-align: left; padding: 5px 8px; border-radius: 6px; border: 1px solid transparent;
+  background: var(--surface); color: var(--text-secondary); font: 11.8px var(--mono); cursor: pointer;
+}
+.qq-pick-row:hover { border-color: var(--accent-ring); color: var(--text); background: var(--surface-3); }
+.qq-run-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.qq-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); cursor: pointer; }
+.qq-actions { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+.qq-progress { height: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin-bottom: 10px; }
+.qq-progress-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.25s ease; }
+.qq-list { display: flex; flex-direction: column; gap: 8px; }
+.qq-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 9px 11px;
+  border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2);
+}
+.qq-card.status-running { border-color: var(--accent); }
+.qq-card.status-done { border-color: rgba(46, 158, 91, 0.45); }
+.qq-card.status-failed { border-color: rgba(239, 68, 68, 0.5); }
+.qq-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.qq-idx { font: 700 11.5px var(--mono); color: var(--muted); }
+.qq-card-tools { display: flex; gap: 2px; }
+.qq-card-text {
+  font-size: 12.5px; line-height: 1.45; color: var(--text); white-space: pre-wrap;
+  max-height: 110px; overflow-y: auto; word-break: break-word;
+}
+.qq-badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
+.qq-badge.running { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-ring); }
+.qq-badge.done { background: rgba(46, 158, 91, 0.16); color: var(--ok); border-color: rgba(46, 158, 91, 0.4); }
+.qq-badge.failed { background: rgba(239, 68, 68, 0.16); color: var(--danger); border-color: rgba(239, 68, 68, 0.4); }
+.qq-badge.cancelled, .qq-badge.pending { background: var(--surface-3); color: var(--muted); }
+.qq-time { font: 11px var(--mono); color: var(--muted); margin-left: auto; }
+.qq-card-err { font: 11.5px var(--mono); color: var(--danger); white-space: pre-wrap; }
