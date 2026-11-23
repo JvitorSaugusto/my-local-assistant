@@ -1,0 +1,6 @@
+{
+  "auto_plan_tasks": false,
+  "auto_heal_failed_tasks": false,
+  "max_verify_retries": 1,
+  "chat_readonly_mode": false
+}
