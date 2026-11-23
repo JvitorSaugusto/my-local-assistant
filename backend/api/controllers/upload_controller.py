@@ -12,7 +12,7 @@ _MAX_CONTENT_LENGTH = MAX_ZIP_BYTES + 64 * 1024
 async def upload_attachment(
     thread_id: str,
     request: Request,
-    workspace_path: str = Form(...),
+    workspace_path: str = Form(""),
     file: UploadFile = File(...),
 ):
     declared = request.headers.get("content-length")
@@ -26,7 +26,7 @@ async def upload_attachment(
 
 
 @upload_router.get("/{thread_id}")
-async def list_attachments(thread_id: str, workspace_path: str):
+async def list_attachments(thread_id: str, workspace_path: str = ""):
     try:
         return list_uploads(workspace_path, thread_id)
     except UploadError as exc:

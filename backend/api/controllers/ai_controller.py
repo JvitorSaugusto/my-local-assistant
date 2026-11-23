@@ -27,6 +27,7 @@ class ChatPayload(BaseModel):
     thread_id: str
     message: str
     workspace_path: str
+    preset: str = "default"
 
 
 class BatchPayload(BaseModel):
@@ -83,7 +84,9 @@ async def chat_with_ai(payload: ChatPayload, app_graph: CompiledGraphDep):
                 additional_kwargs={"created_at": now_iso()},
             )
         ],
+        "thread_id": thread_id,
         "workspace_path": payload.workspace_path,
+        "preset": payload.preset,
     })
 
     started = time.perf_counter()
