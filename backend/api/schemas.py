@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Annotated, Literal, Union
 from datetime import datetime
 
@@ -323,6 +323,16 @@ class TaskCreateSchema(BaseModel):
     code_snippet: str | None = None
     steps: list[TaskStep] | None = None
     verify: list[TaskCheck] | None = None
+
+    @model_validator(mode="after")
+    def _prevalidate_deterministic_steps(self) -> "TaskCreateSchema":
+        if self.steps:
+            from backend.api.task_prevalidate import prevalidate_steps
+
+            problems = prevalidate_steps(self.steps)
+            if problems:
+                raise ValueError("Pré-validação do JSON falhou: " + " | ".join(problems))
+        return self
 
 
 
