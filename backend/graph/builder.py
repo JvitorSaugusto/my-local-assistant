@@ -2,6 +2,7 @@ from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from .config import State
 from .assistant_tools import ASSISTANT_TOOLS
+from .dev_tools import DEV_TOOLS
 from .ops_node import ops_node
 from .audit_node import audit_node
 from .nodes import (
@@ -47,7 +48,7 @@ def build_graph():
         run_tests,
     ]
 
-    builder.add_node("tools", ToolNode(all_tools + ASSISTANT_TOOLS))
+    builder.add_node("tools", ToolNode(all_tools + ASSISTANT_TOOLS + DEV_TOOLS))
 
     builder.add_node("router_node", router_node)
     

@@ -44,7 +44,7 @@ from .tools import (
     create_new_file,
 )
 from .grounding import check_literals_grounded
-from .task_guards import FileSnapshot, extra_syntax_problems, run_pytest
+from .task_guards import FileSnapshot, extra_syntax_problems, run_pytest, run_ts_check
 from .diff_review import review_changes
 
 _STEPS_ADAPTER = TypeAdapter(list[TaskStep])
@@ -136,6 +136,8 @@ def _modified_later(path: str, later_steps: list[Any]) -> bool:
 
 
 def _label(step: Any) -> str:
+    if getattr(step, "op", "") == "move_file":
+        return f"move_file {step.source} -> {step.destination}"
     path = getattr(step, "path", None) or getattr(step, "branch", "")
     return f"{step.op} {path}".strip()
 
@@ -435,6 +437,68 @@ def _step_extract_zip(workspace: str, thread_id: str | None, step) -> tuple[str,
     return ("ok" if (created or updated) else "skipped"), detail
 
 
+def _step_move_file(workspace: str, step) -> tuple[str, str]:
+    src, src_err = _confined_path(step.source, workspace)
+    if src_err:
+        return "failed", src_err
+    dst, dst_err = _confined_path(step.destination, workspace)
+    if dst_err:
+        return "failed", dst_err
+    assert src is not None and dst is not None
+
+    for path_check in (src, dst):
+        sec_err = _check_not_on_protected_branch(str(path_check))
+        if sec_err:
+            return "failed", sec_err
+
+    if src == dst:
+        return "skipped", f"origem e destino são o mesmo arquivo ('{step.source}')."
+
+    if not src.exists():
+        if dst.is_file():
+            return "skipped", f"'{step.source}' já foi movido para '{step.destination}'."
+        return "failed", f"arquivo de origem '{step.source}' não existe."
+
+    if not src.is_file():
+        return "failed", f"'{step.source}' não é um arquivo (move_file move apenas arquivos)."
+
+    if dst.is_dir():
+        return "failed", f"destino '{step.destination}' é uma pasta. Informe o caminho completo do arquivo."
+
+    if dst.exists() and not step.overwrite:
+        return "failed", f"destino '{step.destination}' já existe. Use overwrite=true para substituir."
+
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(src, dst)
+    except OSError as exc:
+        return "failed", f"erro ao mover '{step.source}' para '{step.destination}': {exc}"
+
+    return "ok", f"arquivo movido: '{step.source}' -> '{step.destination}'."
+
+
+def _step_delete_file(workspace: str, step) -> tuple[str, str]:
+    target, err = _confined_path(step.path, workspace)
+    if err:
+        return "failed", err
+    assert target is not None
+
+    sec_err = _check_not_on_protected_branch(str(target))
+    if sec_err:
+        return "failed", sec_err
+
+    if not target.exists():
+        return "skipped", f"'{step.path}' já não existe."
+    if not target.is_file():
+        return "failed", f"'{step.path}' não é um arquivo (delete_file apaga apenas arquivos)."
+
+    try:
+        target.unlink()
+    except OSError as exc:
+        return "failed", f"erro ao remover '{step.path}': {exc}"
+    return "ok", f"arquivo removido: '{step.path}'."
+
+
 def _heal_replace(workspace: str, step, original_result: str):
     """Se o `old` não bateu só por espaços/indentação, usa o ÚNICO bloco equivalente do arquivo (sem LLM)."""
     if os.getenv("TASK_HEAL_WHITESPACE", "1") != "1" or step.occurrences == "all":
@@ -492,6 +556,10 @@ def _run_step(
         return _step_copy_upload(workspace, thread_id, step)
     if step.op == "extract_zip":
         return _step_extract_zip(workspace, thread_id, step)
+    if step.op == "move_file":
+        return _step_move_file(workspace, step)
+    if step.op == "delete_file":
+        return _step_delete_file(workspace, step)
     return "failed", f"operação desconhecida: {step.op}"
 
 
@@ -533,6 +601,15 @@ def run_checks(checks: list[Any], workspace: str) -> list[str]:
         if check.type == "file_exists":
             if not resolved.is_file():
                 failures.append(f"file_exists: '{check.path}' não existe.")
+            continue
+
+        if check.type == "file_not_exists":
+            if resolved.exists():
+                failures.append(f"file_not_exists: '{check.path}' ainda existe.")
+            continue
+
+        if check.type == "ts_check":
+            failures.extend(run_ts_check(workspace, check.path))
             continue
 
         if not resolved.is_file():
@@ -625,7 +702,7 @@ def execute_task_sync(task: dict, workspace: str, thread_id: str | None = None) 
                 )
                 return result
 
-            path = getattr(step, "path", "")
+            path = getattr(step, "path", "") or getattr(step, "destination", "")
             if path.endswith(".py") and path not in touched_python:
                 touched_python.append(path)
 

@@ -354,7 +354,7 @@ def save_pack(markdown, hint=""):
 
 
 def pack_file_path(name):
-    if not re.fullmatch(r"[\w.-]+\.(?:md|txt)", str(name or "")):
+    if not re.fullmatch(r"[\w.-]+\.(?:md|txt|pdf)", str(name or "")):
         return None
     path = pack_dir() / name
     return path if path.is_file() else None

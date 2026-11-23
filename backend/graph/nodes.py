@@ -92,6 +92,7 @@ from .executor import execute_task, missing_listed_files, run_checks, workspace_
 from .handoff import SUMMARY_PROMPT, edited_files, join_handoff, split_handoff, strip_think, summary_transcript, text_of
 from .assistant_tools import WEB_TOOLS
 from .memory import prompt_block as memory_block
+from .presets import normalize_preset, preset_prompt_block
 from .notekit import NOTE_FIX_PROMPT, note_depth_instruction, note_problems, note_profile
 from .prompts_extra import CODE_TOOLS_RULES, ENHANCER_CONTEXT_RULES, STANDARD_TOOLS_RULES, standard_rules
 from .webkit import strip_unverified_urls, today_label, urls_in
@@ -124,7 +125,7 @@ def router_node(state: State):
         else:
             last_msg = str(raw_content)
 
-    if not (state.get("enhanced_prompt") or state.get("active_generate_task")) and parse_audit_command(last_msg) is not None:
+    if not (state.get("enhanced_prompt") or state.get("active_generate_task")) and parse_audit_command(last_msg, state["messages"]) is not None:
         print("🔀 [ROUTER] Rota: 'AUDIT' (auditoria determinística)")
         return {"actual_route": "AUDIT", "enhance_before_heavy": False}
 
@@ -305,12 +306,13 @@ def _tool_text(messages: list, only: tuple | None = None) -> str:
     )
 
 
-def _assistant_context(prompt: str, state: State, extra: str | None = None) -> SystemMessage:
+def _assistant_context(prompt: str, state: State, extra: str | None = None, preset_block: str | None = None) -> SystemMessage:
     """Parte estável primeiro (cache do Ollama); resumo, memórias do usuário e data no fim."""
     summary = state.get("summary", "")
     return build_system_context(
         prompt,
         extra,
+        preset_block,
         f"RESUMO DOS ASSUNTOS ANTIGOS DESTA CONVERSA:\n{summary}" if summary else None,
         memory_block(),
         f"DATA DE HOJE: {today_label()}",
@@ -332,7 +334,7 @@ def standard_node_20b(state: State):
             )
         ]
 
-    context = [_assistant_context(STANDARD_NODE_PROMPT, state, standard_rules(bool(WEB_TOOLS)))]
+    context = [_assistant_context(STANDARD_NODE_PROMPT, state, standard_rules(bool(WEB_TOOLS)), preset_block=preset_prompt_block(state.get("preset")))]
     context.extend(messages)
 
     response = None
@@ -388,7 +390,9 @@ def code_node(state: State):
 
     prompt_with_workspace = f"{CODE_NODE_PROMPT}\n\n[CONTEXTO DO AMBIENTE]\nO caminho raiz do workspace atual é: {workspace_path}"
 
-    context = [_assistant_context(prompt_with_workspace, state, CODE_TOOLS_RULES if WEB_TOOLS else None)]
+    active_preset = normalize_preset(state.get("preset"))
+    code_preset = preset_prompt_block(active_preset) if active_preset in ("tutor", "direto") else None
+    context = [_assistant_context(prompt_with_workspace, state, CODE_TOOLS_RULES if WEB_TOOLS else None, preset_block=code_preset)]
     context.extend(recent_messages)
 
     response = code_llm_with_tools.invoke(context)

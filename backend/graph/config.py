@@ -7,8 +7,10 @@ from langchain_core.messages import BaseMessage
 from typing import Annotated, Literal, NotRequired, TypedDict, cast
 from pydantic import Field
 from backend.api.schemas import GenerateTaskSchema, HeavyAnalysisSchema
-from backend.graph.tools import append_to_file, create_git_branch, create_new_file, create_pdf_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, replace_in_file, search_in_file, search_codebase, list_directory_files, read_file_content, validate_python_syntax, write_markdown_file
+from backend.graph.tools import append_to_file, create_git_branch, create_new_file, create_pdf_file, edit_existing_file, batch_edit_file, generate_repo_map, read_file_chunk, replace_in_file, search_in_file, search_codebase, list_directory_files, read_file_content, validate_python_syntax, write_markdown_file, run_tests
 from langchain.chat_models import init_chat_model
+from backend.graph.assistant_tools import ASSISTANT_TOOLS, UTILITY_TOOLS, WEB_TOOLS
+from backend.graph.dev_tools import DEV_TOOLS
 from langchain_core.language_models import BaseChatModel
 
     
@@ -41,6 +43,7 @@ class State(TypedDict):
     generate_start_idx: NotRequired[int | None]
     
     workspace_path: str
+    preset: NotRequired[str | None]
 
 FILE_TOOLS_SURGICAL = [list_directory_files, read_file_content, read_file_chunk, search_in_file, search_codebase]
 FILE_TOOLS_FULL = [read_file_content, generate_repo_map, read_file_chunk, search_in_file, search_codebase]
@@ -60,6 +63,7 @@ WRITE_AND_GIT_TOOLS = [
     search_in_file,
     search_codebase,
     validate_python_syntax,
+    run_tests,
 ]
 
 def load_llm() -> BaseChatModel:
@@ -118,7 +122,14 @@ REVIEW_FREE_TASKS = True
 # em vez de girar sem fim. Cada rodada gasta ~2 passos do grafo (generate + tools); com o
 # recursion_limit padrão do LangGraph (25) o máximo seguro é ~10. Se você subir o recursion_limit
 # no Celery, pode subir este valor por .env (MAX_GENERATE_STEPS).
-MAX_GENERATE_STEPS = _env_int("MAX_GENERATE_STEPS", 10)
+MAX_GENERATE_STEPS = _env_int("MAX_GENERATE_STEPS", 30)
+# Teto ABSOLUTO de rodadas por execução. MAX_GENERATE_STEPS passa a valer para rodadas seguidas SEM
+# nenhuma edição nova (cada edição zera esse contador); este é o limite de segurança do total.
+MAX_GENERATE_TOTAL_STEPS = _env_int("MAX_GENERATE_TOTAL_STEPS", 120)
+# True: se a execução for interrompida (teto de rodadas/loop) DEPOIS de o agente já ter editado algo e o
+# resultado tiver sintaxe válida, o trabalho parcial é MANTIDO em 'review' (Aprovar mantém, Reprovar desfaz).
+# False: rollback total e 'failed' (comportamento antigo).
+KEEP_PARTIAL_ON_ABORT = os.getenv("KEEP_PARTIAL_ON_ABORT", "1") == "1"
 # Quantas chamadas de LEITURA idênticas (mesma tool + mesmos args) são toleradas antes de abortar.
 MAX_DUPLICATE_CALLS = _env_int("MAX_DUPLICATE_CALLS", 3)
 # Teto do dossiê (tokens estimados) no prompt do Generate. O excedente é cortado pelo sistema,
@@ -129,7 +140,8 @@ OLD_TOOL_RESULT_CHARS = _env_int("OLD_TOOL_RESULT_CHARS", 500)
 
 generate_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=GENERATE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
-note_llm_draft = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=8192, num_ctx=NOTE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
+# O Qwen3 Thinking gasta tokens pensando ANTES de escrever; com 8192 sobrava pouco texto e as notas saíam curtas.
+note_llm_draft = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=_env_int("NOTE_DRAFT_NUM_PREDICT", 16384), num_ctx=NOTE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 note_llm_final = ChatOllama(model="hf.co/unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q4_K_M", temperature=0.6, num_predict=24576, num_ctx=NOTE_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
 context_gatherer_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.1, num_predict=8192, num_ctx=CODER_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
@@ -138,7 +150,24 @@ heavy_llm = ChatOllama(model="qwen3-coder:30b", temperature=0.3, num_predict=163
 
 heavy_llm_structured = heavy_llm.with_structured_output(HeavyAnalysisSchema)
 
-code_llm_with_tools = code_llm.bind_tools(FILE_TOOLS_SURGICAL)
-note_llm_draft_with_tools = note_llm_draft.bind_tools(FILE_TOOLS_SURGICAL)
+code_llm_with_tools = code_llm.bind_tools(FILE_TOOLS_SURGICAL + WEB_TOOLS + UTILITY_TOOLS + DEV_TOOLS)
+note_llm_draft_with_tools = note_llm_draft.bind_tools(FILE_TOOLS_SURGICAL + WEB_TOOLS + UTILITY_TOOLS)
+# Modo Normal: pesquisa na web, data/hora, cálculo e memória do usuário (assistant_tools.py)
+standard_llm_with_tools = standard_llm.bind_tools(ASSISTANT_TOOLS)
 context_gatherer_llm_with_tools = context_gatherer_llm.bind_tools(FILE_TOOLS_FULL)
 generate_llm_with_tools = generate_llm.bind_tools(WRITE_AND_GIT_TOOLS)
+# Fase de EDIÇÃO: sem run_tests, read_file_content, list_directory_files, generate_repo_map e search_codebase.
+# O nodes.py troca para esta lista quando o modelo gira em leituras/testes sem editar nada.
+EDIT_PHASE_TOOLS = [
+    create_new_file,
+    edit_existing_file,
+    batch_edit_file,
+    append_to_file,
+    replace_in_file,
+    write_markdown_file,
+    create_pdf_file,
+    read_file_chunk,
+    search_in_file,
+    validate_python_syntax,
+]
+generate_llm_edit_phase = generate_llm.bind_tools(EDIT_PHASE_TOOLS)

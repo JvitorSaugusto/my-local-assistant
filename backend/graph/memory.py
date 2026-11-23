@@ -19,7 +19,12 @@ _LOCK = threading.Lock()
 
 
 def enabled() -> bool:
-    return os.getenv("ASSISTANT_MEMORY", "1") == "1"
+    try:
+        from backend.api.settings_store import get_setting
+
+        return bool(get_setting("assistant_memory_enabled", os.getenv("ASSISTANT_MEMORY", "1") == "1"))
+    except Exception:
+        return os.getenv("ASSISTANT_MEMORY", "1") == "1"
 
 
 def _path() -> Path:
@@ -66,6 +71,27 @@ def add(text: str) -> tuple[dict | None, str]:
         items.append(item)
         _save(items)
         return item, f"Guardado (#{item['id']}): {fact}"
+
+
+def update(item_id: int, text: str) -> tuple[dict | None, str]:
+    """Atualiza o texto de uma memória existente mantendo o id."""
+    fact = re.sub(r"\s+", " ", text or "").strip()
+    if len(fact) < 3:
+        return None, "Fato vazio demais para guardar."
+    if len(fact) > MAX_CHARS:
+        fact = fact[: MAX_CHARS - 1].rstrip() + "…"
+    with _LOCK:
+        items = _load()
+        target = next((i for i in items if i["id"] == item_id), None)
+        if target is None:
+            return None, f"Não existe memória #{item_id}."
+        for other in items:
+            if other["id"] != item_id and other["text"].lower() == fact.lower():
+                return None, f"Já existe uma memória igual (#{other['id']})."
+        target["text"] = fact
+        target["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _save(items)
+        return target, f"Memória #{item_id} atualizada."
 
 
 def remove(item_id: int) -> bool:
