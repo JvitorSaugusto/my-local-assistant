@@ -10,6 +10,16 @@ class AiRequestSchema(BaseModel):
 
 class ChatRequestSchema(BaseModel):
     title: str
+    pinned: bool | None = None
+    folder: str | None = None
+    tags: list[str] | None = None
+
+
+class ChatUpdateSchema(BaseModel):
+    title: str | None = None
+    pinned: bool | None = None
+    folder: str | None = None
+    tags: list[str] | None = None
 
 
 class ChatResponseSchema(BaseModel):
@@ -17,6 +27,9 @@ class ChatResponseSchema(BaseModel):
     thread_id: str
     title: str
     created_at: datetime
+    pinned: bool = False
+    folder: str = ""
+    tags: list[str] = Field(default_factory=list)
     
     class Config:
         from_attributes = True
@@ -109,6 +122,25 @@ class StepExtractZip(_PathMixin):
         return value
 
 
+class StepDeleteFile(_PathMixin):
+    op: Literal["delete_file"]
+
+
+class StepMoveFile(BaseModel):
+    op: Literal["move_file"]
+    source: str = Field(description="Caminho RELATIVO atual do arquivo a mover.")
+    destination: str = Field(description="Caminho RELATIVO de destino do arquivo.")
+    overwrite: bool = False
+
+    @field_validator("source", "destination")
+    @classmethod
+    def _rel_not_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("caminho não pode ser vazio")
+        return value
+
+
 TaskStep = Annotated[
     Union[
         StepCreateBranch,
@@ -119,6 +151,8 @@ TaskStep = Annotated[
         StepCreatePdf,
         StepCopyUpload,
         StepExtractZip,
+        StepMoveFile,
+        StepDeleteFile,
     ],
     Field(discriminator="op"),
 ]
@@ -126,6 +160,15 @@ TaskStep = Annotated[
 
 class CheckFileExists(_PathMixin):
     type: Literal["file_exists"]
+
+
+class CheckFileNotExists(_PathMixin):
+    type: Literal["file_not_exists"]
+
+
+class CheckTsCheck(_PathMixin):
+    """Roda `npx tsc --noEmit` no projeto TypeScript que contém `path`."""
+    type: Literal["ts_check"]
 
 
 class CheckContains(_PathMixin):
@@ -155,7 +198,7 @@ class CheckLiteralsGrounded(_PathMixin):
 
 
 TaskCheck = Annotated[
-    Union[CheckFileExists, CheckContains, CheckNotContains, CheckPythonSyntax, CheckLiteralsGrounded, CheckPytest],
+    Union[CheckFileExists, CheckFileNotExists, CheckContains, CheckNotContains, CheckPythonSyntax, CheckLiteralsGrounded, CheckPytest, CheckTsCheck],
     Field(discriminator="type"),
 ]
 

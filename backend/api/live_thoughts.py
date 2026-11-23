@@ -28,6 +28,7 @@ NODE_LABELS = {
     "generate_dispatch_node": "Gerando",
     "summarize_node": "Resumindo a conversa",
     "ops_node": "Operações",
+    "audit_node": "Auditoria",
     "tools": "Ferramenta",
 }
 
@@ -141,6 +142,14 @@ class LiveBuffer:
             self.seen = len(messages)
             self.seq += 1
 
+    def add_progress(self, key: str, label: str, text: str, done: bool = False):
+        with self.lock:
+            seg = self._seg(key, "audit_node", label)
+            seg["label"] = label
+            seg["raw"] = str(text or "")[-MAX_SEG_CHARS:]
+            seg["done"] = done
+            self.seq += 1
+
     def finish(self):
         with self.lock:
             self.running = False
@@ -175,6 +184,12 @@ def live_start(thread_id: str) -> LiveBuffer:
     buf = LiveBuffer()
     LIVE[thread_id] = buf
     return buf
+
+
+def live_progress(thread_id: str, label: str, text: str, key: str = "audit_progress", done: bool = False) -> None:
+    buf = LIVE.get(thread_id)
+    if buf is not None:
+        buf.add_progress(key, label, text, done=done)
 
 
 def live_snapshot(thread_id: str, after: int = -1) -> dict:

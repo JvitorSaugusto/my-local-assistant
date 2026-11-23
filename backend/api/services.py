@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from backend.api.chat_meta import default_meta, delete_meta, get_meta, list_all_meta, upsert_meta
 from backend.api.schemas import ChatRequestSchema, TaskCreateSchema
 from backend.database.models import AiChatModel, TaskModel
 from backend.api.task_split import expand_tasks, filter_existing_duplicates
@@ -12,48 +13,86 @@ class ChatService:
     
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _serialize(chat: AiChatModel, meta: dict | None = None) -> dict:
+        info = meta or default_meta()
+        return {
+            "id": chat.id,
+            "thread_id": chat.thread_id,
+            "title": chat.title,
+            "created_at": chat.created_at,
+            "pinned": bool(info.get("pinned", False)),
+            "folder": str(info.get("folder") or ""),
+            "tags": list(info.get("tags") or []),
+        }
         
     async def create_new_chat(self, payload: ChatRequestSchema):
-        thread_id=str(uuid.uuid4())
+        thread_id = str(uuid.uuid4())
         
-        new_chat = AiChatModel(**payload.model_dump(), thread_id=thread_id)
+        new_chat = AiChatModel(title=payload.title, thread_id=thread_id)
         
         self.db.add(new_chat)
         await self.db.commit()
         await self.db.refresh(new_chat)
+
+        meta = default_meta()
+        if payload.pinned is not None or payload.folder is not None or payload.tags is not None:
+            meta = await upsert_meta(thread_id, pinned=payload.pinned, folder=payload.folder, tags=payload.tags)
         
-        return new_chat
+        return self._serialize(new_chat, meta)
     
     async def list_chats(self):
         stmt = select(AiChatModel).order_by(AiChatModel.created_at.desc())
-        result =  await self.db.scalars(stmt)
-        
-        return result.all()
+        rows = list((await self.db.scalars(stmt)).all())
+        meta_map = await list_all_meta()
+        items = [self._serialize(chat, meta_map.get(chat.thread_id)) for chat in rows]
+        items.sort(key=lambda item: (0 if item["pinned"] else 1))
+        return items
         
     async def detail_chat(self, chat_id: int):
-        return await self.db.get(AiChatModel, chat_id)
+        chat = await self.db.get(AiChatModel, chat_id)
+        if not chat:
+            return None
+        return self._serialize(chat, await get_meta(chat.thread_id))
         
-    async def update_chat(self, chat_id: int, new_title: str):
-        chat = await self.detail_chat(chat_id)
+    async def update_chat(
+        self,
+        chat_id: int,
+        new_title: str | None = None,
+        pinned: bool | None = None,
+        folder: str | None = None,
+        tags: list[str] | None = None,
+    ):
+        chat = await self.db.get(AiChatModel, chat_id)
         
         if not chat:
-            return
+            return None
             
-        chat.title = new_title
-        await self.db.commit()
-        await self.db.refresh(chat)
+        if new_title is not None and new_title.strip():
+            chat.title = new_title.strip()
+            await self.db.commit()
+            await self.db.refresh(chat)
+
+        if pinned is not None or folder is not None or tags is not None:
+            meta = await upsert_meta(chat.thread_id, pinned=pinned, folder=folder, tags=tags)
+        else:
+            meta = await get_meta(chat.thread_id)
         
-        return chat
+        return self._serialize(chat, meta)
         
     async def delete_chat(self, chat_id: int):
-        chat = await self.detail_chat(chat_id)
+        chat = await self.db.get(AiChatModel, chat_id)
         
         if not chat:
             return False
-            
+        thread_id = chat.thread_id
         await self.db.delete(chat)
-        
         await self.db.commit()
+        try:
+            await delete_meta(thread_id)
+        except Exception:  # noqa: BLE001
+            pass
         
         return True
     

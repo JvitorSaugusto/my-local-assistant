@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 UPLOAD_DIR_NAME = ".assistant_uploads"
+GLOBAL_UPLOAD_PREFIX = "@global/"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_ZIP_BYTES = 50 * 1024 * 1024
 MAX_FILES_PER_THREAD = 50
@@ -107,20 +108,33 @@ def _ensure_git_exclude(root: Path) -> None:
         pass
 
 
-def _prepare_target_dir(workspace_path: str, thread_id: str) -> tuple[Path, Path]:
+def global_uploads_root() -> Path:
+    custom = os.getenv("ASSISTANT_GLOBAL_UPLOADS_DIR", "").strip()
+    return Path(custom).resolve() if custom else (Path.home() / ".assistente_local" / "uploads").resolve()
+
+
+def _prepare_target_dir(workspace_path: str, thread_id: str) -> tuple[Path, Path, bool]:
+    tid = sanitize_thread_id(thread_id)
     if not workspace_path or not workspace_path.strip():
-        raise UploadError("Defina um diretório de trabalho antes de anexar arquivos.")
+        root = global_uploads_root()
+        target = root / tid
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            target.resolve().relative_to(root)
+        except ValueError:
+            raise UploadError("Pasta de uploads globais inválida.", 400)
+        return root, target.resolve(), True
     root = Path(workspace_path.strip()).resolve()
     if not root.is_dir():
         raise UploadError("O diretório de trabalho não existe.")
 
-    target = root / UPLOAD_DIR_NAME / sanitize_thread_id(thread_id)
+    target = root / UPLOAD_DIR_NAME / tid
     target.mkdir(parents=True, exist_ok=True)
     try:
         target.resolve().relative_to(root)
     except ValueError:
         raise UploadError("Pasta de uploads fora do workspace.", 400)
-    return root, target.resolve()
+    return root, target.resolve(), False
 
 
 async def save_upload(
@@ -131,7 +145,7 @@ async def save_upload(
 ) -> dict:
     """Grava o upload e devolve {path (relativo, com '/'), name, size}."""
     stem, ext = sanitize_filename(filename)
-    root, target = _prepare_target_dir(workspace_path, thread_id)
+    root, target, is_global = _prepare_target_dir(workspace_path, thread_id)
 
     existing = [p for p in target.iterdir() if p.is_file()]
     if len(existing) >= MAX_FILES_PER_THREAD:
@@ -176,52 +190,109 @@ async def save_upload(
             pass
         raise
 
-    _ensure_git_exclude(root)
+    if not is_global:
+        _ensure_git_exclude(root)
+    rel_path = (
+        f"{GLOBAL_UPLOAD_PREFIX}{final_path.relative_to(root).as_posix()}"
+        if is_global
+        else final_path.relative_to(root).as_posix()
+    )
     return {
-        "path": final_path.relative_to(root).as_posix(),
+        "path": rel_path,
         "name": final_path.name,
         "size": size,
+        "scope": "global" if is_global else "workspace",
     }
 
 
 def list_uploads(workspace_path: str, thread_id: str) -> list[dict]:
-    """Anexos já enviados desta conversa: [{name, path, size}] (mais recentes primeiro)."""
-    if not workspace_path or not workspace_path.strip():
-        raise UploadError("Defina um diretório de trabalho antes de listar anexos.")
-    root = Path(workspace_path.strip()).resolve()
-    if not root.is_dir():
-        raise UploadError("O diretório de trabalho não existe.")
-    folder = root / UPLOAD_DIR_NAME / sanitize_thread_id(thread_id)
+    """Anexos já enviados desta conversa (workspace e/ou globais): [{name, path, size, scope}]."""
+    tid = sanitize_thread_id(thread_id)
+    items: list[tuple[float, dict]] = []
+    seen: set[str] = set()
+
+    if workspace_path and workspace_path.strip():
+        root = Path(workspace_path.strip()).resolve()
+        if not root.is_dir():
+            raise UploadError("O diretório de trabalho não existe.")
+        folder = root / UPLOAD_DIR_NAME / tid
+        if folder.is_dir():
+            for p in folder.iterdir():
+                if p.is_file() and not p.is_symlink():
+                    seen.add(p.name.lower())
+                    items.append((p.stat().st_mtime, {
+                        "name": p.name,
+                        "path": p.relative_to(root).as_posix(),
+                        "size": p.stat().st_size,
+                        "scope": "workspace",
+                    }))
+
+    g_root = global_uploads_root()
+    g_folder = g_root / tid
+    if g_folder.is_dir():
+        for p in g_folder.iterdir():
+            if p.is_file() and not p.is_symlink() and p.name.lower() not in seen:
+                items.append((p.stat().st_mtime, {
+                    "name": p.name,
+                    "path": f"{GLOBAL_UPLOAD_PREFIX}{p.relative_to(g_root).as_posix()}",
+                    "size": p.stat().st_size,
+                    "scope": "global",
+                }))
+
+    items.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in items]
+
+
+def _match_in_folder(folder: Path, name: str) -> tuple[Path | None, list[str]]:
     if not folder.is_dir():
-        return []
-    files = [p for p in folder.iterdir() if p.is_file() and not p.is_symlink()]
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return [
-        {"name": p.name, "path": p.relative_to(root).as_posix(), "size": p.stat().st_size}
-        for p in files
-    ]
-
-
-def find_upload(workspace_path: str, thread_id: str | None, source: str) -> tuple[Path | None, str | None]:
-    """Resolve o NOME de um anexo desta conversa. Devolve (arquivo, None) ou (None, erro)."""
-    if not thread_id:
-        return None, "ERRO: esta execução não tem conversa associada, então não há anexos."
-    root = Path(workspace_path).resolve()
-    try:
-        folder = (root / UPLOAD_DIR_NAME / sanitize_thread_id(thread_id)).resolve()
-        folder.relative_to(root)
-    except (UploadError, ValueError):
-        return None, "ERRO: pasta de anexos inválida."
-
-    name = (source or "").replace("\\", "/").split("/")[-1].strip()
-    available = (
-        sorted(p.name for p in folder.iterdir() if p.is_file() and not p.is_symlink())
-        if folder.is_dir() else []
-    )
+        return None, []
+    available = sorted(p.name for p in folder.iterdir() if p.is_file() and not p.is_symlink())
     match = next((n for n in available if n == name), None) or next(
         (n for n in available if n.lower() == name.lower()), None
     )
-    if not match:
-        shown = ", ".join(available) if available else "nenhum anexo enviado nesta conversa"
-        return None, f"ERRO: anexo '{source}' não encontrado. Anexos disponíveis: {shown}."
-    return folder / match, None
+    return (folder / match if match else None), available
+
+
+def find_upload(workspace_path: str, thread_id: str | None, source: str) -> tuple[Path | None, str | None]:
+    """Resolve um anexo desta conversa (no workspace ou na pasta global). Devolve (arquivo, None) ou (None, erro)."""
+    raw = (source or "").replace("\\", "/").strip()
+    resolved_tid = thread_id
+    if raw.startswith(GLOBAL_UPLOAD_PREFIX):
+        parts = raw[len(GLOBAL_UPLOAD_PREFIX):].split("/", 1)
+        if len(parts) == 2 and parts[0]:
+            resolved_tid = resolved_tid or parts[0]
+    if not resolved_tid:
+        return None, "ERRO: esta execução não tem conversa associada, então não há anexos."
+    try:
+        tid = sanitize_thread_id(resolved_tid)
+    except UploadError:
+        return None, "ERRO: pasta de anexos inválida."
+
+    name = raw.split("/")[-1].strip()
+    available_all: list[str] = []
+
+    if workspace_path and workspace_path.strip() and not raw.startswith(GLOBAL_UPLOAD_PREFIX):
+        root = Path(workspace_path.strip()).resolve()
+        try:
+            folder = (root / UPLOAD_DIR_NAME / tid).resolve()
+            folder.relative_to(root)
+        except ValueError:
+            return None, "ERRO: pasta de anexos inválida."
+        found, avail = _match_in_folder(folder, name)
+        if found is not None:
+            return found, None
+        available_all.extend(avail)
+
+    g_root = global_uploads_root()
+    try:
+        g_folder = (g_root / tid).resolve()
+        g_folder.relative_to(g_root)
+    except ValueError:
+        return None, "ERRO: pasta de anexos globais inválida."
+    found, g_avail = _match_in_folder(g_folder, name)
+    if found is not None:
+        return found, None
+    available_all.extend(a for a in g_avail if a not in available_all)
+
+    shown = ", ".join(available_all) if available_all else "nenhum anexo enviado nesta conversa"
+    return None, f"ERRO: anexo '{source}' não encontrado. Anexos disponíveis: {shown}."
