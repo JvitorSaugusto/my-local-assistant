@@ -18,9 +18,12 @@ LANGUAGES = {
     ".ts": "typescript", ".tsx": "typescript", ".html": "html", ".css": "css",
     ".md": "markdown", ".txt": "text", ".sql": "sql", ".yml": "yaml", ".yaml": "yaml",
     ".toml": "toml", ".sh": "shell", ".bat": "batch", ".json": "json",
+    ".pdf": "pdf", ".docx": "docx", ".csv": "csv",
 }
+DOC_BINARY_LANGUAGES = {"pdf", "docx"}
 SKIP_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock"}
 JSON_MAX_BYTES = 100_000
+DOC_MAX_BYTES = 20 * 1024 * 1024
 
 
 def _ignored(rel: str) -> bool:
@@ -87,8 +90,22 @@ def scan(root: str | Path, max_file_bytes: int = 400_000) -> tuple[list[FileInfo
             if size == 0:
                 skip("vazio")
                 continue
-            if size > max_file_bytes or (language == "json" and size > JSON_MAX_BYTES):
+            limit = DOC_MAX_BYTES if language in DOC_BINARY_LANGUAGES else max_file_bytes
+            if size > limit or (language == "json" and size > JSON_MAX_BYTES):
                 skip("grande demais")
+                continue
+            if language in DOC_BINARY_LANGUAGES:
+                from backend.graph.file_readers import read_text_for_tools
+
+                try:
+                    text = read_text_for_tools(path)
+                except Exception:
+                    skip("documento ilegível")
+                    continue
+                if not text.strip():
+                    skip("vazio")
+                    continue
+                files.append(FileInfo(rel, str(path), size, sha1_text(text.replace("\r\n", "\n")), language))
                 continue
             raw = path.read_bytes()
         except OSError:
@@ -106,5 +123,10 @@ def scan(root: str | Path, max_file_bytes: int = 400_000) -> tuple[list[FileInfo
 
 
 def read_text(abs_path: str) -> str:
-    raw = Path(abs_path).read_bytes()
+    p = Path(abs_path)
+    if p.suffix.lower() in (".pdf", ".docx"):
+        from backend.graph.file_readers import read_text_for_tools
+
+        return read_text_for_tools(p).replace("\r\n", "\n")
+    raw = p.read_bytes()
     return raw.decode("utf-8", errors="replace").replace("\r\n", "\n")

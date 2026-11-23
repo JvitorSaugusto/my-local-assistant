@@ -127,6 +127,53 @@ class RagService:
         source_id = await self.store.upsert_source(name, "zip", None)
         return await self._start(source_id, root, force=force, cleanup=lambda: shutil.rmtree(work, ignore_errors=True))
 
+    def docs_root(self) -> Path:
+        import os
+
+        custom = os.getenv("RAG_DOCS_DIR", "").strip()
+        return Path(custom).expanduser().resolve() if custom else (Path.home() / ".assistente_local" / "rag_docs").resolve()
+
+    async def ingest_documents(self, name: str, files: list[tuple[str, bytes]], force: bool = False) -> dict:
+        """Salva documentos pessoais (.pdf, .docx, .md, .txt, .csv) numa coleção persistente e indexa."""
+        import re
+
+        clean_name = (name or "").strip()
+        if not clean_name:
+            raise ValueError("Informe um nome para a coleção de documentos.")
+        if not files:
+            raise ValueError("Envie pelo menos um documento (.pdf, .docx, .md, .txt ou .csv).")
+        allowed_ext = {".pdf", ".docx", ".md", ".txt", ".csv"}
+        slug = re.sub(r"[^a-z0-9_-]+", "-", clean_name.lower()).strip("-")[:48] or "documentos"
+        base = self.docs_root()
+        folder = (base / slug).resolve()
+        folder.relative_to(base)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        saved = 0
+        for raw_filename, content in files:
+            fname = Path(str(raw_filename or "").replace("\\", "/")).name.strip()
+            ext = Path(fname).suffix.lower()
+            if ext not in allowed_ext:
+                raise ValueError(f"Extensão não permitida na coleção: '{fname}'. Use PDF, DOCX, MD, TXT ou CSV.")
+            if not content:
+                continue
+            stem = re.sub(r"[^\w.-]+", "_", Path(fname).stem).strip("._")[:100] or "documento"
+            target = folder / f"{stem}{ext}"
+            target.write_bytes(content)
+            saved += 1
+        if not saved:
+            raise ValueError("Nenhum arquivo com conteúdo válido foi enviado.")
+
+        await self._ensure_ready()
+        try:
+            source_id = await self.store.upsert_source(clean_name, "documents", str(folder))
+        except Exception as exc:
+            if "check" in str(exc).lower() or "constraint" in str(exc).lower():
+                source_id = await self.store.upsert_source(clean_name, "workspace", str(folder))
+            else:
+                raise
+        return await self._start(source_id, str(folder), force=force)
+
     async def _start(self, source_id: int, root: str, force: bool, cleanup=None) -> dict:
         last = await self.store.latest_job(source_id)
         if last and last["status"] in ACTIVE and any(not t.done() for t in self._tasks):

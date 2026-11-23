@@ -70,6 +70,27 @@ async def ingest_zip(file: UploadFile = File(...), name: str = Form(""), force: 
         raise _http(exc) from exc
 
 
+@rag_router.post("/sources/documents", status_code=202)
+async def ingest_documents(
+    files: list[UploadFile] = File(...),
+    name: str = Form(...),
+    force: bool = Form(False),
+):
+    """Indexa documentos pessoais (.pdf, .docx, .md, .txt, .csv) numa coleção persistente do RAG."""
+    service = get_service()
+    max_each = 20 * 1024 * 1024
+    payload: list[tuple[str, bytes]] = []
+    try:
+        for item in files:
+            raw = await item.read(max_each + 1)
+            if len(raw) > max_each:
+                raise ValueError(f"Arquivo '{item.filename}' ultrapassa o limite de 20 MB.")
+            payload.append((item.filename or "documento.txt", raw))
+        return await service.ingest_documents(name, payload, force=force)
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from exc
+
+
 @rag_router.get("/sources/{source_id}")
 async def source_status(source_id: int):
     try:

@@ -38,7 +38,9 @@ def chunk_file(path: str, text: str, language: str, max_lines: int = 200) -> lis
     elif language in {"javascript", "typescript"}:
         raw = _js_chunks(path, text, language) or _window_chunks(path, text, language)
     elif language == "markdown":
-        raw = _markdown_chunks(path, text) or _window_chunks(path, text, language)
+        raw = _markdown_chunks(path, text) or _document_chunks(path, text, language) or _window_chunks(path, text, language)
+    elif language in {"pdf", "docx", "text"}:
+        raw = _document_chunks(path, text, language) or _window_chunks(path, text, language)
     else:
         raw = _window_chunks(path, text, language)
 
@@ -190,6 +192,76 @@ def _markdown_chunks(path: str, text: str) -> list[Chunk]:
     for i, (start, title) in enumerate(marks):
         end = (marks[i + 1][0] - 1) if i + 1 < len(marks) else len(lines)
         chunks.append(_make(path, "markdown", "section", title, "", start, end, _numbered_slice(lines, start, end)))
+    return chunks
+
+
+_PAGE_MARKER = re.compile(r"^\[p[áa]gina\s+(\d+)\]$", re.I)
+_DOC_CHUNK_CHARS = 1600
+
+
+def _document_chunks(path: str, text: str, language: str) -> list[Chunk]:
+    """Chunking semântico para PDFs, DOCX e textos: agrupa por páginas, títulos e parágrafos."""
+    lines = text.split("\n")
+    sections: list[tuple[str, int, int]] = []
+    marks: list[tuple[int, str]] = []
+    for idx, line in enumerate(lines, start=1):
+        s = line.strip()
+        pm = _PAGE_MARKER.match(s)
+        if pm:
+            marks.append((idx, f"página {pm.group(1)}"))
+            continue
+        hm = _MD_HEADING.match(line)
+        if hm:
+            marks.append((idx, hm.group(2).strip()[:80]))
+
+    if marks:
+        if marks[0][0] > 1 and _numbered_slice(lines, 1, marks[0][0] - 1).strip():
+            sections.append(("<início>", 1, marks[0][0] - 1))
+        for i, (start, label) in enumerate(marks):
+            end = (marks[i + 1][0] - 1) if i + 1 < len(marks) else len(lines)
+            sections.append((label, start, end))
+    else:
+        sections.append((path.rsplit("/", 1)[-1], 1, len(lines)))
+
+    chunks: list[Chunk] = []
+    for label, s_start, s_end in sections:
+        sec_lines = lines[s_start - 1 : s_end]
+        sec_text = "\n".join(sec_lines).strip()
+        if not sec_text:
+            continue
+        if len(sec_text) <= _DOC_CHUNK_CHARS:
+            chunks.append(_make(path, language, "document", label, "", s_start, s_end, sec_text))
+            continue
+        # Divide seção longa em grupos de parágrafos respeitando linhas exatas
+        paras: list[tuple[int, int, str]] = []
+        p_start: int | None = None
+        for offset, ln in enumerate(sec_lines):
+            abs_ln = s_start + offset
+            if ln.strip():
+                if p_start is None:
+                    p_start = abs_ln
+            elif p_start is not None:
+                paras.append((p_start, abs_ln - 1, _numbered_slice(lines, p_start, abs_ln - 1)))
+                p_start = None
+        if p_start is not None:
+            paras.append((p_start, s_end, _numbered_slice(lines, p_start, s_end)))
+
+        buf: list[tuple[int, int, str]] = []
+        buf_len = 0
+        part_idx = 0
+        for para in paras:
+            if buf and buf_len + len(para[2]) + 2 > _DOC_CHUNK_CHARS:
+                part_idx += 1
+                chunks.append(_make(path, language, "document", f"{label} ({part_idx})", label, buf[0][0], buf[-1][1], "\n\n".join(p[2] for p in buf)))
+                overlap = buf[-1] if len(buf[-1][2]) <= 400 else None
+                buf = [overlap] if overlap else []
+                buf_len = len(overlap[2]) if overlap else 0
+            buf.append(para)
+            buf_len += len(para[2]) + 2
+        if buf:
+            part_idx += 1
+            qname = f"{label} ({part_idx})" if part_idx > 1 else label
+            chunks.append(_make(path, language, "document", qname, label if part_idx > 1 else "", buf[0][0], buf[-1][1], "\n\n".join(p[2] for p in buf)))
     return chunks
 
 
