@@ -175,8 +175,25 @@ def local_http_check(
     return f"HTTP {status} ({ctype or 'sem content-type'})\n\n{text or '(corpo vazio)'}"
 
 
-def _probe_single_url(url: str, timeout: int = 8) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "AssistenteLocal-RouteTest/1.0"}, method="GET")
+def _parse_auth_headers(auth_header: str = "") -> dict[str, str]:
+    """Aceita 'Header: valor', 'Bearer <token>' ou apenas '<token>' (vira Authorization: Bearer)."""
+    raw = str(auth_header or "").strip()
+    if not raw or "\r" in raw or "\n" in raw:
+        return {}
+    if ":" in raw:
+        name, value = raw.split(":", 1)
+        name, value = name.strip(), value.strip()
+        if name and value:
+            return {name: value}
+        return {}
+    if raw.lower().startswith("bearer "):
+        return {"Authorization": raw}
+    return {"Authorization": f"Bearer {raw}"}
+
+
+def _probe_single_url(url: str, timeout: int = 8, extra_headers: dict[str, str] | None = None) -> dict:
+    headers = {"User-Agent": "AssistenteLocal-RouteTest/1.0", **(extra_headers or {})}
+    req = urllib.request.Request(url, headers=headers, method="GET")
     started = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -192,7 +209,7 @@ def _probe_single_url(url: str, timeout: int = 8) -> dict:
         return {"ok": False, "status": 0, "ms": elapsed_ms, "detail": str(exc)[:300]}
 
 
-def run_local_route_suite(base_url: str, routes: str = "", timeout: int = 8) -> dict:
+def run_local_route_suite(base_url: str, routes: str = "", timeout: int = 8, auth_header: str = "") -> dict:
     """Descobre rotas GET seguras via /openapi.json (ou usa a lista informada) e testa cada uma em localhost."""
     import json
 
@@ -204,6 +221,7 @@ def run_local_route_suite(base_url: str, routes: str = "", timeout: int = 8) -> 
     if parts.scheme not in ("http", "https") or (parts.hostname or "").lower() not in _LOCAL_HOSTS:
         return {"error": "ERRO DE SEGURANÇA: apenas localhost, 127.0.0.1 ou ::1 são permitidos."}
 
+    extra_headers = _parse_auth_headers(auth_header)
     paths: list[str] = []
     discovered_via = "manual"
     if str(routes or "").strip():
@@ -213,7 +231,10 @@ def run_local_route_suite(base_url: str, routes: str = "", timeout: int = 8) -> 
                 paths.append(p if p.startswith("/") else "/" + p)
     else:
         try:
-            req = urllib.request.Request(f"{raw_base}/openapi.json", headers={"User-Agent": "AssistenteLocal-RouteTest/1.0"})
+            req = urllib.request.Request(
+                f"{raw_base}/openapi.json",
+                headers={"User-Agent": "AssistenteLocal-RouteTest/1.0", **extra_headers},
+            )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 spec = json.loads(resp.read(500_000).decode("utf-8", errors="replace"))
             for path, methods in (spec.get("paths") or {}).items():
@@ -233,7 +254,7 @@ def run_local_route_suite(base_url: str, routes: str = "", timeout: int = 8) -> 
     passed: list[dict] = []
     failed: list[dict] = []
     for path in paths:
-        res = _probe_single_url(f"{raw_base}{path}", timeout=timeout)
+        res = _probe_single_url(f"{raw_base}{path}", timeout=timeout, extra_headers=extra_headers)
         entry = {"path": path, **res}
         if res["ok"]:
             passed.append(entry)
@@ -263,7 +284,7 @@ def run_local_route_suite(base_url: str, routes: str = "", timeout: int = 8) -> 
 
 
 @tool
-def test_local_routes(base_url: str, routes: str = "") -> str:
+def test_local_routes(base_url: str, routes: str = "", auth_header: str = "") -> str:
     """Testa em lote as rotas GET de uma API local (localhost/127.0.0.1).
 
     Se `routes` ficar vazio, descobre automaticamente as rotas GET sem parâmetros via `/openapi.json` (FastAPI)
@@ -272,8 +293,9 @@ def test_local_routes(base_url: str, routes: str = "") -> str:
     Args:
         base_url: URL base local (ex.: 'http://127.0.0.1:8000').
         routes: lista opcional de rotas separadas por vírgula ou quebra de linha (ex.: '/api/health, /api/users').
+        auth_header: opcional, token Bearer ou header completo (ex.: 'Authorization: Bearer ...' ou 'Cookie: ...').
     """
-    res = run_local_route_suite(base_url, routes)
+    res = run_local_route_suite(base_url, routes, auth_header=auth_header)
     if res.get("error"):
         return str(res["error"])
     return str(res["markdown"])

@@ -1924,6 +1924,8 @@ Antes de considerar a tarefa concluída:
 
 Não apenas presuma que a edição funcionou porque a ferramenta retornou sucesso.
 
+Ao encerrar, inclua um resumo curto com: **Arquivos alterados**, **O que foi validado** e **O que ficou pendente** (se houver).
+
 Responda em português do Brasil.
 
 {GENERATE_RULES}
@@ -2380,8 +2382,11 @@ a quantidade de tasks.
 ==================================================
 
 Quando o pedido for uma funcionalidade inteira (login, cadastro, logout, CRUD,
-autenticação, módulo novo), NÃO entregue 2 ou 3 tasks genéricas. Quebre em tasks
-pequenas, uma por responsabilidade, NA ORDEM em que devem ser executadas:
+autenticação, módulo novo) OU uma remodelação/refatoração grande que toque vários
+arquivos, NÃO entregue 2 ou 3 tasks genéricas nem misture muitos arquivos na mesma
+task. Quebre em microtasks pequenas, uma por responsabilidade, NA ORDEM em que devem
+ser executadas (cada microtask deve deixar o projeto em estado funcional, sem imports
+ou chamadas quebradas esperando uma task futura):
 
 1. dependências e configuração (settings, requirements, variáveis);
 2. modelo, serializer ou schema;

@@ -57,6 +57,8 @@ import os
 from .diff_review import review_changes
 from .task_guards import run_pytest
 from .task_journal import begin_journal, journal_end, journal_rollback, journal_run_originals, syntax_problems_for_paths
+from .autonomy_config import get_autonomy_config
+from .batch_checkpoint import save_checkpoint
 from .task_commit import capture_originals, commit_task
 from .ops_core import detect_ops_intent
 from .map_shortcut import project_map_message
@@ -388,7 +390,13 @@ def code_node(state: State):
     workspace_path = state.get("workspace_path", "Diretório não informado")
     recent_messages = _turn_context(state["messages"], prior=5, enhanced=state.get("enhanced_prompt"))
 
-    prompt_with_workspace = f"{CODE_NODE_PROMPT}\n\n[CONTEXTO DO AMBIENTE]\nO caminho raiz do workspace atual é: {workspace_path}"
+    readonly_note = (
+        "\n\n[MODO SOMENTE LEITURA ATIVO]\nNão altere nem crie arquivos neste modo. "
+        "Apenas leia, diagnostique e proponha alterações em texto."
+        if get_autonomy_config().get("chat_readonly_mode")
+        else ""
+    )
+    prompt_with_workspace = f"{CODE_NODE_PROMPT}\n\n[CONTEXTO DO AMBIENTE]\nO caminho raiz do workspace atual é: {workspace_path}{readonly_note}"
 
     active_preset = normalize_preset(state.get("preset"))
     code_preset = preset_prompt_block(active_preset) if active_preset in ("tutor", "direto") else None
@@ -481,6 +489,10 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
         # seguintes NÃO rodam (ficam 'pending') para não empilhar erro.
         blocked_by: int | None = None
         ran_inline = False
+        autonomy_cfg = get_autonomy_config()
+        cp = await asyncio.to_thread(save_checkpoint, thread_id, workspace_path, [t.id for t in tasks_to_run])
+        if cp:
+            report_lines.append(f"🔖 Checkpoint Git salvo (`{cp['short_sha']}`) — você pode desfazer o lote inteiro se precisar.")
 
         for task in tasks_to_run:
             if blocked_by is not None:
@@ -529,11 +541,50 @@ async def generate_dispatch_node(state: State, config: RunnableConfig):
                             f"(nenhum passo os cria): {', '.join(absent)}"
                         )
                 else:
-                    task.status = "failed"
-                    task.last_error = (run.error or "Falha desconhecida.")[:4000]
-                    blocked_by = task.id
-                    first_line = (run.error or "").split("\n", 1)[0]
-                    report_lines.append(f"❌ #{task.id} {task.title} — FALHOU. {first_line}")
+                    err_text = (run.error or "Falha desconhecida.")[:4000]
+                    first_line = err_text.split("\n", 1)[0]
+                    if autonomy_cfg.get("auto_heal_failed_tasks", True):
+                        from tasks import run_generate_task
+
+                        heal_desc = (
+                            f"{task.description or ''}\n\n"
+                            "**Auto-correção solicitada (passo determinístico falhou):**\n"
+                            f"```text\n{err_text[:1500]}\n```"
+                        ).strip()
+                        task.description = heal_desc
+                        task.steps = []
+                        task.status = "queued"
+                        task.last_error = None
+                        await db.commit()
+                        try:
+                            run_generate_task.delay(
+                                thread_id,
+                                {
+                                    "id": task.id,
+                                    "title": task.title,
+                                    "description": heal_desc,
+                                    "files": task.files,
+                                    "reason": task.reason,
+                                    "priority": task.priority,
+                                    "code_snippet": task.code_snippet,
+                                    "verify": task.verify or [],
+                                    "status": "queued",
+                                    "repo_path": workspace_path,
+                                },
+                            )
+                            dispatched_count += 1
+                            report_lines.append(f"🛠️ #{task.id} {task.title} — passo determinístico falhou ({first_line}); enviada automaticamente para a IA corrigir.")
+                        except Exception as exc:
+                            task.status = "failed"
+                            task.last_error = f"{err_text}\n\nAuto-correção indisponível (Celery): {exc}"[:4000]
+                            blocked_by = task.id
+                            await db.commit()
+                            report_lines.append(f"❌ #{task.id} {task.title} — FALHOU. {first_line}")
+                    else:
+                        task.status = "failed"
+                        task.last_error = err_text
+                        blocked_by = task.id
+                        report_lines.append(f"❌ #{task.id} {task.title} — FALHOU. {first_line}")
 
                 await db.commit()
                 continue
@@ -1420,12 +1471,13 @@ async def _generate_node_impl(state: State):
                     if (getattr(msg, "additional_kwargs", None) or {}).get("message_tag") == "internal_verify_retry"
                 )
 
-                if retries_used < MAX_VERIFY_RETRIES:
+                _max_retries = max(MAX_VERIFY_RETRIES, int(get_autonomy_config().get("max_verify_retries", 3)))
+                if retries_used < _max_retries:
                     correction = HumanMessage(
                         name="hidden_task_prompt",
                         content=(
                             "A revisão automática do sistema encontrou problemas no seu resultado "
-                            f"(tentativa de correção {retries_used + 1} de {MAX_VERIFY_RETRIES}):\n\n"
+                            f"(tentativa de correção {retries_used + 1} de {_max_retries}):\n\n"
                             f"{problem_report}\n\n"
                             "Corrija usando as ferramentas: releia o código REAL, ajuste o arquivo e, em "
                             "documentos, remova ou troque por VERIFICAR qualquer valor que não esteja "
