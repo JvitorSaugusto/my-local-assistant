@@ -46,8 +46,10 @@
 
         <div class="search-box sb-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="chat-search" type="search" placeholder="Buscar conversas" autocomplete="off" aria-label="Buscar conversas" />
+          <input id="chat-search" type="search" placeholder="Buscar conversas e mensagens…" autocomplete="off" aria-label="Buscar conversas e mensagens" />
         </div>
+        <div id="chat-folder-bar" class="chat-folder-bar hidden" role="group" aria-label="Filtrar por pasta"></div>
+        <div id="chat-search-results" class="chat-search-results hidden" aria-live="polite"></div>
 
         <ul id="chat-list" class="chat-list"></ul>
         <p id="sidebar-msg" class="sidebar-msg"></p>
@@ -56,7 +58,12 @@
           <button id="btn-workspace-chip" class="sb-link" type="button" title="Diretório de trabalho desta sessão">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg><span id="workspace-chip-label">Sem projeto</span>
           </button>
-          <a class="sb-link" href="/static/rag.html" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg><span>Indexação (RAG)</span></a>
+          <button id="btn-memories" class="sb-link" type="button" title="Ver, editar ou apagar memórias do assistente">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 0 0-3 3 2.5 2.5 0 0 0-1.5 4.5A2.5 2.5 0 0 0 9 17a3 3 0 0 0 3 2"/><path d="M12 5a3 3 0 0 1 3 3 2.5 2.5 0 0 1 1.5 4.5A2.5 2.5 0 0 1 15 17a3 3 0 0 1-3 2"/><path d="M12 5v14"/></svg><span>Memórias</span>
+          </button>
+          <button id="btn-settings" class="sb-link" type="button" title="Preferências do assistente e controle de VRAM do Ollama">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg><span>Configurações &amp; VRAM</span>
+          </button>
           <div class="sb-status">
             <span id="conn-dot" class="conn-dot" role="status" aria-label="Status do servidor"></span>
             <span id="conn-text" class="conn-text">conectando…</span>
@@ -74,7 +81,7 @@
         <div class="topbar-actions">
           <button id="btn-autocommit" class="top-btn" type="button" aria-pressed="false" aria-label="Alternar commit automático" title="Ligar ou desligar commit automático das tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M3 12h6M15 12h6"/></svg><span class="top-btn-label" id="autocommit-label">Auto-commit: Off</span></button>
           <button id="btn-pin" class="top-btn hidden" type="button" aria-pressed="false" aria-label="Fixar projeto nesta conversa" title="Fixar o projeto e as fontes atuais nesta conversa"><span aria-hidden="true">📌</span></button>
-          <button id="btn-toggle-artifacts" class="top-btn hidden" type="button" aria-label="Abrir painel de artefatos" title="Arquivos (.txt e .md) gerados nesta conversa">
+          <button id="btn-toggle-artifacts" class="top-btn hidden" type="button" aria-label="Abrir painel de artefatos" title="Arquivos (.txt, .md e .pdf) gerados nesta conversa">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg><span class="top-btn-label">Artefatos</span><span id="artifacts-badge" class="badge hidden">0</span>
           </button>
           <button id="btn-toggle-tasks" class="top-btn hidden" type="button" aria-label="Abrir painel de tarefas">
@@ -140,6 +147,17 @@
                 </div>
               </div>
 
+              <div class="preset-wrap">
+                <button type="button" id="btn-preset" class="src-btn preset-btn" aria-haspopup="true" aria-expanded="false" title="Escolher perfil de comportamento da IA">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/><path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>
+                  <span id="preset-btn-label" class="preset-btn-label">Padrão</span>
+                </button>
+                <div id="preset-menu" class="preset-menu hidden" role="dialog" aria-label="Perfis de resposta">
+                  <div class="sources-head"><b>Perfil de resposta</b><small>Define como a IA explica e interage nesta conversa (modo Normal e Tutor no Code).</small></div>
+                  <div id="preset-list" class="preset-list"></div>
+                </div>
+              </div>
+
               <div class="tips-wrap">
                 <button type="button" id="btn-tips" class="src-btn" aria-haspopup="true" aria-expanded="false" title="Dicas de pedidos e atalhos">
                   <span aria-hidden="true">💡</span><span class="src-text">Dicas</span>
@@ -165,6 +183,7 @@
             <button class="tab" type="button" role="tab" data-tab="artifacts">Artefatos</button>
             <button class="tab" type="button" role="tab" data-tab="queue">Fila rápida</button>
             <button class="tab" type="button" role="tab" data-tab="project">Projeto</button>
+            <button class="tab" type="button" role="tab" data-tab="monitor">Monitor</button>
           </div>
           <button id="btn-close-drawer" class="icon-btn" type="button" aria-label="Fechar painel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
         </div>
@@ -217,7 +236,7 @@
           <!-- Aba: artefatos -->
           <section class="tab-panel hidden" data-panel="artifacts">
             <h3 class="panel-title">Artefatos da conversa</h3>
-            <p class="panel-desc">Arquivos .txt e .md gerados neste chat. Toque para abrir o conteúdo completo, copiar ou baixar.</p>
+            <p class="panel-desc">Arquivos .txt, .md e .pdf gerados neste chat. Toque para visualizar, copiar ou baixar.</p>
             <div id="artifacts-list" class="artifacts-list"></div>
           </section>
 
@@ -258,6 +277,36 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
               <span><b>Indexar repositório (RAG)</b><small>Busca semântica em projetos grandes, por classe e função.</small></span>
             </a>
+          </section>
+
+          <!-- Aba: monitor (Docker + Rotas) -->
+          <section class="tab-panel hidden" data-panel="monitor">
+            <h3 class="panel-title">Monitor Docker Compose</h3>
+            <p class="panel-desc">Escuta os logs do projeto ativo em background (zero VRAM) e avisa neste chat se ocorrer erro ou ao finalizar um build.</p>
+            <div class="monitor-card">
+              <div class="monitor-status-row">
+                <span id="mon-badge" class="mon-badge off">Parado</span>
+                <small id="mon-build-info" class="settings-status">Nenhum build medido</small>
+              </div>
+              <div class="monitor-actions">
+                <button type="button" id="btn-mon-start" class="btn btn-primary btn-sm">Iniciar Monitor</button>
+                <button type="button" id="btn-mon-stop" class="btn btn-ghost btn-sm" disabled>Parar</button>
+                <button type="button" id="btn-mon-build" class="btn btn-secondary btn-sm">Build + Medir</button>
+              </div>
+              <pre id="mon-logs" class="mon-logs">Selecione um projeto na aba Projeto e clique em Iniciar Monitor.</pre>
+            </div>
+
+            <h3 class="panel-title" style="margin-top:16px">Testador de Rotas Locais</h3>
+            <p class="panel-desc">Descobre rotas GET via <code>/openapi.json</code> ou testa a lista abaixo em localhost.</p>
+            <div class="monitor-card">
+              <input id="rt-base-url" type="text" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000" autocomplete="off" />
+              <textarea id="rt-routes" rows="3" placeholder="Opcional: /api/health, /api/users (vazio = auto via /openapi.json)"></textarea>
+              <div class="monitor-actions">
+                <button type="button" id="btn-rt-run" class="btn btn-primary btn-sm">Testar rotas</button>
+                <button type="button" id="btn-rt-diagnose" class="btn btn-secondary btn-sm hidden">Diagnosticar falhas no chat</button>
+              </div>
+              <div id="rt-results" class="rt-results"></div>
+            </div>
           </section>
         </div>
 
@@ -341,6 +390,106 @@
   </div>
   <div class="artifact-modal-body">
     <pre id="artifact-modal-pre" class="artifact-viewer-pre"><code id="artifact-modal-code"></code></pre>
+    <iframe id="artifact-modal-pdf" class="artifact-pdf-frame hidden" title="Visualização do PDF"></iframe>
+  </div>
+</dialog>
+
+<dialog id="settings-modal" class="modal settings-modal">
+  <div class="settings-modal-head">
+    <h3>Configurações &amp; VRAM</h3>
+    <button type="button" id="btn-settings-close" class="icon-btn" aria-label="Fechar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <form id="settings-form" class="settings-body">
+    <section class="settings-section">
+      <h4>Preferências do Assistente</h4>
+      <label class="setting-toggle">
+        <span><b>Pesquisa na Web</b><small>Permite que o assistente use web_search e web_fetch.</small></span>
+        <input type="checkbox" id="cfg-web-search" />
+      </label>
+      <label class="setting-toggle">
+        <span><b>Memória do Assistente</b><small>Usa e salva fatos duradouros entre conversas.</small></span>
+        <input type="checkbox" id="cfg-memory" />
+      </label>
+      <label class="setting-toggle">
+        <span><b>Commit automático das tasks</b><small>Cria commit automático após aplicar microtasks.</small></span>
+        <input type="checkbox" id="cfg-autocommit" />
+      </label>
+      <div class="settings-grid">
+        <div class="form-group">
+          <label for="cfg-audit-timeout">Timeout da Auditoria (seg · 0 = ilimitado)</label>
+          <input type="number" id="cfg-audit-timeout" min="0" max="3600" step="10" />
+        </div>
+        <div class="form-group">
+          <label for="cfg-audit-chunk">Lote da Auditoria (arquivos por lote)</label>
+          <input type="number" id="cfg-audit-chunk" min="10" max="200" step="5" />
+        </div>
+      </div>
+      <div class="settings-save-row">
+        <span id="settings-status" class="settings-status"></span>
+        <button type="submit" class="btn btn-primary btn-sm">Salvar preferências</button>
+      </div>
+    </section>
+    <section class="settings-section">
+      <div class="ollama-head">
+        <div>
+          <h4>Ollama &amp; VRAM (GPU)</h4>
+          <small id="ollama-summary" class="settings-status">Consultando modelos carregados…</small>
+        </div>
+        <div class="ollama-head-actions">
+          <button type="button" id="btn-ollama-refresh" class="btn btn-ghost btn-sm">Atualizar</button>
+          <button type="button" id="btn-ollama-unload-all" class="btn btn-secondary btn-sm">Descarregar VRAM</button>
+        </div>
+      </div>
+      <div id="ollama-models-list" class="ollama-models-list"></div>
+    </section>
+  </form>
+</dialog>
+
+<dialog id="chat-org-modal" class="modal">
+  <h3>Organizar conversa</h3>
+  <form id="chat-org-form">
+    <input type="hidden" id="org-chat-id" />
+    <div class="form-group">
+      <label for="org-chat-folder">Pasta</label>
+      <input type="text" id="org-chat-folder" placeholder="Ex.: Estudos, Pessoal, Projetos" maxlength="40" autocomplete="off" />
+      <div class="org-quick-folders" id="org-quick-folders">
+        <button type="button" class="btn btn-ghost btn-sm" data-folder="Estudos">Estudos</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-folder="Pessoal">Pessoal</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-folder="Projetos">Projetos</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-folder="Trabalho">Trabalho</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-folder="">Sem pasta</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="org-chat-tags">Tags (separadas por vírgula)</label>
+      <input type="text" id="org-chat-tags" placeholder="Ex.: docker, resumo, receitas" autocomplete="off" />
+    </div>
+    <label class="setting-toggle">
+      <span><b>Fixar no topo da lista</b><small>Mantém esta conversa sempre visível no início da sidebar.</small></span>
+      <input type="checkbox" id="org-chat-pinned" />
+    </label>
+    <div class="modal-actions">
+      <button type="button" id="btn-org-cancel" class="btn btn-ghost">Cancelar</button>
+      <button type="submit" class="btn btn-primary">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="memories-modal" class="modal memories-modal">
+  <div class="settings-modal-head">
+    <div>
+      <h3>Memórias do Assistente</h3>
+      <small id="memories-meta" class="settings-status">Carregando…</small>
+    </div>
+    <button type="button" id="btn-memories-close" class="icon-btn" aria-label="Fechar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="memories-body">
+    <form id="memory-add-form" class="memory-add-row">
+      <input type="text" id="memory-new-input" placeholder="Adicionar fato para o assistente lembrar…" maxlength="240" autocomplete="off" required />
+      <button type="submit" class="btn btn-primary btn-sm">Adicionar</button>
+    </form>
+    <input type="search" id="memory-filter" class="memory-filter" placeholder="Filtrar memórias…" autocomplete="off" />
+    <div id="memories-list" class="memories-list"></div>
   </div>
 </dialog>
 

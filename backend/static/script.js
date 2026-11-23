@@ -6,6 +6,8 @@
 const API = {
   chats: "/api/chats/",
   chat: (id) => `/api/chats/${id}`,
+  chatSearch: "/api/chats/search",
+  chatPresets: "/api/chats/presets",
   messages: (thread_id) => `/api/ai/${thread_id}/messages`,
   tasks: (thread_id) => `/api/tasks/${thread_id}/tasks`,
   createTask: (threadId) => `/api/tasks/${threadId}`,
@@ -21,7 +23,18 @@ const API = {
   packContent: (name) => `/api/handoff/packs/${encodeURIComponent(name)}/content`,
   packDownload: (name) => `/api/handoff/packs/${encodeURIComponent(name)}`,
   threadArtifacts: (threadId) => `/api/handoff/artifacts/${encodeURIComponent(threadId)}`,
+  saveArtifact: (threadId) => `/api/handoff/artifacts/${encodeURIComponent(threadId)}`,
   deleteArtifact: (threadId, name) => `/api/handoff/artifacts/${encodeURIComponent(threadId)}/${encodeURIComponent(name)}`,
+  settings: "/api/settings",
+  ollamaPs: "/api/settings/ollama/ps",
+  ollamaUnload: "/api/settings/ollama/unload",
+  memories: "/api/memories",
+  memoryItem: (id) => `/api/memories/${id}`,
+  monitorStatus: "/api/monitor/status",
+  monitorStart: "/api/monitor/start",
+  monitorStop: "/api/monitor/stop",
+  monitorBuild: "/api/monitor/build",
+  monitorTestRoutes: "/api/monitor/test-routes",
   ragScope: "/api/rag/scope",
   ragLinks: "/api/rag/links",
   createTasksBatch: (threadId) => `/api/tasks/${threadId}`,
@@ -152,6 +165,8 @@ const ICON = {
   moon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>`,
   brain: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 0 0-3 3 2.5 2.5 0 0 0-1.5 4.5A2.5 2.5 0 0 0 9 17a3 3 0 0 0 3 2"/><path d="M12 5a3 3 0 0 1 3 3 2.5 2.5 0 0 1 1.5 4.5A2.5 2.5 0 0 1 15 17a3 3 0 0 1-3 2"/><path d="M12 5v14"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
+  pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>`,
+  tag: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg>`,
 };
 
 // ============================================================
@@ -338,7 +353,9 @@ function loadWorkspaces() {
     const saved = JSON.parse(localStorage.getItem("assistant_workspaces") || "[]");
     state.workspaces = Array.isArray(saved) ? saved : [];
     const active = localStorage.getItem("assistant_workspace_active");
-    if (active && state.workspaces.includes(active)) {
+    if (active === "") {
+      state.workspacePath = "";
+    } else if (active && state.workspaces.includes(active)) {
       state.workspacePath = active;
     } else if (state.workspaces.length) {
       state.workspacePath = state.workspaces[0];
@@ -361,15 +378,26 @@ function renderWorkspaces() {
   loadRagScope();
   el.workspaceList.innerHTML = "";
   if (!state.workspaces.length) {
-    el.workspaceList.innerHTML = `<div class="workspace-empty">Nenhum diretório adicionado.</div>`;
+    el.workspaceList.innerHTML = `<div class="workspace-empty">Nenhum diretório adicionado (usando modo pessoal sem projeto).</div>`;
     el.workspacePath.value = "";
     return;
   }
+  const noneItem = document.createElement("div");
+  noneItem.className = "workspace-item" + (!state.workspacePath ? " active" : "");
+  noneItem.innerHTML = `<button type="button" class="workspace-select" title="Usar sem projeto vinculado (anexos globais e conversas pessoais)">Sem projeto (modo pessoal)</button>`;
+  noneItem.querySelector(".workspace-select").addEventListener("click", () => setActiveWorkspace(""));
+  el.workspaceList.appendChild(noneItem);
   state.workspaces.forEach((workspace) => {
+    const parts = String(workspace || "").split(/[\\/]/).filter(Boolean);
+    const name = parts[parts.length - 1] || workspace;
+    const parent = parts.length > 1 ? (parts.length > 2 ? `…/${parts[parts.length - 2]}` : parts[0]) : "";
     const item = document.createElement("div");
     item.className = "workspace-item" + (workspace === state.workspacePath ? " active" : "");
     item.innerHTML = `
-      <button type="button" class="workspace-select" title="Usar este diretório">${escapeHtml(workspace)}</button>
+      <button type="button" class="workspace-select workspace-select-rich" title="${escapeHtml(workspace)}">
+        <span class="ws-name">${escapeHtml(name)}</span>
+        ${parent ? `<span class="ws-path">${escapeHtml(parent)}</span>` : ""}
+      </button>
       <button type="button" class="workspace-remove" title="Remover diretório">×</button>
     `;
     item.querySelector(".workspace-select").addEventListener("click", () => setActiveWorkspace(workspace));
@@ -570,23 +598,37 @@ function chatGroupLabel(iso) {
 }
 
 function renderChatList() {
+  renderFolderBar();
   el.chatList.innerHTML = "";
   const query = state.chatQuery.trim().toLowerCase();
-  const chats = state.chats
-    .filter((chat) => !query || String(chat.title || "").toLowerCase().includes(query))
-    .sort((a, b) => (Date.parse(b.created_at) || Date.now()) - (Date.parse(a.created_at) || Date.now()));
+  const folderFilter = state.chatFolderFilter || "all";
+  const tagFilter = (state.chatTagFilter || "").toLowerCase();
 
-  if (!chats.length && query) {
+  const chats = state.chats
+    .filter((chat) => {
+      if (folderFilter === "__pinned__" && !chat.pinned) return false;
+      if (folderFilter !== "all" && folderFilter !== "__pinned__" && (chat.folder || "") !== folderFilter) return false;
+      if (tagFilter && !(chat.tags || []).some((t) => String(t).toLowerCase() === tagFilter)) return false;
+      if (!query) return true;
+      const hay = [chat.title, chat.folder, ...(chat.tags || [])].join(" ").toLowerCase();
+      return hay.includes(query);
+    })
+    .sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+      return (Date.parse(b.created_at) || Date.now()) - (Date.parse(a.created_at) || Date.now());
+    });
+
+  if (!chats.length && (query || folderFilter !== "all" || tagFilter)) {
     const empty = document.createElement("li");
     empty.className = "chat-group";
-    empty.textContent = "Nenhuma conversa encontrada";
+    empty.textContent = "Nenhuma conversa corresponde ao filtro";
     el.chatList.appendChild(empty);
     return;
   }
 
   let lastGroup = null;
   chats.forEach((chat) => {
-    const group = chatGroupLabel(chat.created_at);
+    const group = chat.pinned ? "📌 Fixadas" : chatGroupLabel(chat.created_at);
     if (group !== lastGroup) {
       const header = document.createElement("li");
       header.className = "chat-group";
@@ -595,17 +637,42 @@ function renderChatList() {
       lastGroup = group;
     }
     const li = document.createElement("li");
-    li.className = "chat-item" + (chat.id === state.activeId ? " active" : "");
+    li.className = "chat-item" + (chat.id === state.activeId ? " active" : "") + (chat.pinned ? " is-pinned" : "");
     li.dataset.id = chat.id;
+    const metaPills = [
+      chat.folder ? `<span class="chat-pill folder">${escapeHtml(chat.folder)}</span>` : "",
+      ...(chat.tags || []).slice(0, 3).map((tag) => `<span class="chat-pill tag" data-filter-tag="${escapeHtml(tag)}">#${escapeHtml(tag)}</span>`),
+    ].filter(Boolean).join("");
     li.innerHTML = `
       ${ICON.bubble}
-      <span class="chat-item-title">${escapeHtml(chat.title || "Nova conversa")}</span>
+      <span class="chat-item-main">
+        <span class="chat-item-title">${escapeHtml(chat.title || "Nova conversa")}</span>
+        ${metaPills ? `<span class="chat-item-meta">${metaPills}</span>` : ""}
+      </span>
+      <span class="chat-pin-sb${chat.pinned ? " on" : ""}" title="${chat.pinned ? "Desafixar do topo" : "Fixar no topo"}" role="button">${ICON.pin}</span>
+      <span class="chat-org" title="Pasta e tags" role="button">${ICON.tag}</span>
       <span class="chat-edit" title="Editar título" role="button">${ICON.pencil}</span>
       <span class="chat-del" title="Excluir" role="button">${ICON.trash}</span>
     `;
     li.addEventListener("click", (event) => {
-      if (event.target.closest(".chat-del") || event.target.closest(".chat-edit")) return;
+      const tagEl = event.target.closest("[data-filter-tag]");
+      if (tagEl) {
+        event.stopPropagation();
+        const nextTag = tagEl.dataset.filterTag || "";
+        state.chatTagFilter = state.chatTagFilter === nextTag ? "" : nextTag;
+        renderChatList();
+        return;
+      }
+      if (event.target.closest(".chat-del, .chat-edit, .chat-pin-sb, .chat-org")) return;
       openChat(chat.id);
+    });
+    li.querySelector(".chat-pin-sb").addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleChatSidebarPin(chat.id);
+    });
+    li.querySelector(".chat-org").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openChatOrgModal(chat);
     });
     li.querySelector(".chat-del").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -766,7 +833,7 @@ function renderTasks(tasks) {
     const canPlan = task.status === "pending" || failed;
     const steps = Array.isArray(task.steps) ? task.steps : [];
     const stepsText = steps
-      .map((step, i) => `${i + 1}. ${step.op}${step.path ? " " + step.path : ""}${step.branch ? " " + step.branch : ""}`)
+      .map((step, i) => `${i + 1}. ${step.op}${step.op === "move_file" ? ` ${step.source} -> ${step.destination}` : `${step.path ? " " + step.path : ""}${step.branch ? " " + step.branch : ""}`}`)
       .join("\n");
 
     card.innerHTML = `
@@ -1226,7 +1293,7 @@ function appendMessage(role, content, modelName = null, meta = {}) {
 
   const footer = isUser
     ? (meta.id ? `<div class="msg-actions"><button class="msg-action btn-edit-msg" type="button" title="Editar mensagem">${ICON.pencil}</button></div>` : "")
-    : `<button class="msg-raw-toggle" type="button">Ver formato puro</button><pre class="msg-raw hidden">${escapeHtml(content)}</pre>`;
+    : `<div class="msg-footer-bar"><button class="msg-raw-toggle" type="button">Ver formato puro</button><button class="msg-raw-toggle btn-save-artifact" type="button" data-save-fmt="md" title="Salvar resposta como artefato Markdown">Salvar .md</button><button class="msg-raw-toggle btn-save-artifact" type="button" data-save-fmt="pdf" title="Salvar resposta como artefato PDF">Salvar .pdf</button></div><pre class="msg-raw hidden">${escapeHtml(content)}</pre>`;
 
   wrap.innerHTML = `
     <div class="msg-avatar">${isUser ? ICON.user : ICON.bot}</div>
@@ -1247,11 +1314,15 @@ function appendMessage(role, content, modelName = null, meta = {}) {
       const hidden = wrap.querySelector(".msg-raw").classList.toggle("hidden");
       toggle.textContent = hidden ? "Ver formato puro" : "Ocultar formato puro";
     });
+    wrap.querySelectorAll(".btn-save-artifact").forEach((btn) => {
+      btn.addEventListener("click", () => saveMessageAsArtifact(content, btn.dataset.saveFmt || "md", btn));
+    });
   }
   el.messages.appendChild(wrap);
   if (!isUser) {
     enhanceCodeBlocks(wrap);
     enhanceArtifactLinks(wrap);
+    enhanceTables(wrap);
   }
   return wrap;
 }
@@ -1426,12 +1497,8 @@ function addAttachments(fileList) {
   if (rejected.length) alert("Alguns arquivos não foram anexados:\n" + rejected.join("\n"));
 }
 
-// Envia os anexos ao workspace e devolve o texto final da mensagem (ou null se falhar).
+// Envia os anexos (no workspace ou na pasta global da conversa) e devolve o texto final.
 async function composeWithAttachments(text) {
-  if (!state.workspacePath) {
-    alert("Defina um diretório de trabalho para poder anexar arquivos.");
-    return null;
-  }
   if (state.activeId == null) {
     await createChat();
     if (state.activeId == null) return null;
@@ -1445,7 +1512,7 @@ async function composeWithAttachments(text) {
     for (const file of state.attachments) {
       if (file.uploadedPath) continue; // já enviado numa tentativa anterior
       const form = new FormData();
-      form.append("workspace_path", state.workspacePath);
+      form.append("workspace_path", state.workspacePath || "");
       form.append("file", file);
       const res = await fetch(API.upload(chat.thread_id), { method: "POST", body: form });
       if (!res.ok) {
@@ -1464,11 +1531,15 @@ async function composeWithAttachments(text) {
   }
 
   const paths = state.attachments.map((file) => file.uploadedPath);
+  const isGlobal = paths.every((p) => String(p || "").startsWith("@global/"));
   state.attachments = [];
   renderAttachments();
 
   const base = text.trim() || "Analise os arquivos anexados.";
-  return `${base}\n\n${ATTACHMENT_MARKER} (leia com read_file_content, read_file_chunk ou search_in_file):\n` +
+  const hint = isGlobal
+    ? "leia com read_attachment"
+    : "leia com read_file_content, read_file_chunk, read_attachment ou search_in_file";
+  return `${base}\n\n${ATTACHMENT_MARKER} (${hint}):\n` +
     paths.map((path) => `- ${path}`).join("\n");
 }
 
@@ -1653,7 +1724,7 @@ async function sendMessage(text) {
   const live = startLiveThoughts(chat, typing);
 
   try {
-    const data = await api(API.send, { method: "POST", body: JSON.stringify({ thread_id: chat.thread_id, message: text, workspace_path: state.workspacePath }) });
+    const data = await api(API.send, { method: "POST", body: JSON.stringify({ thread_id: chat.thread_id, message: text, workspace_path: state.workspacePath, preset: getChatPreset() }) });
     if (state.activeId !== chat.id) return;
     typing.remove();
     if (data?.new_chat && (await switchToNewChat(chat, data))) return;
@@ -2128,6 +2199,7 @@ el.btnTaskFilters.addEventListener("click", () => {
 el.chatSearch.addEventListener("input", () => {
   state.chatQuery = el.chatSearch.value;
   renderChatList();
+  scheduleGlobalChatSearch(state.chatQuery);
 });
 el.btnWorkspaceChip.addEventListener("click", () => openDrawer("project"));
 el.btnSources.addEventListener("click", (event) => {
@@ -2380,7 +2452,7 @@ startPolling();
 // ANEXOS DAS TAREFAS + PROMPT PARA GERAR MICROTASKS
 // ============================================================
 
-const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele possui dois modos de execução: DETERMINÍSTICO (padrão) e DINÂMICO (via LLM).\n\nREGRAS DE OURO PARA MODO DETERMINÍSTICO (Edições e Operações de Arquivo)\n- Na maioria das vezes, ele executa as tarefas de forma determinística: aplica exatamente o que você escrever e roda as verificações. Ele não interpreta nem corrige. Cada passo precisa ter o texto/código FINAL e EXATO.\n- Para alterar um arquivo existente (replace_text), preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Não existe operação de apagar arquivos.\n\nREGRAS PARA MODO DINÂMICO / LLM (Documentação, Refatoração, Análise)\n- O assistente TEM capacidade de leitura, interpretação e geração de código/texto por conta própria.\n- Se a tarefa exigir análise de arquivos que acabaram de ser modificados, geração de documentação, ou refatoração complexa onde um \"replace_text\" determinístico seria inviável, DEIXE O ARRAY \"steps\" VAZIO: \"steps\": [].\n- Quando \"steps\" estiver vazio, o assistente usará o texto que você colocar no campo \"description\" como um prompt para executar a tarefa usando sua própria inteligência (LLM). Descreva EXATAMENTE o que ele deve ler e o que deve gerar.\n- DOCUMENTAÇÃO QUE VAI PARA OUTRA PESSOA: prefira o modo determinístico com write_markdown e o texto FINAL escrito por você a partir do código real que eu colei. Se usar o modo dinâmico, liste em \"files\" TODOS os arquivos-fonte e inclua em \"verify\" a checagem literals_grounded.\n- O modo dinâmico monta o contexto sozinho (git diff, arquivos, constantes referenciadas) e confere por código se os valores citados existem nas fontes.\n\nFORMATO DO JSON\n- Responda SOMENTE com um array JSON válido (sem comentários e sem texto fora do JSON). Entregue-o FORMATADO e legível: indentado com 2 espaços, uma propriedade por linha e um objeto por tarefa, dentro de UM único bloco de código ```json (nunca em uma linha só, sem prosa antes ou depois do bloco).\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n- Formato de cada objeto no array:\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz (se for dinâmica, seja extremamente detalhista aqui)\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados/lidos)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações (ou vazio [] para tarefas dinâmicas)... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\" - USE APENAS EM MODO DETERMINÍSTICO)\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" }\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\n- pytest: { \"type\": \"pytest\", \"path\": \"tests/test_x.py\" } (roda o arquivo de teste; use quando a task criar ou alterar testes)\n- literals_grounded: { \"type\": \"literals_grounded\", \"path\": \"doc.md\", \"sources\": [\"app/views.py\"], \"allow\": [] } (confere por código se valores entre aspas, headers e códigos HTTP do documento existem nas fontes)\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLOS\n\nTarefa Determinística (Edição exata):\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" }\n    ]\n  }\n]\n\nTarefa Dinâmica (Análise/Geração usando IA do assistente):\n[\n  {\n    \"title\": \"Documentar API\",\n    \"description\": \"Leia o arquivo app/views.py e crie um arquivo README.md detalhando os endpoints encontrados, métodos HTTP, payloads e retornos.\",\n    \"reason\": \"Facilitar o consumo da API pelo frontend.\",\n    \"files\": [\"app/views.py\", \"README.md\"],\n    \"priority\": \"medium\",\n    \"steps\": [],\n    \"verify\": [\n      { \"type\": \"file_exists\", \"path\": \"README.md\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
+const TASKS_PROMPT_TEMPLATE = "Você vai gerar MICROTASKS em JSON para o meu assistente de IA local. Ele possui dois modos de execução: DETERMINÍSTICO (padrão) e DINÂMICO (via LLM).\n\nREGRAS DE OURO PARA MODO DETERMINÍSTICO (Edições e Operações de Arquivo)\n- Na maioria das vezes, ele executa as tarefas de forma determinística: aplica exatamente o que você escrever e roda as verificações. Ele não interpreta nem corrige. Cada passo precisa ter o texto/código FINAL e EXATO.\n- Para alterar um arquivo existente (replace_text), preciso que você tenha o conteúdo atual dele. Se eu não colei, PEÇA o trecho em vez de adivinhar. O campo \"old\" tem que ser copiado EXATAMENTE (espaços, indentação, aspas).\n- Caminhos sempre RELATIVOS à raiz do projeto, com \"/\". Nunca mexa em .git, .env, node_modules, venv ou __pycache__. Para remover arquivos obsoletos use delete_file (com rollback automático).\n\nREGRAS PARA MODO DINÂMICO / LLM (Documentação, Refatoração, Análise)\n- O assistente TEM capacidade de leitura, interpretação e geração de código/texto por conta própria.\n- Se a tarefa exigir análise de arquivos que acabaram de ser modificados, geração de documentação, ou refatoração complexa onde um \"replace_text\" determinístico seria inviável, DEIXE O ARRAY \"steps\" VAZIO: \"steps\": [].\n- Quando \"steps\" estiver vazio, o assistente usará o texto que você colocar no campo \"description\" como um prompt para executar a tarefa usando sua própria inteligência (LLM). Descreva EXATAMENTE o que ele deve ler e o que deve gerar.\n- DOCUMENTAÇÃO QUE VAI PARA OUTRA PESSOA: prefira o modo determinístico com write_markdown e o texto FINAL escrito por você a partir do código real que eu colei. Se usar o modo dinâmico, liste em \"files\" TODOS os arquivos-fonte e inclua em \"verify\" a checagem literals_grounded.\n- O modo dinâmico monta o contexto sozinho (git diff, arquivos, constantes referenciadas) e confere por código se os valores citados existem nas fontes.\n\nFORMATO DO JSON\n- Responda SOMENTE com um array JSON válido (sem comentários e sem texto fora do JSON). Entregue-o FORMATADO e legível: indentado com 2 espaços, uma propriedade por linha e um objeto por tarefa, dentro de UM único bloco de código ```json (nunca em uma linha só, sem prosa antes ou depois do bloco).\n- Quebras de linha dentro do JSON são \"\\n\" e aspas internas são \\\".\n- Formato de cada objeto no array:\n{\n  \"title\": \"título curto\",\n  \"description\": \"o que a tarefa faz (se for dinâmica, seja extremamente detalhista aqui)\",\n  \"reason\": \"por que fazer\",\n  \"files\": [\"arquivos envolvidos (inclua os que serão criados/copiados/lidos)\"],\n  \"priority\": \"low | medium | high\",\n  \"steps\": [ ...operações (ou vazio [] para tarefas dinâmicas)... ],\n  \"verify\": [ ...checagens... ]\n}\n\nOPERAÇÕES DE \"steps\" (campo \"op\" - USE APENAS EM MODO DETERMINÍSTICO)\n- create_file: { \"op\": \"create_file\", \"path\": \"...\", \"content\": \"conteúdo COMPLETO\" }\n- replace_text: { \"op\": \"replace_text\", \"path\": \"...\", \"old\": \"trecho exato atual\", \"new\": \"trecho novo\", \"occurrences\": \"one\" | \"all\" }\n- append: { \"op\": \"append\", \"path\": \"...\", \"content\": \"texto adicionado ao final\" }\n- write_markdown: { \"op\": \"write_markdown\", \"path\": \"x.md\", \"content\": \"...\", \"overwrite\": false }\n- create_pdf: { \"op\": \"create_pdf\", \"path\": \"x.pdf\", \"title\": \"...\", \"content\": \"markdown\", \"overwrite\": false }\n- copy_upload: { \"op\": \"copy_upload\", \"path\": \"public/favicon.png\", \"source\": \"favicon.png\", \"overwrite\": false }\n- extract_zip: { \"op\": \"extract_zip\", \"path\": \"pasta/destino\", \"source\": \"codigo.zip\", \"on_conflict\": \"skip\" | \"overwrite\", \"strip_top_folder\": true }\n- move_file: { \"op\": \"move_file\", \"source\": \"caminho/antigo.py\", \"destination\": \"caminho/novo.py\", \"overwrite\": false }\n- delete_file: { \"op\": \"delete_file\", \"path\": \"caminho/obsoleto.py\" } (remove arquivo com rollback automático se a task falhar)\n\nCHECAGENS DE \"verify\" (campo \"type\")\n- file_exists: { \"type\": \"file_exists\", \"path\": \"...\" }\n- file_not_exists: { \"type\": \"file_not_exists\", \"path\": \"...\" } (confirma que arquivo movido/apagado não existe mais)\n- ts_check: { \"type\": \"ts_check\", \"path\": \"dashboard/app/page.tsx\" } (roda tsc --noEmit no projeto TypeScript/Next.js)\n- contains: { \"type\": \"contains\", \"path\": \"...\", \"text\": \"trecho que deve existir\" }\n- not_contains: { \"type\": \"not_contains\", \"path\": \"...\", \"text\": \"trecho que NÃO pode existir\" }\n- python_syntax: { \"type\": \"python_syntax\", \"path\": \"arquivo.py\" }\n- pytest: { \"type\": \"pytest\", \"path\": \"tests/test_x.py\" } (roda o arquivo de teste; use quando a task criar ou alterar testes)\n- literals_grounded: { \"type\": \"literals_grounded\", \"path\": \"doc.md\", \"sources\": [\"app/views.py\"], \"allow\": [] } (confere por código se valores entre aspas, headers e códigos HTTP do documento existem nas fontes)\n\nARQUIVOS ANEXADOS DISPONÍVEIS AGORA (use o nome exato em \"source\"):\n{{ANEXOS}}\n\nEXEMPLOS\n\nTarefa Determinística (Edição exata):\n[\n  {\n    \"title\": \"Aumentar fonte do título\",\n    \"description\": \"Aumenta a variável --title-size em style.css.\",\n    \"reason\": \"O título está pequeno em telas grandes.\",\n    \"files\": [\"app/style.css\"],\n    \"priority\": \"medium\",\n    \"steps\": [\n      { \"op\": \"replace_text\", \"path\": \"app/style.css\", \"old\": \"--title-size: 22px;\", \"new\": \"--title-size: 28px;\", \"occurrences\": \"one\" }\n    ],\n    \"verify\": [\n      { \"type\": \"contains\", \"path\": \"app/style.css\", \"text\": \"--title-size: 28px;\" }\n    ]\n  }\n]\n\nTarefa Dinâmica (Análise/Geração usando IA do assistente):\n[\n  {\n    \"title\": \"Documentar API\",\n    \"description\": \"Leia o arquivo app/views.py e crie um arquivo README.md detalhando os endpoints encontrados, métodos HTTP, payloads e retornos.\",\n    \"reason\": \"Facilitar o consumo da API pelo frontend.\",\n    \"files\": [\"app/views.py\", \"README.md\"],\n    \"priority\": \"medium\",\n    \"steps\": [],\n    \"verify\": [\n      { \"type\": \"file_exists\", \"path\": \"README.md\" }\n    ]\n  }\n]\n\nMINHA SOLICITAÇÃO:\n(descreva aqui o que você quer que seja feito no projeto)\n";
 
 const TASK_ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".zip", ".md", ".txt", ".py", ".json", ".csv", ".pdf", ".docx"];
 state.taskUploads = [];
@@ -2408,9 +2480,9 @@ function renderTaskUploads() {
 async function refreshTaskUploads() {
   const chat = activeChatOrNull();
   state.taskUploads = [];
-  if (chat && state.workspacePath) {
+  if (chat) {
     try {
-      const res = await fetch(`${API.upload(chat.thread_id)}?workspace_path=${encodeURIComponent(state.workspacePath)}`);
+      const res = await fetch(`${API.upload(chat.thread_id)}?workspace_path=${encodeURIComponent(state.workspacePath || "")}`);
       if (res.ok) state.taskUploads = await res.json();
     } catch (err) {
       console.error("Falha ao listar anexos:", err);
@@ -2422,7 +2494,6 @@ async function refreshTaskUploads() {
 async function uploadTaskFiles(fileList) {
   const chat = activeChatOrNull();
   if (!chat) { alert("Nenhuma conversa ativa encontrada."); return; }
-  if (!state.workspacePath) { alert("Defina um diretório de trabalho para poder anexar arquivos."); return; }
   const errors = [];
   for (const file of fileList) {
     const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
@@ -2749,7 +2820,7 @@ state.artifacts = [];
 state.activeArtifact = null;
 
 function extractPackFilename(href) {
-  const match = String(href || "").match(/\/api\/handoff\/packs\/([\w.-]+\.(?:txt|md))(?:$|[?#])/i);
+  const match = String(href || "").match(/\/api\/handoff\/packs\/([\w.-]+\.(?:txt|md|pdf))(?:$|[?#])/i);
   return match ? match[1] : null;
 }
 
@@ -2826,7 +2897,7 @@ function renderArtifacts(items) {
   }
   if (!list) return;
   if (!count) {
-    list.innerHTML = '<div class="tasks-empty">Nenhum artefato (.txt ou .md) gerado nesta conversa ainda.</div>';
+    list.innerHTML = '<div class="tasks-empty">Nenhum artefato (.txt, .md ou .pdf) gerado nesta conversa ainda.</div>';
     return;
   }
   list.innerHTML = items.map((item) => {
@@ -2842,7 +2913,7 @@ function renderArtifacts(items) {
         </div>
         <div class="artifact-item-actions">
           <button type="button" class="btn btn-primary btn-sm" data-art-act="open" data-artifact-name="${escapeHtml(item.filename)}" ${expired ? "disabled" : ""}>${expired ? "Expirado" : "Abrir"}</button>
-          <button type="button" class="btn btn-ghost btn-sm" data-art-act="copy" data-artifact-name="${escapeHtml(item.filename)}" ${expired ? "disabled" : ""}>Copiar</button>
+          ${kind === "PDF" ? "" : `<button type="button" class="btn btn-ghost btn-sm" data-art-act="copy" data-artifact-name="${escapeHtml(item.filename)}" ${expired ? "disabled" : ""}>Copiar</button>`}
           <a class="btn btn-ghost btn-sm" href="${escapeHtml(API.packDownload(item.filename))}" download="${escapeHtml(item.filename)}">Baixar</a>
         </div>
       </article>
@@ -2855,17 +2926,29 @@ async function openArtifactModal(filename) {
   const titleEl = document.getElementById("artifact-modal-title");
   const badgeEl = document.getElementById("artifact-modal-badge");
   const metaEl = document.getElementById("artifact-modal-meta");
+  const preEl = document.getElementById("artifact-modal-pre");
   const codeEl = document.getElementById("artifact-modal-code");
+  const pdfEl = document.getElementById("artifact-modal-pdf");
+  const wrapBtn = document.getElementById("btn-artifact-wrap");
+  const copyBtn = document.getElementById("btn-artifact-copy");
   const dlEl = document.getElementById("btn-artifact-download");
   if (!modal || !codeEl) return;
 
   const kind = filename.split(".").pop().toUpperCase();
-  state.activeArtifact = { filename, content: "" };
+  const isPdf = kind === "PDF";
+  state.activeArtifact = { filename, content: "", isPdf };
   titleEl.textContent = filename;
   badgeEl.textContent = kind;
   badgeEl.className = `artifact-kind-badge ${kind.toLowerCase()}`;
   metaEl.textContent = "Carregando conteúdo…";
   codeEl.textContent = "";
+  preEl?.classList.toggle("hidden", isPdf);
+  wrapBtn?.classList.toggle("hidden", isPdf);
+  copyBtn?.classList.toggle("hidden", isPdf);
+  if (pdfEl) {
+    pdfEl.classList.toggle("hidden", !isPdf);
+    pdfEl.src = isPdf ? `${API.packDownload(filename)}?inline=1` : "about:blank";
+  }
   if (dlEl) {
     dlEl.href = API.packDownload(filename);
     dlEl.setAttribute("download", filename);
@@ -2874,12 +2957,18 @@ async function openArtifactModal(filename) {
 
   try {
     const data = await api(API.packContent(filename));
+    if (isPdf) {
+      metaEl.textContent = `Documento PDF · ${formatBytes(data?.size_bytes ?? 0)}`;
+      return;
+    }
     const content = String(data?.content ?? "");
-    state.activeArtifact = { filename, content };
+    state.activeArtifact = { filename, content, isPdf: false };
     metaEl.textContent = `${data?.lines ?? 0} linha(s) · ${formatBytes(data?.size_bytes ?? content.length)}`;
     codeEl.textContent = content;
   } catch (err) {
     metaEl.textContent = "Erro ao carregar";
+    if (isPdf && pdfEl) pdfEl.classList.add("hidden");
+    preEl?.classList.remove("hidden");
     codeEl.textContent = err.message || "Não foi possível ler o arquivo.";
   }
 }
@@ -2953,4 +3042,736 @@ refreshMessages = async function (chat) {
   const ok = await _origRefreshMessages(chat);
   if (ok && chat?.thread_id) loadArtifacts(chat.thread_id);
   return ok;
+};
+
+// ============================================================
+// SALVAR RESPOSTA COMO ARTEFATO (.md / .pdf) E MODAL DE CONFIGURAÇÕES & VRAM
+// ============================================================
+
+async function saveMessageAsArtifact(content, format = "md", button = null) {
+  const chat = activeChatOrNull();
+  if (!chat?.thread_id) return;
+  const prev = button ? button.textContent : "";
+  if (button) { button.disabled = true; button.textContent = "Salvando…"; }
+  try {
+    const data = await api(API.saveArtifact(chat.thread_id), {
+      method: "POST",
+      body: JSON.stringify({ content: String(content || ""), title: chat.title || "", format }),
+    });
+    await loadArtifacts(chat.thread_id);
+    if (button) {
+      button.textContent = "Salvo ✓";
+      setTimeout(() => { button.textContent = prev; button.disabled = false; }, 1600);
+    }
+    if (data?.filename) openArtifactModal(data.filename);
+  } catch (err) {
+    if (button) { button.textContent = prev; button.disabled = false; }
+    alert("Não foi possível salvar como artefato: " + err.message);
+  }
+}
+
+function formatGb(bytes) {
+  const n = Number(bytes || 0);
+  if (n <= 0) return "0 MB";
+  if (n < 1024 * 1024 * 1024) return `${Math.round(n / (1024 * 1024))} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+async function loadSettingsModal() {
+  const status = document.getElementById("settings-status");
+  if (status) status.textContent = "Carregando…";
+  try {
+    const data = await api(API.settings);
+    const cfg = data?.settings || {};
+    const elWeb = document.getElementById("cfg-web-search");
+    const elMem = document.getElementById("cfg-memory");
+    const elAuto = document.getElementById("cfg-autocommit");
+    const elTimeout = document.getElementById("cfg-audit-timeout");
+    const elChunk = document.getElementById("cfg-audit-chunk");
+    if (elWeb) elWeb.checked = Boolean(cfg.web_search_enabled);
+    if (elMem) elMem.checked = Boolean(cfg.assistant_memory_enabled);
+    if (elAuto) elAuto.checked = Boolean(cfg.autocommit_enabled);
+    if (elTimeout) elTimeout.value = String(cfg.audit_tool_timeout ?? 180);
+    if (elChunk) elChunk.value = String(cfg.audit_chunk_size ?? 40);
+    if (status) status.textContent = "";
+  } catch (err) {
+    if (status) status.textContent = "Erro: " + err.message;
+  }
+  loadOllamaStatus();
+}
+
+function renderOllamaStatus(data) {
+  const summary = document.getElementById("ollama-summary");
+  const list = document.getElementById("ollama-models-list");
+  const unloadAllBtn = document.getElementById("btn-ollama-unload-all");
+  if (!list || !summary) return;
+  if (!data?.online) {
+    summary.textContent = `Ollama indisponível (${data?.base_url || "localhost:11434"})`;
+    list.innerHTML = `<div class="tasks-empty">${escapeHtml(data?.error || "Sem resposta do Ollama.")}</div>`;
+    if (unloadAllBtn) unloadAllBtn.disabled = true;
+    return;
+  }
+  const models = Array.isArray(data.models) ? data.models : [];
+  if (unloadAllBtn) unloadAllBtn.disabled = models.length === 0;
+  if (!models.length) {
+    summary.textContent = "Online · Nenhum modelo carregado na VRAM";
+    list.innerHTML = '<div class="tasks-empty">VRAM livre: nenhum modelo ativo no Ollama agora.</div>';
+    return;
+  }
+  summary.textContent = `${models.length} modelo(s) ativo(s) · VRAM: ${formatGb(data.total_vram_bytes)} · Total: ${formatGb(data.total_size_bytes)}`;
+  list.innerHTML = models.map((m) => {
+    const meta = [m.parameter_size, m.quantization_level, `VRAM: ${formatGb(m.size_vram)}`].filter(Boolean).join(" · ");
+    return `
+      <div class="ollama-model-row">
+        <div class="ollama-model-info">
+          <b>${escapeHtml(m.name)}</b>
+          <small>${escapeHtml(meta)}</small>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm btn-ollama-unload-one" data-model="${escapeHtml(m.name)}">Descarregar</button>
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadOllamaStatus() {
+  const summary = document.getElementById("ollama-summary");
+  if (summary) summary.textContent = "Consultando Ollama…";
+  try {
+    const data = await api(API.ollamaPs);
+    renderOllamaStatus(data);
+  } catch (err) {
+    renderOllamaStatus({ online: false, error: err.message });
+  }
+}
+
+async function unloadOllamaModel(modelName = null, button = null) {
+  const prev = button ? button.textContent : "";
+  if (button) { button.disabled = true; button.textContent = "Liberando…"; }
+  try {
+    const res = await api(API.ollamaUnload, {
+      method: "POST",
+      body: JSON.stringify({ model: modelName }),
+    });
+    if (res?.ollama) renderOllamaStatus(res.ollama);
+    else await loadOllamaStatus();
+  } catch (err) {
+    alert("Não foi possível descarregar da VRAM: " + err.message);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = prev; }
+  }
+}
+
+document.getElementById("btn-settings")?.addEventListener("click", () => {
+  if (isMobile()) closeSidebar();
+  const modal = document.getElementById("settings-modal");
+  if (modal && !modal.open) modal.showModal();
+  loadSettingsModal();
+});
+
+document.getElementById("btn-settings-close")?.addEventListener("click", () => {
+  document.getElementById("settings-modal")?.close();
+});
+
+document.getElementById("settings-modal")?.addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+document.getElementById("settings-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("settings-status");
+  if (status) status.textContent = "Salvando…";
+  try {
+    const res = await api(API.settings, {
+      method: "PUT",
+      body: JSON.stringify({
+        web_search_enabled: Boolean(document.getElementById("cfg-web-search")?.checked),
+        assistant_memory_enabled: Boolean(document.getElementById("cfg-memory")?.checked),
+        autocommit_enabled: Boolean(document.getElementById("cfg-autocommit")?.checked),
+        audit_tool_timeout: Number(document.getElementById("cfg-audit-timeout")?.value ?? 180),
+        audit_chunk_size: Number(document.getElementById("cfg-audit-chunk")?.value ?? 40),
+      }),
+    });
+    state.autocommit = Boolean(res?.settings?.autocommit_enabled);
+    renderAutocommitButton();
+    if (status) {
+      status.textContent = "Preferências salvas ✓";
+      setTimeout(() => { if (status.textContent === "Preferências salvas ✓") status.textContent = ""; }, 2000);
+    }
+  } catch (err) {
+    if (status) status.textContent = "Erro: " + err.message;
+  }
+});
+
+document.getElementById("btn-ollama-refresh")?.addEventListener("click", loadOllamaStatus);
+document.getElementById("btn-ollama-unload-all")?.addEventListener("click", (e) => unloadOllamaModel(null, e.currentTarget));
+document.getElementById("ollama-models-list")?.addEventListener("click", (event) => {
+  const btn = event.target.closest(".btn-ollama-unload-one");
+  if (btn?.dataset.model) unloadOllamaModel(btn.dataset.model, btn);
+});
+
+// ============================================================
+// FASE 2: PASTAS/TAGS, FIXAR CONVERSA, BUSCA GLOBAL E PERFIS RÁPIDOS
+// ============================================================
+
+state.chatFolderFilter = "all";
+state.chatTagFilter = "";
+state.chatPresets = {};
+const PRESET_EXAMPLES = {
+  default: "Uso livre: tire dúvidas, peça explicações ou converse normalmente.",
+  tutor: "Ex.: \"Me explique como funciona async/await\" — explica os fundamentos e faz perguntas guiadas sem entregar tudo pronto.",
+  revisor: "Ex.: Cole um e-mail ou texto e peça \"revise este texto\" — devolve pronto para copiar + resumo dos ajustes.",
+  planejador: "Ex.: \"Organize um plano de estudos de 2 semanas\" — divide em etapas priorizadas, riscos e checklist.",
+  direto: "Ex.: \"Qual comando para desfazer o último commit?\" — resposta curta, sem introduções nem rodeios.",
+};
+
+state.presetCatalog = [
+  { id: "default", label: "Padrão", short_label: "Padrão", description: "Comportamento equilibrado padrão do assistente." },
+  { id: "tutor", label: "Tutor Socrático", short_label: "Tutor", description: "Ensina pelos fundamentos com perguntas guiadas, sem entregar tudo pronto de cara." },
+  { id: "revisor", label: "Revisor de Texto", short_label: "Revisor", description: "Melhora clareza, gramática, concisão e tom de e-mails, mensagens e documentos." },
+  { id: "planejador", label: "Planejador", short_label: "Planejador", description: "Quebra ideias e metas em etapas priorizadas, prazos, riscos e checklists." },
+  { id: "direto", label: "Direto ao Ponto", short_label: "Direto", description: "Respostas curtas e objetivas, sem rodeios nem introduções longas." },
+];
+
+const PRESET_STORE = "assistant_chat_presets";
+let globalSearchTimer = null;
+let globalSearchSeq = 0;
+
+function loadSavedPresets() {
+  try { state.chatPresets = JSON.parse(localStorage.getItem(PRESET_STORE) || "{}") || {}; }
+  catch { state.chatPresets = {}; }
+}
+
+function saveChatPresets() {
+  try { localStorage.setItem(PRESET_STORE, JSON.stringify(state.chatPresets)); } catch {}
+}
+
+function getChatPreset() {
+  const key = state.activeId != null ? String(state.activeId) : "__draft__";
+  return state.chatPresets[key] || "default";
+}
+
+function setChatPreset(presetId) {
+  const key = state.activeId != null ? String(state.activeId) : "__draft__";
+  if (!presetId || presetId === "default") delete state.chatPresets[key];
+  else state.chatPresets[key] = presetId;
+  saveChatPresets();
+  syncPresetUI();
+}
+
+function renderPresetMenu() {
+  const list = document.getElementById("preset-list");
+  if (!list) return;
+  const current = getChatPreset();
+  list.innerHTML = state.presetCatalog.map((p) => {
+    const active = p.id === current;
+    const tip = PRESET_EXAMPLES[p.id] || "";
+    return `
+      <button type="button" class="preset-option${active ? " active" : ""}" data-preset-id="${escapeHtml(p.id)}">
+        <span class="preset-opt-head">
+          <b>${escapeHtml(p.label)}</b>
+          ${active ? `<span class="preset-opt-check">${ICON.check}</span>` : ""}
+        </span>
+        ${p.description ? `<small class="preset-opt-desc">${escapeHtml(p.description)}</small>` : ""}
+        ${tip ? `<small class="preset-opt-tip">${escapeHtml(tip)}</small>` : ""}
+      </button>
+    `;
+  }).join("");
+}
+
+function closePresetMenu() {
+  const menu = document.getElementById("preset-menu");
+  const btn = document.getElementById("btn-preset");
+  if (menu) menu.classList.add("hidden");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function togglePresetMenu() {
+  const menu = document.getElementById("preset-menu");
+  const btn = document.getElementById("btn-preset");
+  if (!menu || !btn) return;
+  const opening = menu.classList.contains("hidden");
+  closeSourcesMenu();
+  menu.classList.toggle("hidden", !opening);
+  btn.setAttribute("aria-expanded", String(opening));
+  if (opening) renderPresetMenu();
+}
+
+function syncPresetUI() {
+  const btn = document.getElementById("btn-preset");
+  const lbl = document.getElementById("preset-btn-label");
+  const current = getChatPreset();
+  const meta = state.presetCatalog.find((p) => p.id === current) || state.presetCatalog[0];
+  if (btn) {
+    btn.classList.toggle("active", current !== "default");
+    btn.title = meta ? `${meta.label}: ${meta.description || ""}` : "Perfil de resposta";
+  }
+  if (lbl && meta) lbl.textContent = meta.short_label || meta.label;
+  renderPresetMenu();
+  if (getRouteMode() === "auto" && el.composerFoot) {
+    if (current !== "default" && meta) {
+      el.composerFoot.classList.add("fixed");
+      el.composerFoot.innerHTML = `Perfil <b>${escapeHtml(meta.label)}</b> ativo nesta conversa · ${escapeHtml(meta.description || "")}`;
+    } else {
+      el.composerFoot.classList.remove("fixed");
+      el.composerFoot.textContent = "Enter envia · Shift+Enter quebra a linha";
+    }
+  }
+}
+
+async function initPresetCatalog() {
+  loadSavedPresets();
+  try {
+    const data = await api(API.chatPresets);
+    if (Array.isArray(data?.presets) && data.presets.length) {
+      state.presetCatalog = data.presets;
+    }
+  } catch {}
+  syncPresetUI();
+}
+
+document.getElementById("btn-preset")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  togglePresetMenu();
+});
+document.getElementById("preset-menu")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const opt = event.target.closest("[data-preset-id]");
+  if (!opt) return;
+  setChatPreset(opt.dataset.presetId);
+  closePresetMenu();
+});
+document.addEventListener("click", closePresetMenu);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closePresetMenu(); });
+
+const _origSyncChipsPhase2 = syncChips;
+syncChips = function () {
+  _origSyncChipsPhase2();
+  syncPresetUI();
+};
+
+function renderFolderBar() {
+  const bar = document.getElementById("chat-folder-bar");
+  if (!bar) return;
+  const folders = [...new Set(state.chats.map((c) => String(c.folder || "").trim()).filter(Boolean))].sort();
+  const hasPinned = state.chats.some((c) => c.pinned);
+  const hasTag = Boolean(state.chatTagFilter);
+  if (!folders.length && !hasPinned && !hasTag) {
+    bar.classList.add("hidden");
+    bar.innerHTML = "";
+    return;
+  }
+  bar.classList.remove("hidden");
+  const pills = [
+    `<button type="button" class="folder-pill${state.chatFolderFilter === "all" && !hasTag ? " active" : ""}" data-folder-filter="all">Todas</button>`,
+  ];
+  if (hasPinned) {
+    pills.push(`<button type="button" class="folder-pill${state.chatFolderFilter === "__pinned__" ? " active" : ""}" data-folder-filter="__pinned__">📌 Fixadas</button>`);
+  }
+  folders.forEach((folder) => {
+    const on = state.chatFolderFilter === folder;
+    pills.push(`<button type="button" class="folder-pill${on ? " active" : ""}" data-folder-filter="${escapeHtml(folder)}">${escapeHtml(folder)}</button>`);
+  });
+  if (hasTag) {
+    pills.push(`<button type="button" class="folder-pill active tag-clear" data-clear-tag="1">#${escapeHtml(state.chatTagFilter)} ×</button>`);
+  }
+  bar.innerHTML = pills.join("");
+}
+
+document.getElementById("chat-folder-bar")?.addEventListener("click", (event) => {
+  const clearBtn = event.target.closest("[data-clear-tag]");
+  if (clearBtn) {
+    state.chatTagFilter = "";
+    renderChatList();
+    return;
+  }
+  const btn = event.target.closest("[data-folder-filter]");
+  if (!btn) return;
+  state.chatFolderFilter = btn.dataset.folderFilter || "all";
+  if (state.chatFolderFilter === "all") state.chatTagFilter = "";
+  renderChatList();
+});
+
+async function toggleChatSidebarPin(chatId) {
+  const chat = state.chats.find((c) => c.id === chatId);
+  if (!chat) return;
+  const nextPinned = !chat.pinned;
+  try {
+    const updated = await api(API.chat(chatId), {
+      method: "PUT",
+      body: JSON.stringify({ pinned: nextPinned }),
+    });
+    Object.assign(chat, updated || { pinned: nextPinned });
+    renderChatList();
+  } catch (err) {
+    alert("Não foi possível fixar a conversa: " + err.message);
+  }
+}
+
+function openChatOrgModal(chat) {
+  const modal = document.getElementById("chat-org-modal");
+  if (!modal || !chat) return;
+  document.getElementById("org-chat-id").value = String(chat.id);
+  document.getElementById("org-chat-folder").value = chat.folder || "";
+  document.getElementById("org-chat-tags").value = (chat.tags || []).join(", ");
+  document.getElementById("org-chat-pinned").checked = Boolean(chat.pinned);
+  if (!modal.open) modal.showModal();
+}
+
+document.getElementById("btn-org-cancel")?.addEventListener("click", () => {
+  document.getElementById("chat-org-modal")?.close();
+});
+
+document.getElementById("chat-org-modal")?.addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+document.getElementById("org-quick-folders")?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-folder]");
+  if (!btn) return;
+  const input = document.getElementById("org-chat-folder");
+  if (input) input.value = btn.dataset.folder || "";
+});
+
+document.getElementById("chat-org-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const chatId = Number(document.getElementById("org-chat-id")?.value);
+  const chat = state.chats.find((c) => c.id === chatId);
+  if (!chat) return;
+  const folder = String(document.getElementById("org-chat-folder")?.value || "").trim();
+  const tagsRaw = String(document.getElementById("org-chat-tags")?.value || "");
+  const tags = tagsRaw.split(",").map((t) => t.trim()).filter(Boolean);
+  const pinned = Boolean(document.getElementById("org-chat-pinned")?.checked);
+  try {
+    const updated = await api(API.chat(chatId), {
+      method: "PUT",
+      body: JSON.stringify({ folder, tags, pinned }),
+    });
+    Object.assign(chat, updated || { folder, tags, pinned });
+    renderChatList();
+    document.getElementById("chat-org-modal")?.close();
+  } catch (err) {
+    alert("Não foi possível salvar organização: " + err.message);
+  }
+});
+
+function scheduleGlobalChatSearch(rawQuery) {
+  clearTimeout(globalSearchTimer);
+  const box = document.getElementById("chat-search-results");
+  const query = String(rawQuery || "").trim();
+  if (!box) return;
+  if (query.length < 2) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  const reqSeq = ++globalSearchSeq;
+  globalSearchTimer = setTimeout(async () => {
+    box.classList.remove("hidden");
+    box.innerHTML = '<div class="search-res-head">Buscando nas mensagens…</div>';
+    try {
+      const data = await api(`${API.chatSearch}?q=${encodeURIComponent(query)}`);
+      if (reqSeq !== globalSearchSeq) return;
+      const matches = (data?.results || []).filter((item) => item.match_in === "message");
+      if (!matches.length) {
+        box.innerHTML = '<div class="search-res-head">Nenhuma ocorrência dentro das mensagens.</div>';
+        return;
+      }
+      box.innerHTML = `
+        <div class="search-res-head">Mensagens encontradas (${matches.length})</div>
+        ${matches.slice(0, 12).map((item) => `
+          <button type="button" class="search-res-item" data-chat-id="${item.chat_id}" data-message-id="${escapeHtml(item.message_id || "")}">
+            <span class="search-res-title">${escapeHtml(item.title || "Conversa")} <small>${item.role === "user" ? "Você" : "Assistente"}</small></span>
+            <span class="search-res-snippet">${escapeHtml(item.snippet || "")}</span>
+          </button>
+        `).join("")}
+      `;
+    } catch (err) {
+      if (reqSeq !== globalSearchSeq) return;
+      box.innerHTML = `<div class="search-res-head">Falha na busca: ${escapeHtml(err.message)}</div>`;
+    }
+  }, 320);
+}
+
+document.getElementById("chat-search-results")?.addEventListener("click", async (event) => {
+  const btn = event.target.closest(".search-res-item");
+  if (!btn) return;
+  const chatId = Number(btn.dataset.chatId);
+  const msgId = btn.dataset.messageId;
+  if (!chatId) return;
+  await openChat(chatId);
+  if (msgId) {
+    const target = [...el.messages.querySelectorAll("[data-message-id]")].find((n) => n.dataset.messageId === msgId);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.classList.add("msg-flash");
+      setTimeout(() => target.classList.remove("msg-flash"), 2000);
+    }
+  }
+});
+
+initPresetCatalog();
+
+// ============================================================
+// FASE 3: GERENCIADOR VISUAL DE MEMÓRIAS
+// ============================================================
+
+state.memories = [];
+state.memoriesEnabled = true;
+state.memoriesFilter = "";
+
+function renderMemoriesList() {
+  const list = document.getElementById("memories-list");
+  const meta = document.getElementById("memories-meta");
+  if (meta) {
+    const statusNote = state.memoriesEnabled ? "ativa" : "desligada nas Configurações";
+    meta.textContent = `${state.memories.length} memória(s) · ${statusNote}`;
+  }
+  if (!list) return;
+  const q = String(state.memoriesFilter || "").trim().toLowerCase();
+  const visible = state.memories
+    .filter((item) => !q || String(item.text || "").toLowerCase().includes(q))
+    .slice()
+    .reverse();
+  if (!visible.length) {
+    list.innerHTML = `<div class="tasks-empty">${q ? "Nenhuma memória corresponde ao filtro." : "Nenhuma memória salva ainda."}</div>`;
+    return;
+  }
+  list.innerHTML = visible.map((item) => `
+    <article class="memory-row" data-memory-id="${item.id}">
+      <div class="memory-row-main">
+        <span class="memory-id">#${item.id}</span>
+        <p class="memory-text">${escapeHtml(item.text)}</p>
+      </div>
+      <div class="memory-row-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-mem-act="edit" data-memory-id="${item.id}">Editar</button>
+        <button type="button" class="btn btn-ghost btn-sm btn-danger-soft" data-mem-act="delete" data-memory-id="${item.id}">Apagar</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+async function loadMemoriesModal() {
+  const meta = document.getElementById("memories-meta");
+  if (meta) meta.textContent = "Carregando…";
+  try {
+    const data = await api(API.memories);
+    state.memories = Array.isArray(data?.items) ? data.items : [];
+    state.memoriesEnabled = Boolean(data?.enabled);
+    renderMemoriesList();
+  } catch (err) {
+    if (meta) meta.textContent = "Erro: " + err.message;
+  }
+}
+
+document.getElementById("btn-memories")?.addEventListener("click", () => {
+  if (isMobile()) closeSidebar();
+  const modal = document.getElementById("memories-modal");
+  if (modal && !modal.open) modal.showModal();
+  loadMemoriesModal();
+});
+
+document.getElementById("btn-memories-close")?.addEventListener("click", () => {
+  document.getElementById("memories-modal")?.close();
+});
+
+document.getElementById("memories-modal")?.addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+document.getElementById("memory-filter")?.addEventListener("input", (event) => {
+  state.memoriesFilter = event.currentTarget.value;
+  renderMemoriesList();
+});
+
+document.getElementById("memory-add-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = document.getElementById("memory-new-input");
+  const text = String(input?.value || "").trim();
+  if (!text) return;
+  try {
+    const res = await api(API.memories, { method: "POST", body: JSON.stringify({ text }) });
+    state.memories = Array.isArray(res?.items) ? res.items : state.memories;
+    if (input) input.value = "";
+    renderMemoriesList();
+  } catch (err) {
+    alert("Não foi possível adicionar memória: " + err.message);
+  }
+});
+
+document.getElementById("memories-list")?.addEventListener("click", async (event) => {
+  const btn = event.target.closest("[data-mem-act]");
+  if (!btn) return;
+  const id = Number(btn.dataset.memoryId);
+  const item = state.memories.find((m) => m.id === id);
+  if (!item) return;
+  if (btn.dataset.memAct === "edit") {
+    const next = prompt("Editar memória:", item.text);
+    if (next === null || !next.trim()) return;
+    try {
+      const res = await api(API.memoryItem(id), { method: "PUT", body: JSON.stringify({ text: next.trim() }) });
+      state.memories = Array.isArray(res?.items) ? res.items : state.memories;
+      renderMemoriesList();
+    } catch (err) {
+      alert("Não foi possível editar memória: " + err.message);
+    }
+  } else if (btn.dataset.memAct === "delete") {
+    if (!confirm(`Apagar a memória #${id}?`)) return;
+    try {
+      const res = await api(API.memoryItem(id), { method: "DELETE" });
+      state.memories = Array.isArray(res?.items) ? res.items : state.memories.filter((m) => m.id !== id);
+      renderMemoriesList();
+    } catch (err) {
+      alert("Não foi possível apagar memória: " + err.message);
+    }
+  }
+});
+
+// ============================================================
+// TABELAS MARKDOWN RESPONSIVAS
+// ============================================================
+
+function enhanceTables(container) {
+  if (!container) return;
+  container.querySelectorAll(".msg-content table, .md table").forEach((table) => {
+    if (table.parentElement?.classList.contains("table-wrap")) return;
+    const wrapper = document.createElement("div");
+    wrapper.className = "table-wrap";
+    table.parentNode.insertBefore(wrapper, table);
+    wrapper.appendChild(table);
+  });
+}
+
+// ============================================================
+// ABA MONITOR: DOCKER COMPOSE WATCHER + TESTADOR DE ROTAS
+// ============================================================
+
+state.lastRouteReport = null;
+
+async function refreshMonitorStatus() {
+  const badge = document.getElementById("mon-badge");
+  const buildInfo = document.getElementById("mon-build-info");
+  const logsEl = document.getElementById("mon-logs");
+  const btnStart = document.getElementById("btn-mon-start");
+  const btnStop = document.getElementById("btn-mon-stop");
+  if (!badge || !logsEl) return;
+
+  if (!state.workspacePath) {
+    badge.textContent = "Sem projeto";
+    badge.className = "mon-badge off";
+    if (btnStart) btnStart.disabled = true;
+    if (btnStop) btnStop.disabled = true;
+    logsEl.textContent = "Escolha um projeto na aba Projeto para monitorar o Docker Compose.";
+    return;
+  }
+
+  try {
+    const data = await api(`${API.monitorStatus}?workspace_path=${encodeURIComponent(state.workspacePath)}`);
+    const mon = data?.active;
+    const running = Boolean(mon?.running);
+    badge.textContent = mon?.building ? "Buildando…" : (running ? "Escutando" : "Parado");
+    badge.className = "mon-badge " + (mon?.building ? "warn" : (running ? "on" : "off"));
+    if (btnStart) btnStart.disabled = running;
+    if (btnStop) btnStop.disabled = !running;
+    if (buildInfo) {
+      buildInfo.textContent = mon?.last_build_seconds != null
+        ? `Último build: ${mon.last_build_seconds} s (${mon.last_build_ok ? "OK" : "Falhou"})`
+        : (mon ? `${mon.lines_seen || 0} linhas · ${mon.errors_detected || 0} erro(s)` : "Nenhum build medido");
+    }
+    if (mon?.recent_logs?.length) {
+      logsEl.textContent = mon.recent_logs.join("\n");
+      logsEl.scrollTop = logsEl.scrollHeight;
+    } else if (!running) {
+      logsEl.textContent = "Monitor parado. Clique em Iniciar Monitor para acompanhar os logs em tempo real.";
+    }
+  } catch (err) {
+    logsEl.textContent = "Erro ao consultar monitor: " + err.message;
+  }
+}
+
+document.getElementById("btn-mon-start")?.addEventListener("click", async () => {
+  const chat = activeChatOrNull();
+  if (!state.workspacePath) return alert("Selecione um projeto na aba Projeto primeiro.");
+  try {
+    await api(API.monitorStart, {
+      method: "POST",
+      body: JSON.stringify({ workspace_path: state.workspacePath, thread_id: chat?.thread_id || "", auto_diagnose: true }),
+    });
+    await refreshMonitorStatus();
+  } catch (err) {
+    alert("Falha ao iniciar monitor: " + err.message);
+  }
+});
+
+document.getElementById("btn-mon-stop")?.addEventListener("click", async () => {
+  if (!state.workspacePath) return;
+  try {
+    await api(API.monitorStop, { method: "POST", body: JSON.stringify({ workspace_path: state.workspacePath }) });
+    await refreshMonitorStatus();
+  } catch (err) {
+    alert("Falha ao parar monitor: " + err.message);
+  }
+});
+
+document.getElementById("btn-mon-build")?.addEventListener("click", async () => {
+  const chat = activeChatOrNull();
+  if (!state.workspacePath) return alert("Selecione um projeto na aba Projeto primeiro.");
+  try {
+    const res = await api(API.monitorBuild, {
+      method: "POST",
+      body: JSON.stringify({ workspace_path: state.workspacePath, thread_id: chat?.thread_id || "", auto_diagnose: true }),
+    });
+    if (res?.message) appendNotice(res.message);
+    await refreshMonitorStatus();
+  } catch (err) {
+    alert("Falha ao iniciar build: " + err.message);
+  }
+});
+
+document.getElementById("btn-rt-run")?.addEventListener("click", async (event) => {
+  const btn = event.currentTarget;
+  const baseUrl = String(document.getElementById("rt-base-url")?.value || "").trim();
+  const routes = String(document.getElementById("rt-routes")?.value || "").trim();
+  const box = document.getElementById("rt-results");
+  const diagBtn = document.getElementById("btn-rt-diagnose");
+  if (!baseUrl || !box) return;
+
+  btn.disabled = true;
+  btn.textContent = "Testando…";
+  box.innerHTML = '<div class="tasks-empty">Testando rotas locais…</div>';
+  diagBtn?.classList.add("hidden");
+  try {
+    const res = await api(API.monitorTestRoutes, {
+      method: "POST",
+      body: JSON.stringify({ base_url: baseUrl, routes }),
+    });
+    state.lastRouteReport = res;
+    const rows = [
+      ...(res.failed || []).map((i) => `<div class="rt-row fail"><b>HTTP ${i.status}</b><code>${escapeHtml(i.path)}</code><small>${escapeHtml(i.detail || "")}</small></div>`),
+      ...(res.passed || []).map((i) => `<div class="rt-row ok"><b>HTTP ${i.status}</b><code>${escapeHtml(i.path)}</code><small>${i.ms} ms</small></div>`),
+    ];
+    box.innerHTML = `<div class="rt-summary">${res.passed.length} passou · ${res.failed.length} falhou (${escapeHtml(res.discovered_via)})</div>` + rows.join("");
+    if (res.failed?.length) diagBtn?.classList.remove("hidden");
+  } catch (err) {
+    box.innerHTML = `<div class="task-error"><pre>${escapeHtml(err.message)}</pre></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Testar rotas";
+  }
+});
+
+document.getElementById("btn-rt-diagnose")?.addEventListener("click", async () => {
+  if (!state.lastRouteReport?.failed?.length) return;
+  const prompt = (
+    "Testei as rotas locais e encontrei estas falhas. Leia os logs do Docker/código relevante, " +
+    "explique a causa de cada erro, sugira a correção e pergunte se quero gerar tasks:\n\n" +
+    state.lastRouteReport.markdown
+  );
+  closeDrawerIfOverlay();
+  await sendMessage(prompt);
+});
+
+const _origSetDrawerTabMon = setDrawerTab;
+setDrawerTab = function (tab) {
+  _origSetDrawerTabMon(tab);
+  if (tab === "monitor") refreshMonitorStatus();
 };

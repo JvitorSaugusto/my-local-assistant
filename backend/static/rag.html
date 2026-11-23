@@ -54,6 +54,17 @@
   </section>
 
   <section class="card">
+    <h2>Base de conhecimento pessoal (PDF, DOCX, MD, TXT, CSV)</h2>
+    <div class="row">
+      <input id="docs-files" type="file" multiple accept=".pdf,.docx,.md,.txt,.csv" />
+      <input id="docs-name" type="text" placeholder="Nome da coleção (ex.: Estudos, Manuais)" style="flex:0 1 240px" />
+      <label class="muted"><input type="checkbox" id="docs-force"> Regerar resumos</label>
+      <button class="primary" id="docs-go">Enviar documentos</button>
+    </div>
+    <p class="muted">Envie vários arquivos na mesma coleção (se usar o mesmo nome, novos documentos são somados e indexados incrementalmente). O modo Normal consegue pesquisar nessas coleções automaticamente.</p>
+  </section>
+
+  <section class="card">
     <h2>Enviar um zip</h2>
     <div class="row">
       <input id="zip-file" type="file" accept=".zip" />
@@ -169,6 +180,24 @@ $("ws-go").onclick = async () => {
   if (!path) return say("Informe o caminho da pasta.", true);
   try { await api("/api/rag/sources/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, name: $("ws-name").value.trim() || null }) }); say("Ingestão iniciada."); loadSources(); }
   catch (error) { say(error.message, true); }
+};
+
+$("docs-go").onclick = async () => {
+  const files = [...($("docs-files").files || [])];
+  const name = $("docs-name").value.trim();
+  if (!files.length) return say("Escolha um ou mais documentos (.pdf, .docx, .md, .txt, .csv).", true);
+  if (!name) return say("Informe um nome para a coleção de documentos.", true);
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f));
+  form.append("name", name);
+  form.append("force", $("docs-force").checked ? "true" : "false");
+  say("Enviando documentos…");
+  try {
+    await api("/api/rag/sources/documents", { method: "POST", body: form });
+    $("docs-files").value = "";
+    say("Ingestão da coleção iniciada.");
+    loadSources();
+  } catch (error) { say(error.message, true); }
 };
 
 $("zip-go").onclick = async () => {
