@@ -14,7 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_SINGLE_PATH_OPS = {"create_file", "replace_text", "append", "write_markdown", "create_pdf"}
+_SINGLE_PATH_OPS = {"create_file", "replace_text", "append", "write_markdown", "create_pdf", "delete_file"}
 _JS_SUFFIXES = (".js", ".mjs", ".cjs")
 _ESM_HINTS = (
     "Cannot use import statement outside a module",
@@ -73,16 +73,8 @@ class FileSnapshot:
         self.blocked = False
         self._orig = {}
 
-    def touch_step(self, step):
-        if not self.enabled:
-            return
-        op = getattr(step, "op", "")
-        if op in ("extract_zip", "copy_upload"):
-            self.blocked = True  # muitos arquivos: não dá para desfazer com segurança
-            return
-        if op not in _SINGLE_PATH_OPS:
-            return
-        rel = str(getattr(step, "path", "") or "").replace("\\", "/")
+    def _record_path(self, rel: str):
+        rel = str(rel or "").replace("\\", "/")
         if not rel:
             return
         target = (self.root / rel).resolve()
@@ -97,6 +89,21 @@ class FileSnapshot:
         except OSError:
             self.blocked = True
 
+    def touch_step(self, step):
+        if not self.enabled:
+            return
+        op = getattr(step, "op", "")
+        if op in ("extract_zip", "copy_upload"):
+            self.blocked = True  # muitos arquivos: não dá para desfazer com segurança
+            return
+        if op == "move_file":
+            self._record_path(getattr(step, "source", ""))
+            self._record_path(getattr(step, "destination", ""))
+            return
+        if op not in _SINGLE_PATH_OPS:
+            return
+        self._record_path(getattr(step, "path", ""))
+
     def restore(self):
         """Desfaz as mudanças desta tarefa. True só se algum arquivo realmente voltou ao estado anterior."""
         if not self.enabled or self.blocked or not self._orig:
@@ -109,6 +116,7 @@ class FileSnapshot:
                         target.unlink()
                         changed += 1
                 elif not target.is_file() or target.read_bytes() != original:
+                    target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(original)
                     changed += 1
             except OSError:
@@ -123,7 +131,7 @@ def extra_syntax_problems(workspace, steps):
     problems = []
     seen = set()
     for step in steps or []:
-        rel = str(getattr(step, "path", "") or "").replace("\\", "/")
+        rel = str(getattr(step, "path", "") or getattr(step, "destination", "") or "").replace("\\", "/")
         if not rel or rel in seen:
             continue
         seen.add(rel)
@@ -187,3 +195,45 @@ def run_pytest(workspace, rel, timeout=120):
         return [f"pytest {rel}: o pytest não está instalado neste ambiente (pip install pytest)."]
     tail = "\n".join(output.splitlines()[-25:])
     return [f"pytest {rel} falhou:\n{tail[:1500]}"]
+
+
+def _find_tsconfig_dir(root: Path, rel: str) -> Path | None:
+    target = (root / rel).resolve()
+    start = target if target.is_dir() else target.parent
+    cur = start
+    while True:
+        if (cur / "tsconfig.json").is_file():
+            return cur
+        if cur == root or cur.parent == cur:
+            break
+        cur = cur.parent
+    return root if (root / "tsconfig.json").is_file() else None
+
+
+def run_ts_check(workspace: str, rel: str, timeout: int = 90) -> list[str]:
+    """Roda `npx tsc --noEmit` no projeto TypeScript mais próximo de `rel`. Devolve lista de falhas."""
+    root = Path(workspace).resolve()
+    ts_dir = _find_tsconfig_dir(root, rel)
+    if ts_dir is None:
+        return [f"ts_check {rel}: nenhum tsconfig.json encontrado a partir deste caminho."]
+    npx = shutil.which("npx")
+    if not npx:
+        return [f"ts_check {rel}: 'npx' não encontrado no PATH."]
+    try:
+        done = subprocess.run(
+            [npx, "tsc", "--noEmit"],
+            cwd=str(ts_dir),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return [f"ts_check {rel}: passou de {timeout}s e foi interrompido."]
+    except OSError as exc:
+        return [f"ts_check {rel}: não foi possível executar ({exc})."]
+    if done.returncode == 0:
+        return []
+    output = ((done.stdout or "") + "\n" + (done.stderr or "")).strip()
+    tail = "\n".join(output.splitlines()[:25])
+    return [f"ts_check {rel} falhou:\n{tail[:1500]}"]

@@ -5,6 +5,10 @@ Você possui acesso a:
 
 - `list_directory_files`: lista os arquivos de código de um diretório.
 - `read_file_content`: lê o conteúdo de um arquivo específico.
+- `run_safe_command`: executa comandos seguros de diagnóstico somente-leitura no workspace (`git status/diff/log/branch`, `docker ps`, `docker compose ps`, `npx tsc --noEmit`, `alembic current/heads`, `python manage.py check/showmigrations`, `ruff check`).
+- `local_http_check`: testa endpoints HTTP (`GET`, `POST`, `HEAD`, `OPTIONS`) exclusivamente em `localhost` / `127.0.0.1`.
+- `test_local_routes`: testa em lote as rotas GET de uma API local (descobrindo automaticamente via `/openapi.json` ou usando lista informada) e mostra quais passaram e quais falharam.
+- `docker_monitor_control`: inicia/para o monitor em background do Docker Compose (`start`, `stop`, `status`, `build`) para medir tempo de build e avisar erros automaticamente no chat.
 
 ### FLUXO
 
@@ -24,6 +28,7 @@ Quando a pergunta depender do código do projeto:
 - Não peça ao usuário informações que já estejam presentes na conversa.
 - Não leia arquivos desnecessários.
 - Baseie conclusões sobre o projeto no conteúdo realmente obtido pelas ferramentas.
+- Quando o usuário pedir para verificar Docker, git, TypeScript, migrações ou testar uma rota em `localhost`/`127.0.0.1`, chame `run_safe_command` ou `local_http_check` diretamente — nunca diga que não tem acesso ao terminal ou ao localhost sem tentar a ferramenta antes.
 - Se nenhuma ferramenta for necessária, responda normalmente.
 """
 
