@@ -53,8 +53,8 @@ async def pack(payload: PackRequest):
 
 
 @handoff_router.get("/packs/{name}")
-async def download_pack(name: str):
-    """Baixa um pacote .md ou .txt gerado pelo chat (só da pasta de pacotes, sem caminhos)."""
+async def download_pack(name: str, inline: bool = False):
+    """Baixa ou exibe inline um arquivo .md, .txt ou .pdf gerado pelo chat (só da pasta de pacotes)."""
     from fastapi.responses import FileResponse
 
     from backend.graph.ops_core import pack_file_path
@@ -62,31 +62,117 @@ async def download_pack(name: str):
     path = pack_file_path(name)
     if path is None:
         raise HTTPException(status_code=404, detail="Arquivo não encontrado.")
-    media = "text/plain; charset=utf-8" if path.suffix.lower() == ".txt" else "text/markdown; charset=utf-8"
+    suffix = path.suffix.lower()
+    media = (
+        "application/pdf" if suffix == ".pdf"
+        else "text/plain; charset=utf-8" if suffix == ".txt"
+        else "text/markdown; charset=utf-8"
+    )
+    if inline:
+        return FileResponse(path, media_type=media, headers={"Content-Disposition": f'inline; filename="{path.name}"'})
     return FileResponse(path, media_type=media, filename=path.name)
 
 
 @handoff_router.get("/packs/{name}/content")
 async def read_pack_content(name: str):
-    """Devolve o conteúdo completo de um artefato .txt ou .md para exibição em modal."""
+    """Devolve o conteúdo completo (.txt/.md) ou metadados com inline_url (.pdf) para exibição em modal."""
     from backend.graph.ops_core import pack_file_path
 
     path = pack_file_path(name)
     if path is None:
         raise HTTPException(status_code=404, detail="Arquivo não encontrado ou expirado.")
+    kind = path.suffix.lstrip(".").lower() or "txt"
+    if kind == "pdf":
+        return {
+            "filename": path.name,
+            "kind": "pdf",
+            "content": "",
+            "size_bytes": path.stat().st_size,
+            "lines": 0,
+            "inline_url": f"/api/handoff/packs/{path.name}?inline=1",
+        }
     content = path.read_text(encoding="utf-8", errors="replace")
     return {
         "filename": path.name,
-        "kind": path.suffix.lstrip(".").lower() or "txt",
+        "kind": kind,
         "content": content,
         "size_bytes": path.stat().st_size,
         "lines": len(content.splitlines()),
     }
 
 
+class SaveArtifactRequest(BaseModel):
+    content: str = Field(min_length=1)
+    title: str = Field(default="", max_length=160)
+    format: str = Field(default="md", pattern="^(md|pdf|txt)$")
+
+
+def _fallback_markdown_pdf(markdown: str, title: str) -> bytes:
+    from backend.graph.audit_pdf import _SimplePDF
+
+    pdf = _SimplePDF(title or "Documento")
+    if title.strip():
+        pdf.heading(title.strip(), size=15.0)
+        pdf.rule()
+    for line in markdown.replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            pdf.spacer(5.0)
+        elif stripped.startswith("#"):
+            pdf.heading(stripped.lstrip("# ").strip(), size=12.0)
+        else:
+            pdf.text(line, size=9.5)
+    return pdf.to_bytes()
+
+
+@handoff_router.post("/artifacts/{thread_id}")
+async def create_thread_artifact(thread_id: str, payload: SaveArtifactRequest):
+    """Salva o conteúdo de uma resposta/nota como artefato .md, .txt ou .pdf vinculado à conversa."""
+    import re
+    import time
+
+    from backend.graph.ops_core import pack_dir
+    from .artifacts import record_artifact
+
+    fmt = payload.format.lower()
+    raw_title = payload.title.strip()
+    if not raw_title:
+        first_heading = re.search(r"^#{1,4}\s+(.+)$", payload.content, re.MULTILINE)
+        raw_title = (first_heading.group(1).strip() if first_heading else "nota")[:120]
+    slug = re.sub(r"[^a-z0-9]+", "-", raw_title.lower())[:36].strip("-") or "nota"
+    base = pack_dir()
+    out_path = base / f"nota_{time.strftime('%Y%m%d_%H%M%S')}_{slug}.{fmt}"
+    tmp = out_path.with_name(out_path.name + ".part")
+    try:
+        if fmt == "pdf":
+            try:
+                from backend.graph.documents import PdfDependencyError, markdown_to_pdf_bytes
+
+                data = markdown_to_pdf_bytes(payload.content, title=raw_title)
+            except (ImportError, PdfDependencyError):
+                data = _fallback_markdown_pdf(payload.content, raw_title)
+            tmp.write_bytes(data)
+        else:
+            tmp.write_text(payload.content, encoding="utf-8")
+        tmp.replace(out_path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+    size = out_path.stat().st_size
+    await record_artifact(thread_id, out_path.name, fmt, raw_title, size)
+    return {
+        "filename": out_path.name,
+        "kind": fmt,
+        "title": raw_title,
+        "size_bytes": size,
+        "url": f"/api/handoff/packs/{out_path.name}",
+    }
+
+
 @handoff_router.get("/artifacts/{thread_id}")
 async def get_thread_artifacts(thread_id: str):
-    """Lista os artefatos (.txt e .md) gerados na conversa."""
+    """Lista os artefatos (.txt, .md e .pdf) gerados na conversa."""
     from .artifacts import list_artifacts
 
     return {"artifacts": await list_artifacts(thread_id)}
