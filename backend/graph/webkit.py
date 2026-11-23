@@ -26,6 +26,15 @@ from html.parser import HTMLParser
 
 WEB_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "1") == "1"
 USER_AGENT = "Mozilla/5.0 (compatible; AssistenteLocal/1.0)"
+
+
+def web_enabled() -> bool:
+    try:
+        from backend.api.settings_store import get_setting
+
+        return bool(get_setting("web_search_enabled", os.getenv("WEB_SEARCH_ENABLED", "1") == "1"))
+    except Exception:
+        return os.getenv("WEB_SEARCH_ENABLED", "1") == "1"
 _CACHE: dict[str, tuple[float, object]] = {}
 
 
@@ -85,9 +94,9 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def http_get(url: str, timeout: int = 15, max_bytes: int = 1_500_000, headers: dict | None = None,
-             data: bytes | None = None, validate: bool = True) -> tuple[str, str, str]:
-    """Devolve (url final, content-type, texto). Levanta OSError/URLError em falha."""
+def http_get_bytes(url: str, timeout: int = 15, max_bytes: int = 1_500_000, headers: dict | None = None,
+                   data: bytes | None = None, validate: bool = True) -> tuple[str, str, bytes, str | None]:
+    """Devolve (url final, content-type, bytes descompactados, charset). Levanta OSError/URLError em falha."""
     if validate:
         ok, why = is_public_url(url)
         if not ok:
@@ -114,14 +123,24 @@ def http_get(url: str, timeout: int = 15, max_bytes: int = 1_500_000, headers: d
             raw = zlib.decompress(raw)
         except Exception:
             pass
+    return final_url, content_type, raw, charset
+
+
+def _decode_bytes(raw: bytes, charset: str | None = None) -> str:
     if not charset:
         match = re.search(rb'charset=["\']?([\w-]+)', raw[:4000])
         charset = match.group(1).decode("ascii", "ignore") if match else "utf-8"
     try:
-        text = raw.decode(charset, "replace")
+        return raw.decode(charset, "replace")
     except LookupError:
-        text = raw.decode("utf-8", "replace")
-    return final_url, content_type, text
+        return raw.decode("utf-8", "replace")
+
+
+def http_get(url: str, timeout: int = 15, max_bytes: int = 1_500_000, headers: dict | None = None,
+             data: bytes | None = None, validate: bool = True) -> tuple[str, str, str]:
+    """Devolve (url final, content-type, texto). Levanta OSError/URLError em falha."""
+    final_url, content_type, raw, charset = http_get_bytes(url, timeout=timeout, max_bytes=max_bytes, headers=headers, data=data, validate=validate)
+    return final_url, content_type, _decode_bytes(raw, charset)
 
 
 # ----------------------------------------------------------------------
@@ -190,19 +209,239 @@ def html_to_text(html: str, max_chars: int = 6000) -> tuple[str, str]:
     return re.sub(r"\s+", " ", parser.title).strip(), body
 
 
+_YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def extract_youtube_video_id(url: str) -> str | None:
+    """Extrai o ID de 11 caracteres de links do YouTube (watch, youtu.be, shorts, live, embed)."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host == "youtu.be":
+        cand = parts.path.strip("/").split("/")[0]
+        return cand if _YT_ID_RE.match(cand) else None
+    if host in ("youtube.com", "m.youtube.com", "music.youtube.com"):
+        if parts.path == "/watch":
+            cand = (urllib.parse.parse_qs(parts.query).get("v") or [""])[0]
+            return cand if _YT_ID_RE.match(cand) else None
+        segs = [s for s in parts.path.split("/") if s]
+        if len(segs) >= 2 and segs[0] in ("shorts", "embed", "live", "v"):
+            cand = segs[1]
+            return cand if _YT_ID_RE.match(cand) else None
+    return None
+
+
+def _format_ts(seconds: float) -> str:
+    sec = max(0, int(seconds))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def _extract_json_object(text: str, marker: str) -> dict | None:
+    import json
+
+    idx = text.find(marker)
+    if idx == -1:
+        return None
+    start = text.find("{", idx + len(marker))
+    if start == -1:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text, start)
+        return obj if isinstance(obj, dict) else None
+    except ValueError:
+        return None
+
+
+def _parse_caption_xml(raw_xml: str) -> list[tuple[float, str]]:
+    from xml.etree import ElementTree as ET
+
+    entries: list[tuple[float, str]] = []
+    try:
+        root = ET.fromstring(raw_xml)
+    except ET.ParseError:
+        return entries
+    for node in root.iter():
+        tag = node.tag.split("}")[-1]
+        if tag == "text":
+            start = float(node.attrib.get("start") or 0.0)
+            txt = re.sub(r"\s+", " ", html_lib.unescape("".join(node.itertext()))).strip()
+            if txt:
+                entries.append((start, txt))
+        elif tag == "p":
+            start = float(node.attrib.get("t") or 0.0) / 1000.0
+            txt = re.sub(r"\s+", " ", html_lib.unescape("".join(node.itertext()))).strip()
+            if txt:
+                entries.append((start, txt))
+    return entries
+
+
+def _format_transcript_entries(entries: list[tuple[float, str]], max_chars: int) -> str:
+    blocks: list[str] = []
+    cur_ts = ""
+    cur_parts: list[str] = []
+    cur_len = 0
+    for start, text in entries:
+        if not cur_ts:
+            cur_ts = _format_ts(start)
+        cur_parts.append(text)
+        cur_len += len(text) + 1
+        if cur_len >= 280:
+            blocks.append(f"[{cur_ts}] " + " ".join(cur_parts))
+            cur_ts, cur_parts, cur_len = "", [], 0
+    if cur_parts:
+        blocks.append(f"[{cur_ts}] " + " ".join(cur_parts))
+    body = "\n\n".join(blocks)
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip() + "\n[... transcrição cortada ...]"
+    return body
+
+
+def _pick_caption_track(tracks: list[dict], preferred: tuple[str, ...] = ("pt-br", "pt", "en")) -> dict | None:
+    if not tracks:
+        return None
+    for lang in preferred:
+        manual = [t for t in tracks if str(t.get("languageCode") or "").lower().startswith(lang) and t.get("kind") != "asr"]
+        if manual:
+            return manual[0]
+        auto = [t for t in tracks if str(t.get("languageCode") or "").lower().startswith(lang)]
+        if auto:
+            return auto[0]
+    return tracks[0]
+
+
+def fetch_youtube_transcript(url: str, max_chars: int = 12000) -> str:
+    """Extrai título, canal e transcrição (legendas) de um vídeo do YouTube."""
+    max_chars = max(500, min(int(max_chars or 12000), 25000))
+    vid = extract_youtube_video_id(url)
+    if not vid:
+        return f"ERRO: '{url}' não é um link de vídeo do YouTube válido."
+    key = f"yt:{vid}:{max_chars}"
+    cached = _cache_get(key)
+    if cached:
+        return cached  # type: ignore[return-value]
+
+    watch_url = f"https://www.youtube.com/watch?v={vid}"
+    timeout = _env_int("WEB_TIMEOUT", 15)
+    title = ""
+    author = ""
+    entries: list[tuple[float, str]] = []
+    lang_used = ""
+
+    try:
+        _, _, raw_html, charset = http_get_bytes(
+            f"{watch_url}&hl=pt",
+            timeout=timeout,
+            max_bytes=2_500_000,
+            headers={"Cookie": "CONSENT=YES+1"},
+            validate=False,
+        )
+        page = _decode_bytes(raw_html, charset)
+        player = _extract_json_object(page, "ytInitialPlayerResponse =") or _extract_json_object(page, '"ytInitialPlayerResponse":')
+        if player:
+            details = player.get("videoDetails") or {}
+            title = str(details.get("title") or "").strip()
+            author = str(details.get("author") or "").strip()
+            tracks = ((player.get("captions") or {}).get("playerCaptionsTracklistRenderer") or {}).get("captionTracks") or []
+            chosen = _pick_caption_track(tracks)
+            if chosen and chosen.get("baseUrl"):
+                lang_used = str(chosen.get("languageCode") or "")
+                _, _, cap_bytes, cap_charset = http_get_bytes(str(chosen["baseUrl"]), timeout=timeout, max_bytes=2_000_000, validate=False)
+                entries = _parse_caption_xml(_decode_bytes(cap_bytes, cap_charset))
+    except Exception as exc:
+        if not entries:
+            err_note = str(exc)
+        else:
+            err_note = ""
+    else:
+        err_note = ""
+
+    if not entries:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import-not-found]
+
+            raw_items = YouTubeTranscriptApi.get_transcript(vid, languages=["pt", "pt-BR", "en"])
+            entries = [(float(i.get("start") or 0.0), str(i.get("text") or "").strip()) for i in raw_items if str(i.get("text") or "").strip()]
+        except Exception:
+            pass
+
+    if not entries:
+        extra = f" ({err_note})" if err_note else ""
+        return f"ERRO: não consegui obter legendas/transcrição para {watch_url}{extra}. O vídeo pode não ter legendas disponíveis."
+
+    header = [f"Título: {title or '(sem título)'}"]
+    if author:
+        header.append(f"Canal: {author}")
+    if lang_used:
+        header.append(f"Idioma da legenda: {lang_used}")
+    header.append(f"URL: {watch_url}")
+    result = "\n".join(header) + "\n\n" + _format_transcript_entries(entries, max_chars)
+    _cache_put(key, result)
+    return result
+
+
+def _extract_pdf_bytes(raw: bytes, max_chars: int = 6000, max_pages: int = 80) -> str:
+    from io import BytesIO
+
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return "ERRO: leitura de PDF online indisponível (instale 'pypdf')."
+    try:
+        reader = PdfReader(BytesIO(raw))
+    except Exception as exc:
+        return f"ERRO ao ler PDF online: {exc}"
+    if reader.is_encrypted:
+        return "ERRO: o PDF online está protegido por senha."
+    parts: list[str] = []
+    total_pages = len(reader.pages)
+    used = 0
+    for idx, page in enumerate(reader.pages[:max_pages], start=1):
+        txt = (page.extract_text() or "").strip()
+        if not txt:
+            continue
+        block = f"[página {idx}]\n{txt}"
+        parts.append(block)
+        used += len(block) + 2
+        if used >= max_chars + 500:
+            break
+    if not parts:
+        return "ERRO: o PDF online não possui camada de texto extraível (provavelmente é escaneado)."
+    body = "\n\n".join(parts)
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip() + f"\n[... PDF com {total_pages} página(s); texto cortado ...]"
+    return body
+
+
 def fetch_page(url: str, max_chars: int = 6000) -> str:
     max_chars = max(500, min(int(max_chars or 6000), 20000))
+    if extract_youtube_video_id(url):
+        return fetch_youtube_transcript(url, max_chars=max_chars)
     key = f"page:{url}:{max_chars}"
     cached = _cache_get(key)
     if cached:
         return cached  # type: ignore[return-value]
     try:
-        final_url, content_type, text = http_get(url, timeout=_env_int("WEB_TIMEOUT", 15))
+        final_url, content_type, raw, charset = http_get_bytes(
+            url,
+            timeout=_env_int("WEB_TIMEOUT", 15),
+            max_bytes=_env_int("WEB_FETCH_MAX_BYTES", 8_000_000),
+        )
     except Exception as exc:
         return f"ERRO ao abrir {url}: {exc}"
     kind = content_type.lower()
-    if "pdf" in kind:
-        return f"ERRO: {final_url} é um PDF (não consigo ler PDF pela web ainda)."
+    if "pdf" in kind or raw.startswith(b"%PDF-"):
+        body = _extract_pdf_bytes(raw, max_chars=max_chars)
+        result = body if body.startswith("ERRO:") else f"Tipo: PDF online\nURL: {final_url}\n\n{body}"
+        if not result.startswith("ERRO:"):
+            _cache_put(key, result)
+        return result
+    text = _decode_bytes(raw, charset)
     if "html" in kind or text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
         title, body = html_to_text(text, max_chars)
         result = f"Título: {title or '(sem título)'}\nURL: {final_url}\n\n{body or '(página sem texto legível)'}"
