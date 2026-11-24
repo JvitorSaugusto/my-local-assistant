@@ -1225,3 +1225,25 @@ dialog.modal.memories-modal[open] { display: flex; flex-direction: column; }
 .qq-badge.cancelled, .qq-badge.pending { background: var(--surface-3); color: var(--muted); }
 .qq-time { font: 11px var(--mono); color: var(--muted); margin-left: auto; }
 .qq-card-err { font: 11.5px var(--mono); color: var(--danger); white-space: pre-wrap; }
+
+/* ── Feed dinâmico de ações ao vivo (Chat + Celery) ── */
+.live-actions-list {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px;
+}
+.live-act {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 5px 8px; border-radius: 7px; font-size: 12.5px; line-height: 1.4;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+}
+.live-act.active {
+  border-color: var(--accent-ring); background: var(--accent-soft); font-weight: 500;
+}
+.live-act.done { opacity: 0.84; }
+.live-act-detail { font: 11.5px var(--mono); color: var(--muted); }
+.live-tech { margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+.live-tech summary { cursor: pointer; user-select: none; }
+.live-tech-pre {
+  margin: 6px 0 0; padding: 8px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-secondary);
+  font: 11px/1.4 var(--mono); max-height: 220px; overflow: auto; white-space: pre-wrap;
+}

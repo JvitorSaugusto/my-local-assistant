@@ -4491,3 +4491,85 @@ loadTasks = async function (threadId = null) {
   await _origLoadTasksCp(threadId);
   refreshBatchCheckpoint();
 };
+
+// ============================================================
+// FEED DINÂMICO DE AÇÕES AO VIVO (CHAT + TASKS NO CELERY)
+// ============================================================
+
+function renderLiveActionsHtml(data) {
+  const actions = Array.isArray(data?.actions) ? data.actions : [];
+  const segs = Array.isArray(data?.segments) ? data.segments : [];
+  const rawDetails = liveThoughtsText(segs, 8000);
+  const itemsHtml = actions.length
+    ? `<ul class="live-actions-list">${actions.map((act) => {
+        const cls = act.done ? "done" : "active";
+        const detail = act.detail ? `<small class="live-act-detail">${escapeHtml(act.detail)}</small>` : "";
+        return `<li class="live-act ${cls}"><span>${escapeHtml(act.text)}</span>${detail}</li>`;
+      }).join("")}</ul>`
+    : "";
+  const techHtml = rawDetails
+    ? `<details class="live-tech"><summary>Ver detalhes técnicos</summary><pre class="live-tech-pre">${escapeHtml(rawDetails)}</pre></details>`
+    : "";
+  return itemsHtml + techHtml;
+}
+
+startLiveThoughts = function (chat, typing) {
+  const body = typing && typing.querySelector(".msg-body");
+  const row = typing && typing.querySelector(".typing-row");
+  if (!body || !row) return { stop() {} };
+  const box = document.createElement("details");
+  box.className = "msg-thoughts live-thoughts";
+  box.open = true;
+  box.hidden = true;
+  box.innerHTML = `<summary>${ICON.brain}<span class="live-title">Iniciando…</span></summary><div class="msg-thoughts-body live-body"></div>`;
+  body.insertBefore(box, row);
+  const out = box.querySelector(".live-body");
+  const title = box.querySelector(".live-title");
+  let seq = -1;
+  let stopped = false;
+  let timer = null;
+
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const data = await api(API.live(chat.thread_id) + "?after=" + seq);
+      if (!stopped && data && data.changed !== false) {
+        seq = data.seq;
+        const hasContent = (data.actions && data.actions.length) || (data.segments && data.segments.length);
+        if (hasContent) {
+          const prevTechOpen = Boolean(out.querySelector(".live-tech")?.open);
+          box.hidden = false;
+          title.textContent = data.headline || "Processando…";
+          out.innerHTML = renderLiveActionsHtml(data);
+          if (prevTechOpen) {
+            const tech = out.querySelector(".live-tech");
+            if (tech) tech.open = true;
+          }
+          scrollToBottom();
+        }
+      }
+    } catch {}
+    if (!stopped) timer = setTimeout(tick, 900);
+  };
+  timer = setTimeout(tick, 350);
+  return { stop() { stopped = true; clearTimeout(timer); } };
+};
+
+let _taskLiveHandle = null;
+const _origSyncTaskTypingLive = syncTaskTyping;
+syncTaskTyping = function () {
+  _origSyncTaskTypingLive();
+  const existing = el.messages.querySelector('[data-typing="1"][data-kind="tasks"]');
+  const chat = activeChatOrNull();
+  if (!existing || !chat?.thread_id) {
+    if (_taskLiveHandle) {
+      _taskLiveHandle.stop();
+      _taskLiveHandle = null;
+    }
+    return;
+  }
+  if (!existing.querySelector(".live-thoughts")) {
+    if (_taskLiveHandle) _taskLiveHandle.stop();
+    _taskLiveHandle = startLiveThoughts(chat, existing);
+  }
+};
