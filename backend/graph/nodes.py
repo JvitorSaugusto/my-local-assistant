@@ -803,17 +803,23 @@ def _rounds_since_last_write(task_messages) -> int:
 
 
 def _duplicate_read_calls(task_messages) -> int:
-    """Quantas chamadas de LEITURA repetem (mesma tool + mesmos args) uma chamada anterior."""
-    seen, dups = set(), 0
+    """Quantas chamadas de LEITURA repetem (mesma tool + mesmos args) ou insistem em search_codebase sem editar."""
+    seen, dups, rag_calls = set(), 0, 0
     for m in task_messages:
         if getattr(m, "type", "") != "ai":
             continue
         if _has_write_call([m]):
             seen.clear()  # depois de uma edição, reler/reexecutar o mesmo teste é legítimo
+            rag_calls = 0
         for call in getattr(m, "tool_calls", None) or []:
-            if call.get("name") not in _READ_TOOL_NAMES:
+            name = call.get("name")
+            if name not in _READ_TOOL_NAMES:
                 continue
-            key = (call["name"], repr(sorted((call.get("args") or {}).items())))
+            if name == "search_codebase":
+                rag_calls += 1
+                if rag_calls >= 3:
+                    dups += 1
+            key = (name, repr(sorted((call.get("args") or {}).items())))
             if key in seen:
                 dups += 1
             seen.add(key)

@@ -9,6 +9,7 @@ Você possui acesso a:
 - `local_http_check`: testa endpoints HTTP (`GET`, `POST`, `HEAD`, `OPTIONS`) exclusivamente em `localhost` / `127.0.0.1`.
 - `test_local_routes`: testa em lote as rotas GET de uma API local (descobrindo automaticamente via `/openapi.json` ou usando lista informada) e mostra quais passaram e quais falharam.
 - `docker_monitor_control`: inicia/para o monitor em background do Docker Compose (`start`, `stop`, `status`, `build`) para medir tempo de build e avisar erros automaticamente no chat.
+- `extract_code_snippets`: busca múltiplos termos, rotas, funções ou classes no projeto (ou em uma subpasta) e extrai os escopos COMPLETOS (função, método com nome da classe/View, ou classe inteira se `include_full_class=True`), sem cortar código e gerando `.txt` clicável automaticamente quando for grande ou solicitado.
 
 ### FLUXO
 
@@ -29,6 +30,7 @@ Quando a pergunta depender do código do projeto:
 - Não leia arquivos desnecessários.
 - Baseie conclusões sobre o projeto no conteúdo realmente obtido pelas ferramentas.
 - Quando o usuário pedir para verificar Docker, git, TypeScript, migrações ou testar uma rota em `localhost`/`127.0.0.1`, chame `run_safe_command` ou `local_http_check` diretamente — nunca diga que não tem acesso ao terminal ou ao localhost sem tentar a ferramenta antes.
+- Quando o usuário pedir para localizar trechos que citam termos/rotas/funções, colar uma lista de pontos para inspecionar (ex.: 'localize todos...') ou pedir uma classe/View inteira em texto ou `.txt`, chame `extract_code_snippets` com todos os termos relevantes e devolva o código completo (ou o link `.txt` retornado) sem cortar.
 - Se nenhuma ferramenta for necessária, responda normalmente.
 """
 
@@ -1729,7 +1731,7 @@ mostrar tudo passando, responda 'SEM_ALTERACOES:' com o motivo. `search_in_file`
 
 ## FERRAMENTAS ADICIONAIS DE ESCRITA
 
-- `replace_in_file(file_path, old_text, new_text)`: troca um trecho de texto
+- `replace_in_file(file_path, old_text, new_text)` (**PREFERENCIAL** para a maioria das edições — evita erros de `first_line_text` multilinha no `edit_existing_file`): troca um trecho de texto
   EXATO por outro, SEM números de linha. É a opção mais simples para uma
   edição pontual: copie `old_text` literalmente da leitura (sem o prefixo
   "N: "), com a mesma indentação, e garanta que ele seja ÚNICO no arquivo
@@ -1848,7 +1850,8 @@ indefinidamente.
 O sistema pode anexar a este prompt um "DOSSIÊ DE CONTEXTO" com o git diff, os arquivos da tarefa (inteiros ou parciais) e as definições de constantes/classes referenciadas. Ele é a fonte de verdade.
 
 - Leia o dossiê ANTES de chamar ferramentas de leitura; use ferramentas só para o que estiver marcado como PARCIAL ou omitido.
-- Em repositório grande já indexado, use `search_codebase` (por assunto ou por nome) para localizar classes e funções; ele devolve arquivo, linhas, resumo e trecho. Confirme com `read_file_chunk` antes de editar, pois o índice pode estar desatualizado.
+- Em repositório grande já indexado, use `search_codebase` no máximo 1 vez se não souber o caminho. Se não retornar o arquivo esperado (ex.: arquivo recém-criado fora do índice RAG), NÃO repita `search_codebase`: use `list_directory_files` + `read_file_content` imediatamente. Confirme com `read_file_chunk` antes de editar.
+- **PROIBIDO AFROUXAR TESTES (ANTI-TRAPAÇA):** se um teste falhar por causa de um bug real no código testado, NUNCA enfraqueça o `assert` para forçar o teste a passar. Corrija a causa raiz no arquivo de origem ou reporte o bug claramente.
 - O parâmetro `source` controla quais fontes são consultadas:
   - `source=""`: consulta a fonte indexada correspondente ao workspace ativo e todas as fontes vinculadas a esse projeto. Esse é o comportamento padrão quando o parâmetro é omitido ou enviado vazio.
   - `source="all"`: consulta todas as fontes indexadas disponíveis, incluindo workspaces e arquivos ZIP.
