@@ -13,6 +13,8 @@ from celery.signals import worker_ready
 from sqlalchemy import update
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
+from backend.api.live_thoughts import run_graph_live
+from backend.api.live_thoughts import run_graph_live
 from backend.graph import build_graph, State
 
 
@@ -69,7 +71,7 @@ async def _run_langgraph_async(thread_id: str, user_input: str, workspace_path: 
             state_input["workspace_path"] = workspace_path
         inputs = cast(State, state_input)
         
-        await app_graph.ainvoke(inputs, config=config)
+        await run_graph_live(app_graph, inputs, config, thread_id, persist=True)
 
 @celery_app.task(bind=True)
 def run_langgraph_task(self, thread_id: str, user_input: str, workspace_path: str | None = None):
@@ -114,7 +116,7 @@ async def _run_generate_async(thread_id: str, task: GenerateTaskSchema):
             "workspace_path": task.repo_path,
         }
 
-        await app_graph.ainvoke(inputs, config=config)
+        await run_graph_live(app_graph, inputs, config, thread_id, persist=True)
 
 async def _claim_task(task_id: int) -> bool:
     """queued -> running, de forma atômica. False se a tarefa já não está 'queued'
