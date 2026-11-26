@@ -23,6 +23,7 @@
     download: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
     activity: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
     copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    edit: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
   };
 
   function icon(name) {
@@ -53,6 +54,7 @@
     selectedDetail: null,
     events: [],
     showCreate: false,
+    showEdit: false,
     pollTimer: null,
     reportText: null,
     reportFilename: null,
@@ -253,6 +255,7 @@
     document.getElementById("auto-refresh-btn").onclick = () => refreshAll(false, true);
     document.getElementById("auto-new-btn").onclick = () => {
       ui.showCreate = true;
+      ui.showEdit = false;
       ui.reportText = null;
       ui.diffData = null;
       ui.lastRenderSig = "";
@@ -341,8 +344,12 @@
       if (!forceRender && isUserEditingForm()) {
         return;
       }
+      if (!forceRender && ui.showEdit) {
+        return;
+      }
       const sig = JSON.stringify({
         showCreate: ui.showCreate,
+        showEdit: ui.showEdit,
         id: ui.selectedDetail && ui.selectedDetail.id,
         updated: ui.selectedDetail && ui.selectedDetail.updated_at,
         running: ui.selectedDetail && ui.selectedDetail.is_running,
@@ -390,6 +397,7 @@
     el.querySelectorAll(".auto-card").forEach((card) => {
       card.onclick = () => {
         ui.showCreate = false;
+        ui.showEdit = false;
         ui.reportText = null;
         ui.diffData = null;
         ui.lastRenderSig = "";
@@ -458,6 +466,72 @@
           <div style="display:flex;gap:8px;">
             <button type="submit" class="auto-btn primary">${icon("shield")} Executar Pre-flight e Criar</button>
             <button type="button" class="auto-btn" id="auto-cancel-create">Cancelar</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  function renderEditForm(m) {
+    const datalistOpts = (ui.workspaces || []).map((w) => `<option value="${esc(w)}"></option>`).join("");
+    const hasPhases = Array.isArray(m.phases) && m.phases.length > 0;
+    const cfg = m.config || {};
+    return `
+      <div class="auto-box">
+        <h3 style="margin:0 0 12px 0;font-size:15px;display:flex;align-items:center;gap:8px;">${icon("edit")} Editar Missão</h3>
+        <form id="auto-edit-form">
+          <div class="auto-grid-2">
+            <div class="auto-field">
+              <label>Título da Missão</label>
+              <input name="title" required value="${esc(m.title)}" />
+            </div>
+            <div class="auto-field">
+              <label>Workspace (caminho absoluto do repositório)</label>
+              <input name="workspace_path" list="auto-ws-edit-list" required value="${esc(m.workspace_path)}" />
+              <datalist id="auto-ws-edit-list">${datalistOpts}</datalist>
+            </div>
+          </div>
+          <div class="auto-field">
+            <label>Objetivo Principal</label>
+            <textarea name="objective" rows="4" required>${esc(m.objective)}</textarea>
+          </div>
+          <div class="auto-grid-2">
+            <div class="auto-field">
+              <label>Regras de Negócio Imutáveis (1 por linha)</label>
+              <textarea name="business_rules" rows="3">${esc((m.business_rules || []).join("\n"))}</textarea>
+            </div>
+            <div class="auto-field">
+              <label>Convenções Obrigatórias (1 por linha)</label>
+              <textarea name="conventions" rows="3">${esc((m.conventions || []).join("\n"))}</textarea>
+            </div>
+          </div>
+          <div class="auto-grid-2">
+            <div class="auto-field">
+              <label>Modo de Execução</label>
+              <select name="mode">
+                <option value="edit" ${m.mode === "edit" ? "selected" : ""}>Edição escopada (branch auto/*)</option>
+                <option value="diagnostic_only" ${m.mode === "diagnostic_only" ? "selected" : ""}>Diagnóstico somente leitura</option>
+                <option value="greenfield_phased" ${m.mode === "greenfield_phased" ? "selected" : ""}>Projeto do zero por fases (Phase Gate)</option>
+              </select>
+            </div>
+            <div class="auto-field">
+              <label>Limites (Tasks / Tentativas / Ciclos Juiz)</label>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+                <input type="number" name="max_total_tasks" value="${Number(cfg.max_total_tasks || 25)}" min="1" max="200" title="Máx. tasks" />
+                <input type="number" name="max_retries_per_item" value="${Number(cfg.max_retries_per_item || 3)}" min="1" max="10" title="Máx. tentativas por item" />
+                <input type="number" name="max_review_cycles" value="${Number(cfg.max_review_cycles != null ? cfg.max_review_cycles : 2)}" min="0" max="5" title="Ciclos Juiz Final" />
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:10px 0 14px 0;font-size:12px;">
+            <label><input type="checkbox" name="auto_commit" ${cfg.auto_commit !== false ? "checked" : ""} /> Auto-commit por item concluído</label>
+            <label><input type="checkbox" name="require_phase_approval" ${cfg.require_phase_approval ? "checked" : ""} /> Pausar para aprovação entre fases</label>
+            ${hasPhases ? '<label><input type="checkbox" name="reset_plan" /> Resetar plano atual e replanejar do zero</label>' : ""}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="submit" class="auto-btn primary" data-edit-action="save">${icon("check")} Salvar alterações</button>
+            <button type="button" class="auto-btn success" id="auto-edit-save-run">${icon("play")} Salvar e Iniciar</button>
+            <button type="button" class="auto-btn" id="auto-cancel-edit">Cancelar</button>
           </div>
         </form>
       </div>
@@ -579,8 +653,10 @@
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             ${!m.is_running && ["planning", "executing", "auditing", "final_review"].includes(m.status) ? `<button class="auto-btn primary" id="auto-btn-start">${icon("play")} Iniciar</button>` : ""}
+            ${!m.is_running && ["failed", "cancelled", "done_with_blockers"].includes(m.status) ? `<button class="auto-btn primary" id="auto-btn-retry-mission">${icon("refresh")} Tentar novamente</button>` : ""}
             ${m.is_running || ["executing", "planning", "auditing", "final_review"].includes(m.status) ? `<button class="auto-btn warn" id="auto-btn-pause">${icon("pause")} Pausar</button>` : ""}
             ${m.status === "paused" ? `<button class="auto-btn success" id="auto-btn-resume">${icon("play")} Retomar</button>` : ""}
+            ${!m.is_running && m.status !== "done" ? `<button class="auto-btn" id="auto-btn-edit">${icon("edit")} Editar</button>` : ""}
             ${m.base_commit ? `<button class="auto-btn" id="auto-btn-diff">${icon("codeDiff")} Diff</button>` : ""}
             ${!m.config.auto_commit && m.branch_name && !m.is_running ? `<button class="auto-btn" id="auto-btn-commit">${icon("gitCommit")} Commitar</button>` : ""}
             ${m.has_report ? `<button class="auto-btn" id="auto-btn-report">${icon("fileText")} Relatório</button>` : ""}
@@ -672,6 +748,75 @@
     }
 
     const m = ui.selectedDetail;
+    if (ui.showEdit) {
+      el.innerHTML = renderEditForm(m);
+      const form = document.getElementById("auto-edit-form");
+      const submitEdit = async (andStart) => {
+        if (!form.reportValidity()) return;
+        const fd = new FormData(form);
+        const ws = String(fd.get("workspace_path") || "").trim();
+        try { localStorage.setItem("autonomous_last_workspace", ws); } catch {}
+        const lines = (name) =>
+          String(fd.get(name) || "")
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+        const cfg = m.config || {};
+        const payload = {
+          title: String(fd.get("title") || "").trim(),
+          workspace_path: ws,
+          objective: String(fd.get("objective") || "").trim(),
+          business_rules: lines("business_rules"),
+          conventions: lines("conventions"),
+          mode: String(fd.get("mode") || m.mode),
+          reset_plan: Boolean(fd.get("reset_plan")),
+          rerun_preflight: true,
+          config: {
+            ...cfg,
+            max_total_tasks: Number(fd.get("max_total_tasks") || 25),
+            max_retries_per_item: Number(fd.get("max_retries_per_item") || 3),
+            max_review_cycles: Number(fd.get("max_review_cycles") || 2),
+            auto_commit: Boolean(fd.get("auto_commit")),
+            require_phase_approval: Boolean(fd.get("require_phase_approval")),
+          },
+        };
+        try {
+          const updated = await api(`/missions/${m.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+          ui.showEdit = false;
+          ui.lastRenderSig = "";
+          if (andStart && updated.status !== "waiting_confirmation") {
+            if (["failed", "cancelled", "done_with_blockers"].includes(updated.status)) {
+              await api(`/missions/${m.id}/retry`, { method: "POST", body: JSON.stringify({ auto_start: true }) });
+            } else if (updated.status === "paused") {
+              await api(`/missions/${m.id}/resume`, { method: "POST", body: JSON.stringify({ auto_start: true }) });
+            } else {
+              await api(`/missions/${m.id}/start`, { method: "POST" });
+            }
+          }
+          await refreshAll(false, true);
+        } catch (err) {
+          alert("Falha ao atualizar missão: " + err.message);
+        }
+      };
+      if (form) {
+        form.onsubmit = (ev) => {
+          ev.preventDefault();
+          submitEdit(false);
+        };
+      }
+      const saveRunBtn = document.getElementById("auto-edit-save-run");
+      if (saveRunBtn) saveRunBtn.onclick = () => submitEdit(true);
+      const cancelEdit = document.getElementById("auto-cancel-edit");
+      if (cancelEdit) {
+        cancelEdit.onclick = () => {
+          ui.showEdit = false;
+          ui.lastRenderSig = "";
+          renderMain();
+        };
+      }
+      return;
+    }
+
     el.innerHTML = renderMissionDetail(m);
     el.scrollTop = prevMainScroll;
     const newEventsEl = document.getElementById("auto-events-box");
@@ -721,6 +866,25 @@
     });
     bind("auto-btn-start", async () => {
       try { await api(`/missions/${m.id}/start`, { method: "POST" }); await refreshAll(false, true); } catch (err) { alert(err.message); }
+    });
+    bind("auto-btn-retry-mission", async () => {
+      try {
+        await api(`/missions/${m.id}/retry`, {
+          method: "POST",
+          body: JSON.stringify({ reset_plan: false, auto_start: true }),
+        });
+        await refreshAll(false, true);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    bind("auto-btn-edit", () => {
+      ui.showEdit = true;
+      ui.showCreate = false;
+      ui.reportText = null;
+      ui.diffData = null;
+      ui.lastRenderSig = "";
+      renderMain();
     });
     bind("auto-btn-pause", async () => {
       try { await api(`/missions/${m.id}/pause`, { method: "POST" }); await refreshAll(false, true); } catch (err) { alert(err.message); }
