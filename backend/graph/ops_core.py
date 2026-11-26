@@ -36,6 +36,15 @@ _ASKS_CHOICE = re.compile(r"responda com|quais (?:grupos|arquivos)|me diga|escol
 _ZIP_WORD = re.compile(r"\b(zip\w*|compact(?:a|e|ar)\w*|empacot\w*)\b", re.I)
 _DELIVER_VERB = re.compile(r"\b(entreg\w+|devolv\w+|baix\w+|me\s+(?:mand|envi|retorn)\w+)\b", re.I)
 _FILES_NOUN = re.compile(r"\b(arquivos?|pastas?|diret[óo]rios?)\b", re.I)
+_SNIPPET_INTENT = re.compile(
+    r"\b(trechos?|localiz\w+|busc(?:ar|a|ando)|busque|procur\w+|inspecion\w+|confirm\w+|verifiq\w+"
+    r"|fun[çc][õo]es|m[ée]todos?|endpoints?|rotas?|routers?)\b",
+    re.I,
+)
+_SEARCH_OR_CONFIRM_INTENT = re.compile(
+    r"\b(trechos?|localiz\w+|busc(?:ar|a|ando)|busque|procur\w+|inspecion\w+|confirm\w+|verifiq\w+|explic\w+)\b",
+    re.I,
+)
 
 
 def _wants_zip(text):
@@ -45,10 +54,14 @@ def _wants_zip(text):
         return False
     if _COMMIT_VERB.search(text):
         return False
+    if _SEARCH_OR_CONFIRM_INTENT.search(text):
+        return False
     has_files = bool(_FILES_NOUN.search(text))
     has_deliver = bool(_DELIVER_VERB.search(text))
     if _ZIP_WORD.search(text):
         return has_files or has_deliver
+    if _SNIPPET_INTENT.search(text):
+        return False
     return has_files and has_deliver
 
 
@@ -80,9 +93,13 @@ def detect_ops_intent(text, messages):
         previous = msg
         break
     if previous is not None and getattr(previous, "type", "") == "ai" and getattr(previous, "name", None) == OPS_NAME:
-        # Antes só continuava no Ops se o fim da mensagem tivesse "?". A lista de grupos termina num aviso,
-        # sem "?", então o "todos" seguinte caía no CODE (GPT-OSS), que nunca commitou nada.
-        if _ops_awaits_answer(previous.content) or _SELECTION.match(text):
+        # Só continua no Ops se for uma resposta curta/direta à pergunta anterior — nunca sequestra
+        # um pedido novo multilinhas ou um pedido de localizar/extrair trechos de código.
+        stripped = text.strip()
+        is_short_reply = len(stripped) <= 160 and "\n" not in stripped
+        if not _SNIPPET_INTENT.search(stripped) and (
+            _SELECTION.match(stripped) or (_ops_awaits_answer(previous.content) and is_short_reply)
+        ):
             return text
     if re.match(r"\s*@\w+", text):
         return None
@@ -485,6 +502,8 @@ def _wants_txt(text):
     if (_QUESTION_START.match(text) and "?" in text) or re.search(r"#\d+|autocommit", text, re.I):
         return False
     if _COMMIT_VERB.search(text) or not _TXT_WORD.search(text):
+        return False
+    if _SNIPPET_INTENT.search(text):
         return False
     return bool(_FILES_NOUN.search(text) or _DELIVER_VERB.search(text) or _PACK_VERB.search(text))
 
