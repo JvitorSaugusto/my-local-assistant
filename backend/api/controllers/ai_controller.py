@@ -13,7 +13,6 @@ from backend.api.chat_rotation import chat_size, maybe_rotate_chat, release_acti
 from backend.api.history import build_clean_history
 from backend.api.live_thoughts import live_snapshot, run_graph_live
 from backend.api.quick_queue import list_workspace_files, quick_queue_manager
-from backend.api.quick_queue import list_workspace_files, quick_queue_manager
 from backend.graph.config import State
 from backend.graph.node_helpers import now_iso
 
