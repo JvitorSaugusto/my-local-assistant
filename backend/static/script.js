@@ -629,7 +629,7 @@ function renderChatList() {
     })
     .sort((a, b) => {
       if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
-      return (Date.parse(b.created_at) || Date.now()) - (Date.parse(a.created_at) || Date.now());
+      return (Date.parse(getChatActivityIso(b)) || Date.now()) - (Date.parse(getChatActivityIso(a)) || Date.now());
     });
 
   if (!chats.length && (query || folderFilter !== "all" || tagFilter)) {
@@ -642,7 +642,7 @@ function renderChatList() {
 
   let lastGroup = null;
   chats.forEach((chat) => {
-    const group = chat.pinned ? "📌 Fixadas" : chatGroupLabel(chat.created_at);
+    const group = chat.pinned ? "📌 Fixadas" : chatGroupLabel(getChatActivityIso(chat));
     if (group !== lastGroup) {
       const header = document.createElement("li");
       header.className = "chat-group";
@@ -2834,13 +2834,13 @@ state.artifacts = [];
 state.activeArtifact = null;
 
 function extractPackFilename(href) {
-  const match = String(href || "").match(/\/api\/handoff\/packs\/([\w.-]+\.(?:txt|md|pdf))(?:$|[?#])/i);
+  const match = String(href || "").match(/(?:\/api\/handoff|api\.handoff)\/packs\/([\w.-]+\.(?:txt|md|pdf))(?:$|[?#])/i);
   return match ? match[1] : null;
 }
 
 function enhanceArtifactLinks(container) {
   if (!container) return;
-  container.querySelectorAll('a[href*="/api/handoff/packs/"]').forEach((anchor) => {
+  container.querySelectorAll('a[href*="/api/handoff/packs/"], a[href*="api.handoff/packs/"]').forEach((anchor) => {
     const filename = extractPackFilename(anchor.getAttribute("href"));
     if (!filename) return;
     const kind = filename.split(".").pop().toUpperCase();
@@ -4572,4 +4572,61 @@ syncTaskTyping = function () {
     if (_taskLiveHandle) _taskLiveHandle.stop();
     _taskLiveHandle = startLiveThoughts(chat, existing);
   }
+};
+
+// ============================================================
+// SUBIR CONVERSA PARA O TOPO AO ENVIAR MENSAGEM
+// ============================================================
+
+function _loadChatActivityMap() {
+  try { return JSON.parse(localStorage.getItem("assistant_chat_last_activity") || "{}") || {}; }
+  catch { return {}; }
+}
+
+function getChatActivityIso(chat) {
+  if (!chat) return "";
+  const map = _loadChatActivityMap();
+  const candidates = [chat.last_activity_at, chat.updated_at, chat.last_message_at, map[String(chat.id)], chat.created_at];
+  let bestIso = chat.created_at || "";
+  let bestTs = Date.parse(bestIso) || 0;
+  for (const iso of candidates) {
+    const ts = Date.parse(iso);
+    if (!isNaN(ts) && ts > bestTs) {
+      bestTs = ts;
+      bestIso = iso;
+    }
+  }
+  return bestIso;
+}
+
+function touchChatActivity(chatId) {
+  if (chatId == null) return;
+  const nowIso = new Date().toISOString();
+  const map = _loadChatActivityMap();
+  map[String(chatId)] = nowIso;
+  try { localStorage.setItem("assistant_chat_last_activity", JSON.stringify(map)); } catch {}
+  const chat = (state.chats || []).find((c) => c.id === chatId);
+  if (chat) chat.last_activity_at = nowIso;
+  renderChatList();
+}
+
+const _origSendMessageBump = sendMessage;
+sendMessage = async function (text) {
+  if (String(text || "").trim() && state.activeId != null) {
+    touchChatActivity(state.activeId);
+  }
+  const result = await _origSendMessageBump(text);
+  if (state.activeId != null) {
+    touchChatActivity(state.activeId);
+  }
+  return result;
+};
+
+const _origSendBatchBump = sendBatch;
+sendBatch = async function () {
+  const result = await _origSendBatchBump();
+  if (state.activeId != null) {
+    touchChatActivity(state.activeId);
+  }
+  return result;
 };
