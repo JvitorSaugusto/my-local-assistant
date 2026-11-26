@@ -13,6 +13,8 @@ from backend.handoff.api import handoff_router
 from backend.api.controllers.memory_controller import memory_router
 from backend.api.controllers.monitor_controller import monitor_router
 from backend.api.docker_monitor import monitor_manager
+from backend.autonomous.api import autonomous_router
+from backend.autonomous.manager import autonomous_manager
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from contextlib import asynccontextmanager
@@ -45,8 +47,15 @@ async def lifespan(app: FastAPI):
         monitor_manager.bind_graph(app.state.compiled_graph)
 
         await rag_startup()  # prepara o schema do RAG; nunca derruba o app
+        try:
+            autonomous_manager.startup_reconcile()
+        except Exception as exc:
+            print(f"⚠️ [AUTONOMOUS] Falha ao reconciliar missões no startup: {exc}")
         
-        yield
+        try:
+            yield
+        finally:
+            await autonomous_manager.shutdown()
         
 app = FastAPI(lifespan=lifespan)
 
@@ -66,11 +75,12 @@ async def serve_index():
     index_path = STATIC_DIR / "index.html"
     html = index_path.read_text(encoding="utf-8")
 
-    # Injeta o script de alertas (notify.js) sem precisar mexer no index.html.
-    tag = '<script src="/static/notify.js"></script>'
-    if "notify.js" not in html:
-        pos = html.lower().rfind("</body>")
-        html = html[:pos] + tag + html[pos:] if pos != -1 else html + tag
+    # Injeta os scripts isolados (notify.js e autonomous.js) sem precisar mexer no index.html.
+    for script_name in ("notify.js", "autonomous.js"):
+        tag = f'<script src="/static/{script_name}"></script>'
+        if script_name not in html:
+            pos = html.lower().rfind("</body>")
+            html = html[:pos] + tag + html[pos:] if pos != -1 else html + tag
 
     return HTMLResponse(html)
 
@@ -86,3 +96,4 @@ app.include_router(rag_router, prefix="/api/rag", tags=["RAG"])
 app.include_router(handoff_router, prefix="/api/handoff", tags=["Handoff"])
 app.include_router(memory_router, prefix="/api/memories", tags=["Memories"])
 app.include_router(monitor_router, prefix="/api/monitor", tags=["Monitor"])
+app.include_router(autonomous_router, prefix="/api/autonomous", tags=["Autonomous"])
