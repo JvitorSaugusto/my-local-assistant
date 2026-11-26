@@ -43,6 +43,27 @@ class ActionStartPayload(BaseModel):
     auto_start: bool = True
 
 
+class UpdateMissionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=2, max_length=160)
+    objective: str | None = Field(default=None, min_length=5)
+    workspace_path: str | None = Field(default=None, min_length=1)
+    business_rules: list[str] | None = None
+    conventions: list[str] | None = None
+    mode: MissionMode | None = None
+    config: MissionConfig | None = None
+    rerun_preflight: bool = True
+    reset_plan: bool = False
+
+
+class RetryMissionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reset_plan: bool = False
+    auto_start: bool = True
+
+
 def _serialize_mission(mission: MissionRecord, manager: AutonomousManager) -> dict[str, Any]:
     progress = calculate_progress(mission)
     data = mission.model_dump(mode="json")
@@ -252,6 +273,57 @@ def create_autonomous_router(manager: AutonomousManager | None = None) -> APIRou
             "pending_files": pending_files,
             "commits": commits,
         }
+
+    @router.patch("/missions/{mission_id}")
+    async def update_mission(mission_id: str, payload: UpdateMissionPayload):
+        if mgr.is_running(mission_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Pause a missão antes de editá-la.",
+            )
+        try:
+            mission = mgr.engine.update_mission(
+                mission_id,
+                title=payload.title,
+                objective=payload.objective,
+                workspace_path=payload.workspace_path,
+                business_rules=payload.business_rules,
+                conventions=payload.conventions,
+                mode=payload.mode,
+                config=payload.config,
+                rerun_preflight=payload.rerun_preflight,
+                reset_plan=payload.reset_plan,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except InvalidTransitionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _serialize_mission(mission, mgr)
+
+    @router.post("/missions/{mission_id}/retry")
+    async def retry_mission(mission_id: str, payload: RetryMissionPayload | None = None):
+        if mgr.is_running(mission_id):
+            raise HTTPException(status_code=409, detail="Missão já está em execução.")
+        reset_plan = False if payload is None else payload.reset_plan
+        should_start = True if payload is None else payload.auto_start
+        try:
+            mission = mgr.engine.retry_mission(mission_id, reset_plan=reset_plan)
+            if should_start and mission.status in (
+                MissionStatus.PLANNING,
+                MissionStatus.EXECUTING,
+                MissionStatus.AUDITING,
+                MissionStatus.FINAL_REVIEW,
+            ):
+                mission = mgr.start_background(mission.id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (InvalidTransitionError, MissionConflictError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _serialize_mission(mission, mgr)
 
     @router.post("/missions/{mission_id}/items/{item_id}/retry")
     async def retry_item(mission_id: str, item_id: str, payload: ActionStartPayload | None = None):

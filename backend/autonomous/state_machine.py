@@ -134,9 +134,37 @@ VALID_TRANSITIONS: dict[MissionStatus, frozenset[MissionStatus]] = {
         }
     ),
     MissionStatus.DONE: frozenset(),
-    MissionStatus.DONE_WITH_BLOCKERS: frozenset(),
-    MissionStatus.FAILED: frozenset(),
-    MissionStatus.CANCELLED: frozenset(),
+    MissionStatus.DONE_WITH_BLOCKERS: frozenset(
+        {
+            MissionStatus.PREFLIGHT,
+            MissionStatus.WAITING_CONFIRMATION,
+            MissionStatus.PLANNING,
+            MissionStatus.EXECUTING,
+            MissionStatus.AUDITING,
+            MissionStatus.FINAL_REVIEW,
+            MissionStatus.PAUSED,
+        }
+    ),
+    MissionStatus.FAILED: frozenset(
+        {
+            MissionStatus.PREFLIGHT,
+            MissionStatus.WAITING_CONFIRMATION,
+            MissionStatus.PLANNING,
+            MissionStatus.EXECUTING,
+            MissionStatus.AUDITING,
+            MissionStatus.FINAL_REVIEW,
+            MissionStatus.PAUSED,
+        }
+    ),
+    MissionStatus.CANCELLED: frozenset(
+        {
+            MissionStatus.PREFLIGHT,
+            MissionStatus.WAITING_CONFIRMATION,
+            MissionStatus.PLANNING,
+            MissionStatus.EXECUTING,
+            MissionStatus.PAUSED,
+        }
+    ),
 }
 
 
@@ -167,6 +195,10 @@ def transition_mission(
     elif current == MissionStatus.PAUSED and target != MissionStatus.CANCELLED:
         mission.paused_from_status = None
 
+    if current in TERMINAL_STATUSES and target not in TERMINAL_STATUSES:
+        mission.finished_at = None
+        if error is None:
+            mission.last_error = None
     if target == MissionStatus.EXECUTING and mission.started_at is None:
         mission.started_at = now
     if target in TERMINAL_STATUSES:

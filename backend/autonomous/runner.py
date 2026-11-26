@@ -285,6 +285,217 @@ class AutonomousEngine:
             self.store.append_event(mission.id, "phase_approved", f"Phase gate aprovado -> '{target.value}'.")
         return mission
 
+    def update_mission(
+        self,
+        mission_id: str,
+        *,
+        title: str | None = None,
+        objective: str | None = None,
+        workspace_path: str | None = None,
+        business_rules: list[str] | None = None,
+        conventions: list[str] | None = None,
+        mode: MissionMode | None = None,
+        config: MissionConfig | None = None,
+        rerun_preflight: bool = True,
+        reset_plan: bool = False,
+    ) -> MissionRecord:
+        """Edita os parâmetros de uma missão parada/falha/pausada preservando histórico ou resetando o plano."""
+        mission = self._require(mission_id)
+        if mission.status == MissionStatus.DONE:
+            raise ValueError("Missões já concluídas não podem ser editadas. Crie uma nova missão.")
+
+        changed_fields: list[str] = []
+        if title is not None and title.strip() and title.strip() != mission.title:
+            mission.title = title.strip()
+            changed_fields.append("title")
+        if objective is not None and objective.strip() and objective.strip() != mission.objective:
+            mission.objective = objective.strip()
+            changed_fields.append("objective")
+
+        workspace_changed = False
+        if workspace_path is not None and workspace_path.strip():
+            resolved_ws = str(Path(workspace_path).expanduser().resolve())
+            if resolved_ws != mission.workspace_path:
+                mission.workspace_path = resolved_ws
+                changed_fields.append("workspace_path")
+                workspace_changed = True
+
+        if business_rules is not None:
+            clean_rules = [r.strip() for r in business_rules if str(r).strip()]
+            if clean_rules != mission.business_rules:
+                mission.business_rules = clean_rules
+                changed_fields.append("business_rules")
+        if conventions is not None:
+            clean_convs = [c.strip() for c in conventions if str(c).strip()]
+            if clean_convs != mission.conventions:
+                mission.conventions = clean_convs
+                changed_fields.append("conventions")
+        if mode is not None and mode != mission.mode:
+            mission.mode = mode
+            changed_fields.append("mode")
+        if config is not None and config != mission.config:
+            mission.config = config
+            changed_fields.append("config")
+
+        if workspace_changed:
+            reset_plan = True
+            mission.branch_name = None
+            mission.base_commit = None
+
+        if reset_plan:
+            mission.phases = []
+            mission.reviews = []
+            mission.review_cycles_used = 0
+            mission.tasks_executed = 0
+            mission.report_path = None
+            mission.last_error = None
+            mission.finished_at = None
+            mission.paused_from_status = None
+            if not workspace_changed:
+                mission.branch_name = None
+                mission.base_commit = None
+            changed_fields.append("reset_plan")
+
+        should_preflight = rerun_preflight and (
+            reset_plan
+            or not mission.phases
+            or mission.status
+            in {
+                MissionStatus.CREATED,
+                MissionStatus.PREFLIGHT,
+                MissionStatus.WAITING_CONFIRMATION,
+                MissionStatus.PLANNING,
+                MissionStatus.FAILED,
+                MissionStatus.CANCELLED,
+            }
+        )
+        if should_preflight:
+            report = analyze_scope_preflight(
+                mission.objective,
+                mission.workspace_path,
+                business_rules=mission.business_rules,
+                conventions=mission.conventions,
+            )
+            mission.preflight = report
+            mission.last_error = None
+            mission.finished_at = None
+            mission.paused_from_status = None
+            mission.status = (
+                MissionStatus.WAITING_CONFIRMATION
+                if report.requires_confirmation
+                else MissionStatus.PLANNING
+            )
+        elif mission.status in {
+            MissionStatus.FAILED,
+            MissionStatus.CANCELLED,
+            MissionStatus.DONE_WITH_BLOCKERS,
+        }:
+            mission.last_error = None
+            mission.finished_at = None
+            mission.paused_from_status = MissionStatus.EXECUTING if mission.phases else MissionStatus.PLANNING
+            mission.status = MissionStatus.PAUSED
+
+        mission.updated_at = utc_now_iso()
+        self.store.save(mission)
+        fields_txt = ", ".join(changed_fields) if changed_fields else "sem alterações"
+        self.store.append_event(
+            mission.id,
+            "edited",
+            f"Missão editada ({fields_txt}). Status atual: '{mission.status.value}'.",
+            {"changed_fields": changed_fields, "reset_plan": reset_plan},
+        )
+        return mission
+
+    def retry_mission(self, mission_id: str, *, reset_plan: bool = False) -> MissionRecord:
+        """Reabre e prepara uma missão falha, cancelada ou com bloqueios para nova execução."""
+        mission = self._require(mission_id)
+        if mission.status == MissionStatus.DONE:
+            raise ValueError("Missão já concluída com sucesso.")
+
+        mission.last_error = None
+        mission.finished_at = None
+        mission.paused_from_status = None
+        mission.started_at = utc_now_iso()
+
+        if reset_plan or not mission.phases:
+            mission.phases = []
+            mission.reviews = []
+            mission.review_cycles_used = 0
+            mission.tasks_executed = 0
+            mission.report_path = None
+            mission.branch_name = None
+            mission.base_commit = None
+
+            report = analyze_scope_preflight(
+                mission.objective,
+                mission.workspace_path,
+                business_rules=mission.business_rules,
+                conventions=mission.conventions,
+            )
+            mission.preflight = report
+            if not Path(mission.workspace_path).is_dir():
+                mission.status = MissionStatus.WAITING_CONFIRMATION
+            else:
+                mission.status = MissionStatus.PLANNING
+            mission.updated_at = utc_now_iso()
+            self.store.save(mission)
+            self.store.append_event(
+                mission.id,
+                "retried",
+                f"Missão reiniciada para '{mission.status.value}' (reset_plan={reset_plan}).",
+            )
+            return mission
+
+        # Já possui plano por fases: reabilita itens bloqueados ou interrompidos
+        reset_in_progress = False
+        requeued_ids: list[str] = []
+        for phase in mission.phases:
+            for item in phase.items:
+                if item.status in (ItemStatus.BLOCKED, ItemStatus.IN_PROGRESS):
+                    if item.status == ItemStatus.IN_PROGRESS:
+                        reset_in_progress = True
+                    item.status = ItemStatus.PENDING
+                    item.attempts = 0
+                    item.last_error = None
+                    item.updated_at = utc_now_iso()
+                    requeued_ids.append(item.id)
+
+        if reset_in_progress and mission.mode != MissionMode.DIAGNOSTIC_ONLY and mission.config.auto_commit:
+            sandbox = self._try_sandbox(mission)
+            if sandbox is not None and mission.branch_name and sandbox.current_branch() == mission.branch_name:
+                try:
+                    sandbox.rollback_working_tree()
+                except GitSandboxError:
+                    pass
+
+        sync_phase_statuses(mission)
+        nxt = next_pending_item(mission)
+        if nxt is not None:
+            if mission.tasks_executed >= mission.config.max_total_tasks:
+                raise ValueError(
+                    f"Limite máximo de tarefas já atingido ({mission.tasks_executed}/{mission.config.max_total_tasks}). "
+                    "Edite a missão para aumentar o limite ou marque 'Resetar plano'."
+                )
+            transition_mission(mission, MissionStatus.EXECUTING)
+        else:
+            if mission.config.run_final_judge and mission.review_cycles_used >= mission.config.max_review_cycles:
+                mission.review_cycles_used = max(0, mission.config.max_review_cycles - 1)
+            target_status = (
+                MissionStatus.FINAL_REVIEW if mission.config.run_final_judge else MissionStatus.AUDITING
+            )
+            transition_mission(mission, target_status)
+
+        mission.updated_at = utc_now_iso()
+        self.store.save(mission)
+        extra = f" ({len(requeued_ids)} item(ns) recolocado(s) na fila)" if requeued_ids else ""
+        self.store.append_event(
+            mission.id,
+            "retried",
+            f"Missão retomada para '{mission.status.value}'{extra}.",
+            {"requeued_items": requeued_ids},
+        )
+        return mission
+
     def retry_blocked_item(self, mission_id: str, item_id: str) -> MissionRecord:
         """Reagenda um item bloqueado para nova tentativa (inclusive em missões DONE_WITH_BLOCKERS)."""
         mission = self._require(mission_id)
