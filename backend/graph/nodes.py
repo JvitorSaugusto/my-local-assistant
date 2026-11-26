@@ -31,6 +31,7 @@ from .config import (
     OLD_TOOL_RESULT_CHARS,
     REVIEW_FREE_TASKS,
     State,
+    code_llm,
     code_llm_with_tools,
     context_gatherer_llm_with_tools,
     generate_llm,
@@ -187,6 +188,14 @@ def router_node(state: State):
         print("🔀 [ROUTER] Rota de Despacho: 'GENERATE_DISPATCH'")
         return {
             "actual_route": "GENERATE_DISPATCH",
+            "enhance_before_heavy": False,
+        }
+
+    code_reason = _should_force_code_route(last_msg, state.get("workspace_path"))
+    if code_reason:
+        print(f"🔀 [ROUTER] Rota direta: 'CODE' ({code_reason})")
+        return {
+            "actual_route": "CODE",
             "enhance_before_heavy": False,
         }
 
@@ -383,6 +392,186 @@ def _has_local_read_tool(messages: list) -> bool:
     )
 
 
+
+_PACK_PATH_RE = re.compile(r"/api/handoff/packs/([\w.-]+\.(?:txt|md|pdf))", re.IGNORECASE)
+_BROKEN_PACK_URL_RE = re.compile(
+    r"(?:https?://)?(?:api[./]handoff|handoff)/packs/([\w.-]+\.(?:txt|md|pdf))",
+    re.IGNORECASE,
+)
+
+
+_NOTE_EXPLICIT_RE = re.compile(
+    r"(?:^\s*@(?:nota|notes|normal|heavy|enhance|ops|commit|pack|primer|zip|txt)\b"
+    r"|\b(?:cri[ae]\w*|ger[ae]\w*|fa[çc]a|mont[ae]\w*)\s+(?:uma\s+)?nota\b"
+    r"|\bnotas?\s+(?:de\s+estudo|no\s+notion|para\s+estudar)\b)",
+    re.IGNORECASE,
+)
+_CODE_EXT_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[\w./\\-]+\.(?:py|js|jsx|ts|tsx|mjs|cjs|json|ya?ml|toml|sql|html|css|scss|sh|bat|ps1|ini|cfg|env|dockerfile)\b",
+    re.IGNORECASE,
+)
+_API_OR_REPO_PATH_RE = re.compile(
+    r"(?:(?<![:/\w])/(?:api|auth|internal|v\d)/[A-Za-z0-9_/{}.-]+"
+    r"|(?<![:/\w])(?:[A-Za-z0-9_-]{2,}/){2,}[A-Za-z0-9_.-]*"
+    r"|(?<![:/\w])(?:app|src|backend|frontend|routers?|services?|controllers?|views?|models?|core|api|auth|tests?|static|templates|config|migrations?|scripts?|proxy_api|god-backend|dashboard|docs)/[A-Za-z0-9_./-]*"
+    r"|(?<![:/\w])[A-Za-z0-9_-]+-(?:backend|frontend|api|service|app|server)/[A-Za-z0-9_./-]*)",
+    re.IGNORECASE,
+)
+_CODE_SYMBOL_RE = re.compile(
+    r"(?:```|`[^`\n]{2,}`"
+    r"|(?<![A-Za-z0-9])[a-zA-Z_][a-zA-Z0-9]*_[a-zA-Z0-9_]+"
+    r"|\b[A-Z][a-z]+[A-Z][A-Za-z0-9]+\b)"
+)
+_DIRECT_CODE_TERMS_RE = re.compile(
+    r"\b(?:trechos?|router|routers|endpoint|endpoints|controller|controllers|serializer|serializers"
+    r"|middleware|alembic|migrations?|traceback|stacktrace|pytest|fastapi|sqlalchemy|pydantic"
+    r"|docker-compose|dockerfile|superuser|queryset|viewset|urlpatterns|apiview)\b",
+    re.IGNORECASE,
+)
+_PROJECT_INSPECT_VERB_RE = re.compile(
+    r"\b(?:localiz\w*|busc\w*|procur\w*|inspecion\w*|verifiq\w*|confirm\w*|chec\w*|cheq\w*"
+    r"|mostr\w*|retorn\w*|extra[ií]\w*|encontr\w*|olh\w*|analis\w*|l[eê]r?\b|abra|abrir"
+    r"|corrig\w*|ajust\w*|alter\w*|edit\w*|refator\w*|implement\w*|mape\w*|debug\w*)\b",
+    re.IGNORECASE,
+)
+_PROJECT_TECH_NOUN_RE = re.compile(
+    r"\b(?:rotas?|services?|servi[çc]os?|views?|models?|schemas?|fun[çc][õo]es|fun[çc][ãa]o"
+    r"|m[ée]todos?|classes?|arquivos?|pastas?|diret[óo]rios?|reposit[óo]rios?|projeto|c[óo]digo"
+    r"|backend|frontend|jwt|auth|autentica[çc][ãa]o|token|sync|sincroniza[çc][ãa]o|seed|bootstrap"
+    r"|payload|permiss[õo]es|cargos?|perfis|banco|tabela|vari[áa]ve(?:l|is)|\.env|branch|commit"
+    r"|erro\s*\d{3}|status\s*\d{3}|401|403|404|422|500)\b",
+    re.IGNORECASE,
+)
+
+
+def _should_force_code_route(text: str, workspace_path: str | None) -> str | None:
+    """Retorna o motivo para rotear direto para CODE quando há workspace ativo e a mensagem trata do projeto/código."""
+    if not workspace_path or not str(workspace_path).strip():
+        return None
+    msg = str(text or "").strip()
+    if not msg or _NOTE_EXPLICIT_RE.search(msg):
+        return None
+
+    # Remove URLs http(s) para não confundir links externos com caminhos do repositório
+    without_urls = re.sub(r"https?://\S+", " ", msg, flags=re.IGNORECASE)
+
+    if _CODE_EXT_PATH_RE.search(without_urls):
+        return "arquivo de código citado"
+    if _API_OR_REPO_PATH_RE.search(without_urls):
+        return "caminho ou rota de API citado"
+    if _CODE_SYMBOL_RE.search(without_urls):
+        return "símbolo/código citado"
+    if _DIRECT_CODE_TERMS_RE.search(without_urls):
+        return "termo técnico de código/arquitetura"
+    tech_hits = {m.group(0).lower() for m in _PROJECT_TECH_NOUN_RE.finditer(without_urls)}
+    if tech_hits and (_PROJECT_INSPECT_VERB_RE.search(without_urls) or len(tech_hits) >= 2):
+        return "inspeção/dúvida técnica sobre o projeto"
+    return None
+
+
+def _messages_from_last_human(messages: list) -> list:
+    for i in range(len(messages) - 1, -1, -1):
+        if getattr(messages[i], "type", "") == "human":
+            return messages[i:]
+    return list(messages)
+
+
+def _resolve_existing_workspace_file(raw_path: str, root) -> str | None:
+    from backend.graph.ops_core import is_secret_path
+
+    clean = str(raw_path or "").strip().strip("'\"`()[]{}.,:;").replace("\\", "/")
+    while clean.startswith("./"):
+        clean = clean[2:]
+    if not clean or clean.startswith("/") or ".." in clean.split("/"):
+        return None
+    candidate = (root / clean).resolve()
+    try:
+        rel = candidate.relative_to(root).as_posix()
+    except ValueError:
+        return None
+    if not candidate.is_file() and clean.lower().startswith(root.name.lower() + "/"):
+        alt = (root / clean[len(root.name) + 1 :]).resolve()
+        try:
+            rel_alt = alt.relative_to(root).as_posix()
+            if alt.is_file():
+                candidate = alt
+                rel = rel_alt
+        except ValueError:
+            return None
+    if not candidate.is_file() or is_secret_path(rel):
+        return None
+    return rel
+
+
+def _unread_mentioned_files(user_text: str, workspace_path: str | None, messages: list) -> list[str]:
+    """Retorna arquivos existentes no workspace citados explicitamente pelo usuário que ainda não foram lidos nesta rodada."""
+    if not workspace_path or not str(workspace_path).strip():
+        return []
+    from pathlib import Path as _Path
+
+    root = _Path(workspace_path).expanduser().resolve()
+    if not root.is_dir():
+        return []
+
+    without_urls = re.sub(r"https?://\S+", " ", str(user_text or ""), flags=re.IGNORECASE)
+    mentioned: list[str] = []
+    for match in _CODE_EXT_PATH_RE.finditer(without_urls):
+        rel = _resolve_existing_workspace_file(match.group(0), root)
+        if rel and rel not in mentioned:
+            mentioned.append(rel)
+    if not mentioned:
+        return []
+
+    turn_msgs = _messages_from_last_human(messages)
+    inspected_paths: set[str] = set()
+    tool_outputs: list[str] = []
+
+    for msg in turn_msgs:
+        kind = getattr(msg, "type", "")
+        if kind == "ai":
+            for call in getattr(msg, "tool_calls", None) or []:
+                args = call.get("args") or {}
+                for key in ("file_path", "path", "subpath"):
+                    val = args.get(key)
+                    if not isinstance(val, str):
+                        continue
+                    for part in re.split(r"[\n,;]+", val):
+                        rel = _resolve_existing_workspace_file(part, root)
+                        if rel:
+                            inspected_paths.add(rel.lower())
+        elif kind == "tool":
+            tool_outputs.append(str(getattr(msg, "content", "") or "").replace("\\", "/").lower())
+
+    joined_tool_out = "\n".join(tool_outputs)
+    unread: list[str] = []
+    for rel in mentioned:
+        rel_low = rel.lower()
+        if rel_low in inspected_paths:
+            continue
+        if rel_low in joined_tool_out:
+            continue
+        unread.append(rel)
+    return unread
+
+
+
+def _ensure_pack_links(content: str, messages: list) -> str:
+    """Corrige links /api/handoff/packs/ corrompidos pelo LLM (ex.: api.handoff/packs/...) e garante que todo .txt gerado apareça como card."""
+    fixed = _BROKEN_PACK_URL_RE.sub(r"/api/handoff/packs/\1", content)
+    tool_out = _tool_text(messages, only=("extract_code_snippets",))
+    if not tool_out:
+        return fixed
+    names = list(dict.fromkeys(_PACK_PATH_RE.findall(tool_out)))
+    missing_links = [
+        f"[{name}](/api/handoff/packs/{name})"
+        for name in names
+        if f"/api/handoff/packs/{name}" not in fixed
+    ]
+    if missing_links:
+        fixed = fixed.rstrip() + "\n\n" + "\n".join(missing_links)
+    return fixed
+
+
 def code_node(state: State):
     mapped = project_map_message(state, "response_code")
     if mapped is not None:
@@ -400,10 +589,22 @@ def code_node(state: State):
 
     active_preset = normalize_preset(state.get("preset"))
     code_preset = preset_prompt_block(active_preset) if active_preset in ("tutor", "direto") else None
+    code_rounds = sum(1 for m in recent_messages if m.type == "ai" and getattr(m, "tool_calls", None))
+    code_exhausted = code_rounds >= 10
+    if code_exhausted:
+        recent_messages = recent_messages + [
+            HumanMessage(
+                content=(
+                    "SISTEMA: limite de buscas atingido nesta rodada. Responda AGORA ao usuário "
+                    "usando o conteúdo já coletado pelas ferramentas acima, de forma direta e completa."
+                )
+            )
+        ]
+
     context = [_assistant_context(prompt_with_workspace, state, CODE_TOOLS_RULES if WEB_TOOLS else None, preset_block=code_preset)]
     context.extend(recent_messages)
 
-    response = code_llm_with_tools.invoke(context)
+    response = code_llm.invoke(context) if code_exhausted else code_llm_with_tools.invoke(context)
     has_workspace = bool(workspace_path) and Path(str(workspace_path)).is_dir()
     if (
         has_workspace
@@ -428,11 +629,71 @@ def code_node(state: State):
                 response.content = UNVERIFIED_CODE_WARNING + response.content
         elif not response.content.startswith(UNVERIFIED_CODE_WARNING):
             response.content = UNVERIFIED_CODE_WARNING + response.content
+    already_reminded = any(
+        (getattr(m, "additional_kwargs", None) or {}).get("missing_files_reminded")
+        for m in _messages_from_last_human(recent_messages)
+    )
+    if not code_exhausted and not already_reminded and not getattr(response, "tool_calls", None):
+        unread_files = _unread_mentioned_files(
+            _last_human_text(state), state.get("workspace_path"), recent_messages
+        )
+        if unread_files:
+            files_str = ", ".join(unread_files[:4])
+            print(f"🔎 [CODE] Arquivo(s) citado(s) ainda não lido(s): {files_str}. Solicitando leitura...")
+            retry_missing = code_llm_with_tools.invoke(
+                context
+                + [
+                    HumanMessage(
+                        content=(
+                            f"SISTEMA: o usuário citou explicitamente o(s) arquivo(s) existente(s) {files_str}, "
+                            "mas você ainda não leu nem inspecionou esse(s) arquivo(s) nesta rodada. "
+                            "Chame `read_file_content`, `read_file_chunk` ou `extract_code_snippets` para verificar "
+                            "esse(s) arquivo(s) ANTES de dar a resposta final (nunca presuma o conteúdo de arquivos não lidos)."
+                        )
+                    )
+                ]
+            )
+            retry_missing.additional_kwargs["missing_files_reminded"] = True
+            response = retry_missing
+
+    if not getattr(response, "tool_calls", None) and not str(getattr(response, "content", "") or "").strip():
+        print("⚠️ [CODE] Resposta vazia sem tool_calls (estouro de raciocínio). Forçando síntese final...")
+        retry_empty = code_llm.invoke(
+            context
+            + [
+                HumanMessage(
+                    content=(
+                        "SISTEMA: sua resposta anterior veio vazia porque todo o limite foi gasto no raciocínio interno. "
+                        "Escreva AGORA a resposta final diretamente para o usuário com o que foi encontrado nas ferramentas acima."
+                    )
+                )
+            ]
+        )
+        if str(getattr(retry_empty, "content", "") or "").strip():
+            response = retry_empty
+        else:
+            tool_summary = _tool_text(recent_messages)
+            fallback_text = (
+                "⚠️ O modelo atingiu o limite de raciocínio ao formatar a resposta final. "
+                "Aqui está o resumo bruto coletado das ferramentas:\n\n```text\n"
+                + tool_summary[-6000:]
+                + "\n```"
+                if tool_summary.strip()
+                else "⚠️ O modelo retornou uma resposta vazia após o raciocínio interno. Tente pedir um item por vez."
+            )
+            response = AIMessage(content=fallback_text)
+
+    print(
+        f"=== CODE === len={len(str(getattr(response, 'content', '') or ''))} "
+        f"| tool_calls={len(getattr(response, 'tool_calls', None) or [])}"
+    )
     response.name = "GPT-OSS (20B) CODE"
     response.additional_kwargs["message_tag"] = "response_code"
     web_text = _tool_text(recent_messages, only=("web_search", "web_fetch"))
     if web_text and not getattr(response, "tool_calls", None) and isinstance(response.content, str):
         response.content = strip_unverified_urls(response.content, web_text + "\n" + _last_human_text(state))
+    if not getattr(response, "tool_calls", None) and isinstance(response.content, str):
+        response.content = _ensure_pack_links(response.content, recent_messages)
     stamp_message(response)
 
     return {"messages": [response], "active_node": "code_node", "enhanced_prompt": None}

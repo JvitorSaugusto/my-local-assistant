@@ -108,9 +108,9 @@ NOTE_NUM_CTX = _env_int("NOTE_NUM_CTX", 65536)
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE_APP", "15m")
 
 router_structured = load_llm().with_structured_output(RouteDecision).with_config(config={"configurable": { "model": "qwen3:4b", "temperature": 0.0, "max_tokens": 100,}})
-standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=4096, num_ctx=GPT_OSS_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
+standard_llm = ChatOllama(model="gpt-oss:20b", temperature=0.2, num_predict=_env_int("STANDARD_NUM_PREDICT", 8192), num_ctx=GPT_OSS_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 
-code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=4096, num_ctx=GPT_OSS_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
+code_llm = ChatOllama(model="gpt-oss:20b", temperature=0.1, num_predict=_env_int("CODE_NUM_PREDICT", 8192), num_ctx=GPT_OSS_NUM_CTX, keep_alive=OLLAMA_KEEP_ALIVE)
 # Janela de contexto do agente Generate. O Ollama CORTA o excesso do prompt sem avisar;
 # o sistema estima o tamanho do prompt e avisa quando chegar perto deste valor.
 GENERATE_NUM_CTX = CODER_NUM_CTX

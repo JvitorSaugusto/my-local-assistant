@@ -347,7 +347,7 @@ def extract_code_snippets(
     queries: str,
     subpath: str = "",
     include_full_class: bool = False,
-    save_txt: str = "auto",
+    save_txt: str = "always",
     workspace_path: Annotated[str, InjectedState("workspace_path")] = "",
 ) -> str:
     """Localiza múltiplos termos, rotas, funções ou classes no projeto e extrai o escopo COMPLETO (função, método ou classe/View inteira) sem cortar código.
@@ -357,7 +357,7 @@ def extract_code_snippets(
 
     Args:
         queries: termos, nomes de funções, rotas ou classes separados por vírgula ou quebra de linha.
-        subpath: pasta ou arquivo relativo opcional para restringir a busca (ex.: 'god-backend/app' ou 'proxy_api/core/services.py').
+        subpath: pasta(s) ou arquivo(s) relativo(s) opcional(is), separados por vírgula se houver mais de um (ex.: 'god-backend/app/routers, god-backend/app/main.py').
         include_full_class: True quando o usuário pedir a classe/View inteira onde o termo aparece.
         save_txt: 'auto' (salva `.txt` se for grande ou tiver 3+ trechos), 'always' (sempre gera `.txt` clicável) ou 'never' (só devolve no chat).
     """
@@ -385,8 +385,10 @@ def extract_code_snippets(
         return (
             f"{header}\n\n"
             f"Arquivo `.txt` completo gerado (sem cortes): {link}\n\n"
-            "INSTRUÇÃO: inclua o link Markdown acima exatamente como está na sua resposta para que o card clicável apareça no chat. "
-            "Se o usuário pediu explicação além do código, responda resumindo o que foi confirmado nos trechos abaixo.\n\n"
+            "INSTRUÇÕES DE FORMATAÇÃO:\n"
+            f"1. Inclua o link EXATO `{link}` (com a barra inicial `/api/handoff/packs/...`, nunca troque por `api.handoff`).\n"
+            "2. NÃO use tabelas Markdown largas nem listas genéricas de 'próximos passos'.\n"
+            "3. Liste de forma curta e objetiva em tópicos (bullets) o que foi confirmado em cada arquivo/escopo e o que não teve ocorrência.\n\n"
             + res["formatted"][:14000]
         )
 

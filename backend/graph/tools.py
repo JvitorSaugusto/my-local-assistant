@@ -28,6 +28,8 @@ _WRITE_CALL_NAMES = {
 
 def _edit_phase_block(runtime, tool_name: str) -> str | None:
     """Mensagem de recusa se a task já passou do limite de rodadas sem escrever nada; senão None."""
+    if not runtime.state.get("active_generate_task"):
+        return None
     try:
         messages = _messages_since_last_human(runtime.state)
     except Exception:  # noqa: BLE001 - o guard nunca derruba a tool
@@ -268,6 +270,81 @@ def read_file_chunk(file_path: str, offset: int, length: int, runtime: ToolRunti
 
     return chunk + footer
 
+_SEARCH_SKIP_DIRS = {
+    ".git", "__pycache__", "node_modules", "venv", ".venv", "env",
+    "dist", "build", ".next", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+}
+_SEARCH_BINARY_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".zip", ".rar",
+    ".lock", ".pyc", ".woff", ".woff2", ".tar", ".gz", ".exe", ".dll", ".db", ".sqlite3",
+}
+
+
+def _search_directory(
+    resolved_dir: Path,
+    display_path: str,
+    pattern: str,
+    workspace_path: str | None,
+    max_files: int = 120,
+    max_lines: int = 80,
+) -> str:
+    """Busca recursivamente por `pattern` nos arquivos de código dentro de uma pasta do workspace."""
+    if not workspace_path:
+        return "ERRO: nenhum workspace definido para esta conversa."
+    root = Path(workspace_path).resolve()
+    pat = str(pattern or "")
+    pat_low = pat.lower()
+    compiled = None
+    try:
+        compiled = re.compile(pat, re.IGNORECASE)
+    except re.error:
+        pass
+
+    files: list[Path] = []
+    for current, dirs, names in os.walk(resolved_dir):
+        dirs[:] = sorted(d for d in dirs if d not in _SEARCH_SKIP_DIRS and not d.startswith("."))
+        for name in sorted(names):
+            low_name = name.lower()
+            if (low_name == ".env" or low_name.startswith(".env.")) and low_name not in ALLOWED_ENV_NAMES:
+                continue
+            if Path(low_name).suffix in _SEARCH_BINARY_EXTS:
+                continue
+            full = Path(current, name)
+            if not _is_inside(full, root):
+                continue
+            files.append(full)
+
+    if not files:
+        return f"Nenhum arquivo pesquisável encontrado na pasta '{display_path}'."
+
+    found: list[str] = []
+    total = 0
+    scanned = files[:max_files]
+    for path in scanned:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        if len(raw) > 2 * 1024 * 1024 or b"\0" in raw[:4000]:
+            continue
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        rel = path.relative_to(root).as_posix()
+        hits = [(i + 1, line) for i, line in enumerate(lines) if pat_low in line.lower()]
+        if not hits and compiled is not None:
+            hits = [(i + 1, line) for i, line in enumerate(lines) if compiled.search(line)]
+        for number, line in hits:
+            total += 1
+            if len(found) < max_lines:
+                found.append(f"{rel}:{number}: {line}")
+
+    if not total:
+        return f"Nenhuma ocorrência de '{pattern}' em {len(scanned)} arquivo(s) da pasta '{display_path}'."
+    header = f"{total} ocorrência(s) de '{pattern}' em {len(scanned)} arquivo(s) da pasta '{display_path}':\n"
+    extra = f"\n[... mais {total - max_lines} ocorrências omitidas]" if total > max_lines else ""
+    skipped = f"\n[... {len(files) - max_files} arquivo(s) não pesquisados]" if len(files) > max_files else ""
+    return header + "\n".join(found) + extra + skipped
+
+
 def _search_many(pattern_path: str, pattern: str, workspace_path: str | None, max_files: int = 40, max_lines: int = 80) -> str:
     """search_in_file com curinga (ex.: tests/*.py): busca em vários arquivos DENTRO do workspace."""
     if not workspace_path:
@@ -353,6 +430,12 @@ def search_in_file(file_path: str, pattern: str, runtime: ToolRuntime) -> str:
     resolved_path, path_error = _confined_path(file_path, workspace_path)
     if path_error:
         return path_error
+
+    if resolved_path.is_dir():
+        print(f"[BUSCA] pasta={resolved_path} pattern={pattern!r}")
+        return _search_directory(resolved_path, file_path, pattern, workspace_path)
+    if not resolved_path.is_file():
+        return f"ERRO: '{file_path}' não foi encontrado no workspace."
 
     print(f"[BUSCA] arquivo={resolved_path} pattern={pattern!r}")
 

@@ -15,6 +15,8 @@ Você possui acesso a:
 
 Quando a pergunta depender do código do projeto:
 
+0. **PRIORIDADE PARA TRECHOS/BUSCAS:** se o usuário pedir trechos de código, endpoints, rotas, funções, classes ou colar uma lista de pontos para localizar, chame `extract_code_snippets` IMEDIATAMENTE como 1ª ação (passando todos os termos em `queries` e a(s) pasta(s)/arquivo(s) em `subpath`, separados por vírgula se houver mais de um). NÃO rode `list_directory_files` nem `search_in_file` em loop antes de usar `extract_code_snippets`.
+0.1. **ZERO CHUTES SOBRE ARQUIVOS NÃO LIDOS:** nunca presuma nem explique o conteúdo de um arquivo que você não leu nesta rodada (ex.: não atribua prefixo de rota a `main.py`/`APIRouter` se o caminho completo já estiver no decorator e você não abriu `main.py`). Se o usuário citou um arquivo específico, leia-o antes de responder; se não leu, diga explicitamente que não verificou.
 1. Se o usuário informou o diretório do projeto, use esse caminho diretamente.
 2. Caso os arquivos relevantes ainda não sejam conhecidos, use `list_directory_files`.
 3. Analise os caminhos retornados.
